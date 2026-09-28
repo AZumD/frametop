@@ -46,7 +46,15 @@ Wherever ft-screens needs to know where a laser points (showing the controls, th
 
 Pinning started as "bring the screen to your wrist", which doesn't work for big screens, because their centre is far from the edge you bring close. It became aiming: while a screen is carried, the line from the carrying device to its bar is tested against the other hand controllers. Crossing a controller's 6 cm ring arms the pin (leaving past 9 cm, so it doesn't flicker), and crossing it again disarms it. The pin happens on release, with the screen's pose at that moment, so you can arm it and then turn the screen. An earlier version pinned the moment the laser touched the wrist, which left the screen at whatever angle the carrying hand had while pointing there.
 
-A pinned screen's alpha follows the angle between its front and the direction to your head, fully visible inside the wrist angle and fading over the last 10°. That fade applies only to controller (wrist) pins. Head-anchored screens use `SetOverlayTransformTrackedDeviceRelative` on `k_unTrackedDeviceIndex_Hmd` and follow the shared visibility rules so a HUD stays put relative to the headset.
+A pinned screen's alpha follows the angle between its front and the direction to your head, fully visible inside the wrist angle and fading over the last 10°. That fade applies only to controller (wrist) pins.
+
+### Follow modes (anchors)
+
+Each screen has one `AnchorMode`: world, left/right controller, head (soft), head-rigid, yaw-follow, or position-follow. Soft modes (`head`, `yaw-follow`, `position-follow`) keep an absolute overlay pose and chase a reference frame at the VR update rate with exponential smoothing (`FOLLOW_LAG_MS`, default 120). Head-rigid and controller pins still use `SetOverlayTransformTrackedDeviceRelative` with no lag. Legacy profile pins with `"hand": "head"` mean soft head.
+
+Composed overlay alpha is `userOpacity × visibilityFade × attentionFade`. Optional head-gaze attention (HMD forward, not eye tracking) only applies when the panel can leave the view: world, yaw-follow, position-follow, and controller pins. It is skipped for head-soft/head-rigid because once caught up those panels sit at a fixed angle to the headset.
+
+VR chrome under each screen: drag bar, curve, roll, resize, an anchor-cycle button (world → head → yaw-follow → position-follow), and circular profile slots 1–6. Slot clicks spawn `ft-layout action profile.slot.N` asynchronously. Input Settings button maps and Display Settings use the same semantic action names (aliases like `profile_slot_1` still work). Soft follow seeds its smoothed pose from the screen's current rendered transform when a mode is applied, so pinning after a profile transition does not pop.
 
 ### Visibility and VR games
 

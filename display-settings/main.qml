@@ -199,6 +199,17 @@ Kirigami.ApplicationWindow {
                                               + (metres.value * card.modelData.height / card.modelData.width).toFixed(2) + " m tall"
                                     }
                                 }
+                                RowLayout {
+                                    Kirigami.FormData.label: "Opacity:"
+                                    Controls.Slider {
+                                        id: opacitySlider
+                                        from: 0.15; to: 1.0; stepSize: 0.05
+                                        value: card.modelData.opacity !== undefined ? card.modelData.opacity : 1.0
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                                        onMoved: backend.setScreenOpacity(card.modelData.index, value)
+                                    }
+                                    Controls.Label { text: Math.round(opacitySlider.value * 100) + "%" }
+                                }
                                 Controls.ComboBox {
                                     Kirigami.FormData.label: "Scale:"
                                     model: backend.scales
@@ -494,8 +505,66 @@ Kirigami.ApplicationWindow {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                         opacity: 0.7
-                        text: "Profiles store where the screens sit (pose, width in metres, curve, wrist/head anchors). "
+                        text: "Profiles store where the screens sit (pose, width in metres, curve, anchors, opacity). "
                               + "They do not change screen count, resolution, or scale. CLI: ft-layout profile apply NAME"
+                    }
+
+                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Profile slots (VR chrome 1–6)" }
+
+                    Repeater {
+                        model: backend.profiles.slots || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Controls.Label {
+                                text: "Slot " + modelData.index + ":"
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 4
+                            }
+                            Controls.ComboBox {
+                                id: slotPick
+                                Layout.fillWidth: true
+                                model: ["(empty)"].concat(backend.profiles.names || [])
+                                Component.onCompleted: {
+                                    const names = backend.profiles.names || []
+                                    currentIndex = modelData.profile && names.indexOf(modelData.profile) >= 0
+                                        ? names.indexOf(modelData.profile) + 1 : 0
+                                }
+                                Connections {
+                                    target: backend
+                                    function onChanged() {
+                                        const names = backend.profiles.names || []
+                                        slotPick.model = ["(empty)"].concat(names)
+                                        const cur = (backend.profiles.slots || [])[modelData.index - 1]
+                                        const name = cur ? cur.profile : ""
+                                        slotPick.currentIndex = name && names.indexOf(name) >= 0
+                                            ? names.indexOf(name) + 1 : 0
+                                    }
+                                }
+                                onActivated: {
+                                    if (currentIndex <= 0)
+                                        backend.clearProfileSlot(modelData.index)
+                                    else
+                                        backend.assignProfileSlot(modelData.index, currentText)
+                                }
+                            }
+                            Controls.Button {
+                                text: "Apply"
+                                enabled: backend.desktopRunning && backend.busy === "" && modelData.profile !== ""
+                                onClicked: backend.applyProfileSlot(modelData.index)
+                            }
+                            Controls.Label {
+                                text: (backend.profiles.current_slot === modelData.index) ? "●" : ""
+                                opacity: 0.8
+                            }
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        opacity: 0.7
+                        text: "Slots appear as numbered buttons under every screen in VR. Clicking a slot applies that "
+                              + "profile to the whole workspace (450 ms transition). CLI: ft-layout profile slot 1 Desk"
                     }
                 }
 
@@ -769,9 +838,19 @@ Kirigami.ApplicationWindow {
                             onClicked: backend.pinAll("right")
                         }
                         Controls.Button {
-                            text: "Pin to head"
+                            text: "Pin to head (soft)"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("head")
+                        }
+                        Controls.Button {
+                            text: "Yaw follow"
+                            enabled: backend.desktopRunning
+                            onClicked: backend.pinAll("yaw-follow")
+                        }
+                        Controls.Button {
+                            text: "Position follow"
+                            enabled: backend.desktopRunning
+                            onClicked: backend.pinAll("position-follow")
                         }
                         Controls.Button {
                             text: "Unpin"
@@ -791,8 +870,9 @@ Kirigami.ApplicationWindow {
                           + "then let go: it rides on that wrist at that size and distance, however far away. To adjust a "
                           + "pinned screen, grab its bar, move it, and let go (it stays pinned); sweep across the ring to "
                           + "take it off. Wrist-pinned screens show while you see their front within the angle above. "
-                          + "Head-anchored screens stay visible relative to the headset (HUD). "
-                          + "CLI: ft-layout pin 1 head. Save current arrangement / a named profile keeps pins."
+                          + "Head (soft) follows the headset with a short lag; yaw-follow turns with you but stays upright; "
+                          + "position-follow walks with you without rotating. Use the anchor button under each screen to cycle "
+                          + "modes, or CLI: ft-layout pin 1 head. Save current arrangement / a named profile keeps anchors."
                 }
             }
         }

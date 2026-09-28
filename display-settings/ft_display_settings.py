@@ -196,6 +196,7 @@ class Backend(QObject):
                 out.append({"index": i, "width": w, "height": h, "metres": ft_layout.screen_metres(layout, i),
                             "scale": round(s, 4), "primary": i == primary,
                             "curved": float(ft_layout.screen_entry(layout, i).get("curve", 0)) > 0,
+                            "opacity": round(ft_layout.screen_opacity(ft_layout.screen_entry(layout, i)), 3),
                             "effective": f"{round(w / s)} × {round(h / s)}"})
             return out
         for i in range(c["screens"]):
@@ -213,7 +214,18 @@ class Backend(QObject):
     @Property("QVariantMap", notify=changed)
     def profiles(self):
         store = ft_layout.load_profiles()
-        return {"current": store["current"], "names": sorted(store["profiles"])}
+        slots = ft_layout.normalized_slots(store)
+        current_slot = 0
+        for i, name in enumerate(slots, 1):
+            if name and name == store.get("current"):
+                current_slot = i
+                break
+        return {
+            "current": store["current"],
+            "names": sorted(store["profiles"]),
+            "slots": [{"index": i, "profile": n or ""} for i, n in enumerate(slots, 1)],
+            "current_slot": current_slot,
+        }
 
     @Property("QVariantList", notify=changed)
     def plan(self):
@@ -307,6 +319,13 @@ class Backend(QObject):
         if self._running and i < self._running_count:
             self._ask_screens(f"width {i + 1} {m:.3f}")
 
+    @Slot(int, float)
+    def setScreenOpacity(self, i, opacity):
+        opacity = max(0.15, min(1.0, float(opacity)))
+        self._edit_screen(i, lambda s: s.__setitem__("opacity", round(opacity, 3)))
+        if self._running and i < self._running_count:
+            self._ask_screens(f"opacity {i + 1} {opacity:.3f}")
+
     @Slot(int, bool)
     def setCurved(self, i, on):
         """Curve a screen into a cylinder around you (radius: your distance to it now, from
@@ -379,7 +398,15 @@ class Backend(QObject):
     def pinAll(self, hand):
         reply = self._ask_screens(f"pin all {hand}") if self._running else None
         if reply and reply.startswith("ok"):
-            where = "your headset (HUD)" if hand == "head" else f"your {hand} wrist"
+            labels = {
+                "head": "your headset (soft follow)",
+                "head-rigid": "your headset (rigid)",
+                "yaw-follow": "yaw-follow (upright while turning)",
+                "position-follow": "position-follow (translation only)",
+                "left": "your left wrist",
+                "right": "your right wrist",
+            }
+            where = labels.get(hand, hand)
             self.message.emit(f"All screens ride on {where} now; grab a screen's bar to take it off. "
                               "Save current arrangement / Save profile keeps it.", False)
         else:
@@ -412,6 +439,26 @@ class Backend(QObject):
             self.message.emit("Pick a profile first", True)
             return
         self._run("Deleting profile", "profile", "delete", name)
+
+    @Slot(int, str)
+    def assignProfileSlot(self, slot, name):
+        slot = int(slot)
+        name = (name or "").strip()
+        if not 1 <= slot <= ft_layout.SLOT_COUNT:
+            self.message.emit(f"Slot must be 1..{ft_layout.SLOT_COUNT}", True)
+            return
+        if not name:
+            self._run("Clearing slot", "profile", "unslot", str(slot))
+            return
+        self._run("Assigning slot", "profile", "slot", str(slot), name)
+
+    @Slot(int)
+    def clearProfileSlot(self, slot):
+        self.assignProfileSlot(slot, "")
+
+    @Slot(int)
+    def applyProfileSlot(self, slot):
+        self._run("Applying slot", "action", f"profile.slot.{int(slot)}")
 
     @Slot()
     def restartDesktop(self):
