@@ -1,0 +1,29 @@
+# Template: the installer replaces @REPO@ with the repo path on the Frame.
+[Unit]
+Description=Frametop input relay: stable virtual mouse and keyboard for SteamVR
+Documentation=file://@REPO@/README.md
+# SteamVR opens input devices only at startup, so the virtual devices must exist first.
+# Ordered before SteamVR, but not RequiredBy it: a relay failure must not black-screen VR.
+Before=steamvr.service
+
+[Service]
+# READY=1 is sent only after the virtual devices exist.
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 @REPO@/input/input-relay.py
+# Finite start: never leave steamvr.service waiting forever for READY.
+TimeoutStartSec=20
+Restart=on-failure
+RestartSec=2
+# Cap restart storms so a broken relay cannot churn forever beside SteamVR.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+# systemd holds the virtual devices' file descriptors across relay restarts,
+# so SteamVR keeps the same devices. Clear with: systemctl --user clean --what=fdstore <unit>
+FileDescriptorStoreMax=4
+FileDescriptorStorePreserve=yes
+
+[Install]
+# Pulled in when SteamVR starts (Before= still applies). Not WantedBy default.target:
+# starting at every user login is unnecessary and made recovery harder.
+WantedBy=steamvr.service

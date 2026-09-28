@@ -1,0 +1,28 @@
+# Template: the installer replaces @REPO@ with the repo path on the Frame.
+[Unit]
+Description=Frametop pointer helper: the universal 3D mouse (cursor, collision, ft_pointer driver)
+Documentation=file://@REPO@/README.md
+# Needs SteamVR's IPC; it starts and stops with SteamVR.
+# After= only: a hung helper must never delay SteamVR itself.
+After=steamvr.service frametop-input-relay.service
+PartOf=steamvr.service
+
+[Service]
+# Runs in the dev container (built there against its libraries). The helper process
+# lives in the container, so clean it up explicitly around distrobox enter.
+# Start the container in a scope of its own first: started by this service (distrobox enter
+# does that on demand), stopping the service would stop the container and all in it.
+ExecStartPre=-@REPO@/scripts/container-up.sh
+ExecStartPre=-/usr/bin/pkill -x ft-pointer
+ExecStart=%h/.local/bin/distrobox enter dev -- @REPO@/pointer/helper/build/ft-pointer
+ExecStopPost=-/usr/bin/pkill -x ft-pointer
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=120
+StartLimitBurst=3
+TimeoutStartSec=45
+# The container session (conmon) ignores SIGTERM; don't wait 90 s for it.
+TimeoutStopSec=5
+
+[Install]
+WantedBy=steamvr.service

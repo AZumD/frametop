@@ -1,0 +1,7 @@
+build/
+target/
+.env
+.env.*
+captures/
+__pycache__/
+frametop-report-*.txt
