@@ -16,6 +16,8 @@ desktops.sh start | stop | restart | status | log [lines]
 
 `session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
 
+If `plasmashell` exits while KWin stays up (black wallpaper / missing taskbar), `session/ft-shell-watch.sh` restarts only the shell inside the same nested D-Bus session, using `$XDG_RUNTIME_DIR/frametop/plasmashell.env` captured from the first healthy shell (`WAYLAND_DISPLAY=wayland-0`, not the outer ft-screens socket). Log: `/tmp/frametop-plasmashell-watchdog.log`. Manual: `./desktops.sh shell-restart`.
+
 When the VR launcher starts the desktop, it inherits the Steam client's environment. The session script drops the client's runtime from it (`LD_LIBRARY_PATH`, the `STEAM_*` settings, and the Steam overlay's Vulkan layer), so apps in the desktop use the system's libraries, including its video codecs, just as they would after a normal login.
 
 Settings are in two files, and Frametop Display Settings edits both. The screens (resolution, width in metres, scale, curve, which one has the taskbar) and their layout are in `~/.config/frametop-layout.json`. The backend, remote desktop, and pointer settings are in `~/.config/frametop.conf`; `session/frametop.conf.example` lists every key.
