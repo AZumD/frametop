@@ -117,9 +117,9 @@ When the desktop starts, its screens arrange themselves around where you're faci
 
 Frametop Display Settings has three tabs:
 
-- Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), its scale, whether it's curved, and whether it has the taskbar. Resolution, width, and curve apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
-- Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. Named spatial profiles (same screen count; pose, metres, curve, anchors) can be saved and applied without changing resolution or scale. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
-- Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, to the head (HUD), or unpin them.
+- Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), opacity (15–100%), its scale, whether it's curved, and whether it has the taskbar. Resolution, width, curve, and opacity apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
+- Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. Named spatial profiles (same screen count; pose, metres, curve, anchors, opacity) can be saved, applied (default 450 ms transition), and assigned to slots 1–6 for the VR chrome buttons. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
+- Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, soft head / yaw-follow / position-follow, or unpin them.
 
 `layout/ft-layout` does the arranging. It's a Python script that uses only the standard library and runs on the host:
 
@@ -128,17 +128,25 @@ layout/ft-layout apply [--duration MS]   # arrange every screen (optional ease-i
 layout/ft-layout capture                 # save the current arrangement and sizes as the layout
 layout/ft-layout plan                    # print the arrangement as JSON (no VR needed)
 layout/ft-layout scale                   # per-screen scale, positions, and taskbar screen, to KWin
+layout/ft-layout screen state --json     # per-screen anchor/opacity + slot info
 layout/ft-layout toggle                  # hide or show all screens
-layout/ft-layout pin N|all left|right|head
+layout/ft-layout pin N|all left|right|head|head-rigid|yaw-follow|position-follow
 layout/ft-layout profile list [--json]
 layout/ft-layout profile current [--json]
 layout/ft-layout profile save NAME
-layout/ft-layout profile apply NAME [--duration MS]
+layout/ft-layout profile apply NAME [--duration MS]   # default 450; 0 = instant
 layout/ft-layout profile delete NAME
+layout/ft-layout profile slot N NAME | unslot N | slots [--json]
+layout/ft-layout profile apply-slot N [--duration MS]
+layout/ft-layout profile next|previous [--duration MS]
+layout/ft-layout action NAME [--duration MS]   # profile.slot.N | profile.next | layout.reset | …
+layout/ft-layout action list [--json]
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
 
-The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json`. `/tmp/frametop-layout.log` has the run from the last desktop start.
+The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json` (includes optional `slots` 1–6). Soft head follow lag is `FOLLOW_LAG_MS` in `~/.config/frametop.conf` (default 120). `/tmp/frametop-layout.log` has the run from the last desktop start.
+
+Gesture ideas for profile switching are noted in `docs/gestures-profiles.md` (not implemented; prefer chrome slots and Input Settings actions).
 
 ## Remote desktop over VNC
 

@@ -51,8 +51,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
+#include <fcntl.h>
+#include <initializer_list>
+#include <limits.h>
 #include <map>
 #include <string>
+#include <unistd.h>
+#include <vector>
 #include <vector>
 
 namespace {
@@ -184,6 +190,192 @@ const char *AnchorName(vr::TrackedDeviceIndex_t i) {
 }
 vr::TrackedDeviceIndex_t HandDevice(const char *hand) { return AnchorDevice(hand); }
 
+enum class AnchorMode {
+    World, Left, Right, HeadSoft, HeadRigid, YawFollow, PositionFollow
+};
+constexpr vr::TrackedDeviceIndex_t kNoneEarly = vr::k_unTrackedDeviceIndexInvalid;
+
+bool IsSoftFollow(AnchorMode m) {
+    return m == AnchorMode::HeadSoft || m == AnchorMode::YawFollow || m == AnchorMode::PositionFollow;
+}
+bool IsRigidDevice(AnchorMode m) {
+    return m == AnchorMode::Left || m == AnchorMode::Right || m == AnchorMode::HeadRigid;
+}
+bool AttentionApplies(AnchorMode m) {
+    // Locked head-relative HUDs have a fixed angular relationship to the gaze; skip.
+    return m == AnchorMode::World || m == AnchorMode::YawFollow || m == AnchorMode::PositionFollow ||
+           m == AnchorMode::Left || m == AnchorMode::Right;
+}
+const char *AnchorModeName(AnchorMode m) {
+    switch (m) {
+        case AnchorMode::Left: return "left";
+        case AnchorMode::Right: return "right";
+        case AnchorMode::HeadSoft: return "head";
+        case AnchorMode::HeadRigid: return "head-rigid";
+        case AnchorMode::YawFollow: return "yaw-follow";
+        case AnchorMode::PositionFollow: return "position-follow";
+        default: return "world";
+    }
+}
+AnchorMode ParseAnchorMode(const char *name) {
+    if (!name) return AnchorMode::World;
+    if (!std::strcmp(name, "left")) return AnchorMode::Left;
+    if (!std::strcmp(name, "right")) return AnchorMode::Right;
+    if (!std::strcmp(name, "head")) return AnchorMode::HeadSoft;  // legacy = soft
+    if (!std::strcmp(name, "head-rigid")) return AnchorMode::HeadRigid;
+    if (!std::strcmp(name, "yaw-follow")) return AnchorMode::YawFollow;
+    if (!std::strcmp(name, "position-follow")) return AnchorMode::PositionFollow;
+    if (!std::strcmp(name, "world") || !std::strcmp(name, "none")) return AnchorMode::World;
+    return AnchorMode::World;
+}
+vr::TrackedDeviceIndex_t DeviceForMode(AnchorMode m) {
+    switch (m) {
+        case AnchorMode::Left: return AnchorDevice("left");
+        case AnchorMode::Right: return AnchorDevice("right");
+        case AnchorMode::HeadRigid: return vr::k_unTrackedDeviceIndex_Hmd;
+        default: return kNoneEarly;
+    }
+}
+AnchorMode CycleAnchor(AnchorMode m) {
+    switch (m) {
+        case AnchorMode::World: return AnchorMode::HeadSoft;
+        case AnchorMode::HeadSoft: return AnchorMode::YawFollow;
+        case AnchorMode::YawFollow: return AnchorMode::PositionFollow;
+        default: return AnchorMode::World;
+    }
+}
+
+// Upright reference: HMD position + yaw only (no pitch/roll).
+Mat YawOnlyHead(const Mat &hmd) {
+    const double yaw = std::atan2(hmd.m[0][2], hmd.m[2][2]);
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    Mat m = Identity();
+    m.m[0][0] = float(c), m.m[0][2] = float(s);
+    m.m[2][0] = float(-s), m.m[2][2] = float(c);
+    m.m[0][3] = hmd.m[0][3], m.m[1][3] = hmd.m[1][3], m.m[2][3] = hmd.m[2][3];
+    return m;
+}
+Mat PositionOnlyHead(const Mat &hmd) {
+    Mat m = Identity();
+    m.m[0][3] = hmd.m[0][3], m.m[1][3] = hmd.m[1][3], m.m[2][3] = hmd.m[2][3];
+    return m;
+}
+Mat ReferenceFrame(AnchorMode mode, const Mat &hmd) {
+    switch (mode) {
+        case AnchorMode::YawFollow: return YawOnlyHead(hmd);
+        case AnchorMode::PositionFollow: return PositionOnlyHead(hmd);
+        default: return hmd;  // HeadSoft / HeadRigid use full HMD; unused for world/controllers
+    }
+}
+
+struct Quat { double w, x, y, z; };
+Quat QuatFromMat(const Mat &m) {
+    const double t = m.m[0][0] + m.m[1][1] + m.m[2][2];
+    Quat q{};
+    if (t > 0) {
+        const double s = 0.5 / std::sqrt(t + 1.0);
+        q.w = 0.25 / s;
+        q.x = (m.m[2][1] - m.m[1][2]) * s;
+        q.y = (m.m[0][2] - m.m[2][0]) * s;
+        q.z = (m.m[1][0] - m.m[0][1]) * s;
+    } else if (m.m[0][0] > m.m[1][1] && m.m[0][0] > m.m[2][2]) {
+        const double s = 2.0 * std::sqrt(1.0 + m.m[0][0] - m.m[1][1] - m.m[2][2]);
+        q.w = (m.m[2][1] - m.m[1][2]) / s;
+        q.x = 0.25 * s;
+        q.y = (m.m[0][1] + m.m[1][0]) / s;
+        q.z = (m.m[0][2] + m.m[2][0]) / s;
+    } else if (m.m[1][1] > m.m[2][2]) {
+        const double s = 2.0 * std::sqrt(1.0 + m.m[1][1] - m.m[0][0] - m.m[2][2]);
+        q.w = (m.m[0][2] - m.m[2][0]) / s;
+        q.x = (m.m[0][1] + m.m[1][0]) / s;
+        q.y = 0.25 * s;
+        q.z = (m.m[1][2] + m.m[2][1]) / s;
+    } else {
+        const double s = 2.0 * std::sqrt(1.0 + m.m[2][2] - m.m[0][0] - m.m[1][1]);
+        q.w = (m.m[1][0] - m.m[0][1]) / s;
+        q.x = (m.m[0][2] + m.m[2][0]) / s;
+        q.y = (m.m[1][2] + m.m[2][1]) / s;
+        q.z = 0.25 * s;
+    }
+    return q;
+}
+Mat MatFromQuatPos(const Quat &q, double x, double y, double z) {
+    const double xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const double xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const double wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    Mat m = Identity();
+    m.m[0][0] = float(1 - 2 * (yy + zz));
+    m.m[0][1] = float(2 * (xy - wz));
+    m.m[0][2] = float(2 * (xz + wy));
+    m.m[1][0] = float(2 * (xy + wz));
+    m.m[1][1] = float(1 - 2 * (xx + zz));
+    m.m[1][2] = float(2 * (yz - wx));
+    m.m[2][0] = float(2 * (xz - wy));
+    m.m[2][1] = float(2 * (yz + wx));
+    m.m[2][2] = float(1 - 2 * (xx + yy));
+    m.m[0][3] = float(x), m.m[1][3] = float(y), m.m[2][3] = float(z);
+    return m;
+}
+Quat Slerp(Quat a, Quat b, double t) {
+    double dot = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+    if (dot < 0) { b.w = -b.w; b.x = -b.x; b.y = -b.y; b.z = -b.z; dot = -dot; }
+    if (dot > 0.9995) {
+        Quat r{a.w + t * (b.w - a.w), a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z)};
+        const double n = std::sqrt(r.w * r.w + r.x * r.x + r.y * r.y + r.z * r.z) + 1e-12;
+        return {r.w / n, r.x / n, r.y / n, r.z / n};
+    }
+    const double th = std::acos(std::clamp(dot, -1.0, 1.0));
+    const double s = std::sin(th), wa = std::sin((1 - t) * th) / s, wb = std::sin(t * th) / s;
+    return {wa * a.w + wb * b.w, wa * a.x + wb * b.x, wa * a.y + wb * b.y, wa * a.z + wb * b.z};
+}
+void SmoothToward(Mat *cur, const Mat &target, double dt, double tauSec) {
+    if (tauSec <= 1e-4 || dt <= 0) {
+        *cur = target;
+        return;
+    }
+    const double a = 1.0 - std::exp(-dt / tauSec);
+    const Quat qa = QuatFromMat(*cur), qb = QuatFromMat(target);
+    const Quat q = Slerp(qa, qb, a);
+    *cur = MatFromQuatPos(q, cur->m[0][3] + a * (target.m[0][3] - cur->m[0][3]),
+                          cur->m[1][3] + a * (target.m[1][3] - cur->m[1][3]),
+                          cur->m[2][3] + a * (target.m[2][3] - cur->m[2][3]));
+}
+
+std::string LayoutToolPath() {
+    char exe[PATH_MAX] = {};
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return {};
+    exe[n] = 0;
+    std::string path(exe);
+    // .../screens/build/ft-screens -> .../layout/ft-layout
+    const auto cut = path.rfind("/screens/");
+    if (cut == std::string::npos) return {};
+    return path.substr(0, cut) + "/layout/ft-layout";
+}
+
+void SpawnLayoutAsync(std::initializer_list<const char *> args) {
+    const std::string bin = LayoutToolPath();
+    if (bin.empty()) {
+        std::fprintf(stderr, "ft-screens: cannot find ft-layout beside this binary\n");
+        return;
+    }
+    signal(SIGCHLD, SIG_IGN);  // avoid zombies from fire-and-forget applies
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        // Detach from the compositor process group; never block the VR poll loop.
+        setsid();
+        int fd = open("/dev/null", O_RDWR);
+        if (fd >= 0) { dup2(fd, 0); dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+        std::vector<char *> argv;
+        argv.push_back(const_cast<char *>(bin.c_str()));
+        for (const char *a : args) argv.push_back(const_cast<char *>(a));
+        argv.push_back(nullptr);
+        execv(bin.c_str(), argv.data());
+        _exit(127);
+    }
+}
+
 enum class Drag { None, Move, Resize, Roll };
 enum class Mode { Always, Dashboard, Gesture, Toggle };
 enum class Lasers { Always, OutsideGames, Dashboard };
@@ -199,40 +391,67 @@ constexpr double kRollStep = 5;      // degrees per scroll notch on the roll but
 constexpr float kChromeIdle = 0.55f; // the controls' opacity without a laser on them
 constexpr long kControlsLinger = 35; // ticks (~0.4 s) the controls stay after a laser leaves
 long g_tick = 0;                     // ft_vr_poll calls
-constexpr vr::TrackedDeviceIndex_t kNone = vr::k_unTrackedDeviceIndexInvalid;
+constexpr vr::TrackedDeviceIndex_t kNone = kNoneEarly;
+constexpr int kSlotCount = 6;
+double g_followLagMs = 120;
+int g_currentSlot = 0;
+bool g_slotFilled[kSlotCount] = {};
+Clock::time_point g_lastFollow = Clock::now();
 
 struct Screen {
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid, bar = vr::k_ulOverlayHandleInvalid,
                           handle = vr::k_ulOverlayHandleInvalid, curveButton = vr::k_ulOverlayHandleInvalid,
-                          rollButton = vr::k_ulOverlayHandleInvalid;
+                          rollButton = vr::k_ulOverlayHandleInvalid,
+                          anchorButton = vr::k_ulOverlayHandleInvalid;
+    vr::VROverlayHandle_t slotButton[kSlotCount] = {};
     int width = 0, height = 0;    // current buffer size (mouse scale)
     double metres = 1;
     double curve = 0;             // cylinder radius in metres; 0 = flat
     const void *shown = nullptr;  // a frame arrived
     bool visible = false;         // shown in VR right now
-    float alpha = 1;
-    vr::TrackedDeviceIndex_t pinned = kNone;  // riding on this device (controller or HMD)
-    Mat pinRel = Identity();                  // anchor device -> screen
-    Mat pose = Identity();                    // where it is in the room, when not pinned
+    float userOpacity = 1.f;
+    float visibilityFade = 1.f;
+    float attentionFade = 1.f;
+    bool attentionEnabled = false;
+    double attentionAngle = 25;
+    double attentionBand = 15;
+    float attentionMin = 0.25f;
+    bool attentionOn = false;  // hysteresis latch for head-gaze attention
+    AnchorMode anchor = AnchorMode::World;
+    vr::TrackedDeviceIndex_t pinned = kNone;  // rigid tracked-device pin only
+    Mat pinRel = Identity();                  // reference/device -> screen
+    Mat pose = Identity();                    // room pose (smoothed for soft follow)
     Drag drag = Drag::None;
     vr::TrackedDeviceIndex_t dragDevice = kNone;
     Mat dragRel = Identity();                 // device -> screen, while moving
     double grabX = 0, grabY = 0;              // resize: the grab point relative to the corner
     Mat rollFrom = Identity();                // roll: the pose at the press (pinRel when pinned)
     double rollAngle = 0;                     // roll: the laser's angle around the centre then
-    bool hover[4] = {};                       // a laser is on the bar, curve, roll, resize control
+    bool hover[4] = {};                       // bar, curve, roll, resize
+    bool hoverAnchor = false;
+    bool hoverSlot[kSlotCount] = {};
     bool lasers = true;                       // MakeOverlaysInteractiveIfVisible is set
     float controls = 0;                       // the controls' fade, 0 (hidden) .. 1
     bool controlsUp = false;                  // the controls' overlays are shown
     long nearUntil = 0;                       // a laser was near the controls until this tick
     vr::TrackedDeviceIndex_t pinTarget = kNone;  // moving: rides on this device when let go
     vr::TrackedDeviceIndex_t onWrist = kNone;    // moving: the laser is in this controller's ring
+    AnchorMode dragRestore = AnchorMode::World;  // soft/yaw/pos follow reapplied after a move
     bool barLit = false;
     double chrome = 0.3;          // the bar's width; the other controls follow it (ChromeSize)
     double grip = 0.04;           // the corner tab's and the round buttons' size
     double heightMetres() const { return width > 0 ? metres * height / width : metres * 9 / 16; }
-    std::array<vr::VROverlayHandle_t, 4> Controls() const { return {bar, curveButton, rollButton, handle}; }
-    std::array<vr::VROverlayHandle_t, 5> All() const { return {overlay, bar, curveButton, rollButton, handle}; }
+    float ComposedAlpha() const { return userOpacity * visibilityFade * attentionFade; }
+    std::vector<vr::VROverlayHandle_t> Controls() const {
+        std::vector<vr::VROverlayHandle_t> out = {bar, curveButton, rollButton, handle, anchorButton};
+        for (int i = 0; i < kSlotCount; ++i) out.push_back(slotButton[i]);
+        return out;
+    }
+    std::vector<vr::VROverlayHandle_t> All() const {
+        auto out = Controls();
+        out.insert(out.begin(), overlay);
+        return out;
+    }
 };
 std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
@@ -336,6 +555,57 @@ std::vector<uint8_t> RollTexture(int n) {
             // The head at 0 degrees, pointing up (the way the arc turns there).
             const double hx = u - 0.48, hy = v + 0.02;
             return hy >= 0 && hy <= 0.3 && std::fabs(hx) <= 0.24 * (1 - hy / 0.3);
+        },
+        DiscRim);
+}
+
+std::vector<uint8_t> DigitTexture(int n, int digit, bool lit) {
+    // Simple seven-segment-ish digit in a disc; lit = current slot.
+    auto on = [digit](int seg) {
+        // segments: 0 top, 1 UL, 2 UR, 3 mid, 4 LL, 5 LR, 6 bot
+        static const int bits[10] = {0x77, 0x24, 0x5D, 0x6D, 0x2E, 0x6B, 0x7B, 0x25, 0x7F, 0x6F};
+        return (bits[digit % 10] >> seg) & 1;
+    };
+    return ControlTexture(
+        n, InDisc,
+        [&](double u, double v) {
+            const double t = 0.12;
+            if (on(0) && v > 0.45 && v < 0.45 + t && std::fabs(u) < 0.35) return true;
+            if (on(6) && v < -0.45 && v > -0.45 - t && std::fabs(u) < 0.35) return true;
+            if (on(3) && std::fabs(v) < t / 2 && std::fabs(u) < 0.35) return true;
+            if (on(1) && u < -0.25 && u > -0.25 - t && v > 0 && v < 0.45) return true;
+            if (on(2) && u > 0.25 && u < 0.25 + t && v > 0 && v < 0.45) return true;
+            if (on(4) && u < -0.25 && u > -0.25 - t && v < 0 && v > -0.45) return true;
+            if (on(5) && u > 0.25 && u < 0.25 + t && v < 0 && v > -0.45) return true;
+            return false;
+        },
+        lit ? [](double u, double v) { return u * u + v * v > 0.7 * 0.7; } : DiscRim);
+}
+
+std::vector<uint8_t> AnchorTexture(int n, AnchorMode mode) {
+    // Glyph hints: W / H / Y / P
+    const char ch = mode == AnchorMode::HeadSoft || mode == AnchorMode::HeadRigid ? 'H'
+                  : mode == AnchorMode::YawFollow                                 ? 'Y'
+                  : mode == AnchorMode::PositionFollow                            ? 'P'
+                                                                                  : 'W';
+    return ControlTexture(
+        n, InDisc,
+        [ch](double u, double v) {
+            // crude letter strokes in the disc
+            if (ch == 'W')
+                return (std::fabs(u + 0.35) < 0.08 && v > -0.4 && v < 0.4) ||
+                       (std::fabs(u - 0.35) < 0.08 && v > -0.4 && v < 0.4) ||
+                       (std::fabs(u) < 0.08 && v > -0.4 && v < 0.05) ||
+                       (std::fabs(v + 0.35 - std::fabs(u) * 0.4) < 0.08 && std::fabs(u) < 0.35);
+            if (ch == 'H')
+                return (std::fabs(u + 0.28) < 0.09 && std::fabs(v) < 0.4) ||
+                       (std::fabs(u - 0.28) < 0.09 && std::fabs(v) < 0.4) || (std::fabs(v) < 0.08 && std::fabs(u) < 0.28);
+            if (ch == 'Y')
+                return (std::fabs(v - std::fabs(u) * 0.9) < 0.09 && v > 0 && std::fabs(u) < 0.35) ||
+                       (std::fabs(u) < 0.09 && v < 0.1 && v > -0.4);
+            // P
+            return (std::fabs(u + 0.25) < 0.09 && std::fabs(v) < 0.4) ||
+                   (v > 0.05 && std::fabs(std::hypot(u - 0.05, v - 0.2) - 0.22) < 0.09 && u > -0.1);
         },
         DiscRim);
 }
@@ -492,13 +762,23 @@ Mat BarOffset(const Screen &s) { return OnSurface(s, 0, BarY(s), 0.003); }
 
 // Put the bar, the curve button, and the corner tab under the screen (same parent: the
 // room or the controller), sized for the screen and its distance, and on its surface.
-// Where each control sits, relative to the screen: bar, curve, roll, resize tab.
-std::array<Mat, 4> ControlOffsets(const Screen &s) {
+// Where each control sits relative to the screen: bar, curve, roll, resize, then
+// anchor cycle, then profile slots 1..6 to the left of the bar.
+std::vector<Mat> ControlOffsets(const Screen &s) {
     const double h = s.heightMetres(), bar = s.chrome, button = s.grip, gap = bar * 0.06;
-    return {BarOffset(s), OnSurface(s, bar / 2 + gap + button / 2, BarY(s), 0.003),
-            OnSurface(s, bar / 2 + gap * 2 + button * 1.5, BarY(s), 0.003),
-            // The tab's top left corner is the screen's bottom right corner.
-            OnSurface(s, s.metres / 2 + s.grip / 2, -(h / 2 + s.grip / 2), 0.003)};
+    std::vector<Mat> out;
+    out.push_back(BarOffset(s));
+    out.push_back(OnSurface(s, bar / 2 + gap + button / 2, BarY(s), 0.003));
+    out.push_back(OnSurface(s, bar / 2 + gap * 2 + button * 1.5, BarY(s), 0.003));
+    out.push_back(OnSurface(s, s.metres / 2 + s.grip / 2, -(h / 2 + s.grip / 2), 0.003));
+    // Anchor button just left of the bar.
+    out.push_back(OnSurface(s, -(bar / 2 + gap + button / 2), BarY(s), 0.003));
+    // Slots further left: 1 nearest the bar … 6 farthest.
+    for (int i = 0; i < kSlotCount; ++i) {
+        const double x = -(bar / 2 + gap * 2 + button * 1.5 + i * (button + gap));
+        out.push_back(OnSurface(s, x, BarY(s), 0.003));
+    }
+    return out;
 }
 
 void PlaceChrome(Screen &s) {
@@ -509,22 +789,118 @@ void PlaceChrome(Screen &s) {
     vr::VROverlay()->SetOverlayWidthInMeters(s.curveButton, float(button));
     vr::VROverlay()->SetOverlayWidthInMeters(s.rollButton, float(button));
     vr::VROverlay()->SetOverlayWidthInMeters(s.handle, float(s.grip));
-    // Curved, the bar bends with the screen's bottom edge.
+    vr::VROverlay()->SetOverlayWidthInMeters(s.anchorButton, float(button));
+    for (int i = 0; i < kSlotCount; ++i)
+        vr::VROverlay()->SetOverlayWidthInMeters(s.slotButton[i], float(button));
     vr::VROverlay()->SetOverlayCurvature(s.bar, s.curve > 0 ? float(std::min(1.0, bar / (2 * M_PI * s.curve))) : 0.f);
-    const std::pair<vr::VROverlayHandle_t, Mat> parts[] = {
-        {s.bar, offsets[0]}, {s.curveButton, offsets[1]}, {s.rollButton, offsets[2]}, {s.handle, offsets[3]}};
+    auto controls = s.Controls();
     if (s.pinned != kNone) {
-        for (const auto &[o, off] : parts) {
-            const Mat m = Mul(s.pinRel, off);
-            vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(o, s.pinned, &m);
+        for (size_t i = 0; i < controls.size() && i < offsets.size(); ++i) {
+            const Mat m = Mul(s.pinRel, offsets[i]);
+            vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(controls[i], s.pinned, &m);
         }
         return;
     }
     Mat p;
     if (!ScreenPose(s, &p)) return;
-    for (const auto &[o, off] : parts) {
-        const Mat m = Mul(p, off);
-        vr::VROverlay()->SetOverlayTransformAbsolute(o, vr::TrackingUniverseStanding, &m);
+    for (size_t i = 0; i < controls.size() && i < offsets.size(); ++i) {
+        const Mat m = Mul(p, offsets[i]);
+        vr::VROverlay()->SetOverlayTransformAbsolute(controls[i], vr::TrackingUniverseStanding, &m);
+    }
+}
+
+void SetAbsolute(Screen &s, const Mat &pose) {
+    s.anchor = AnchorMode::World;
+    s.pinned = kNone;
+    s.pose = pose;
+    vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &pose);
+    PlaceChrome(s);
+}
+
+void SetFollow(Screen &s, AnchorMode mode, const Mat &rel) {
+    // Capture what's on screen *before* changing mode so soft follow can seed from it
+    // (avoids a pop when a profile pins after a world-space transition).
+    Mat seed;
+    const bool haveSeed = ScreenPose(s, &seed);
+
+    s.anchor = mode;
+    s.pinRel = rel;
+    if (IsRigidDevice(mode)) {
+        const vr::TrackedDeviceIndex_t dev = DeviceForMode(mode);
+        Mat c;
+        if (dev == kNone || !DevicePose(dev, &c)) return;
+        s.pinned = dev;
+        vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(s.overlay, dev, &s.pinRel);
+        PlaceChrome(s);
+        return;
+    }
+    s.pinned = kNone;
+    if (haveSeed) {
+        s.pose = seed;
+    } else {
+        Mat hmd;
+        if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) hmd = Identity();
+        s.pose = Mul(ReferenceFrame(mode, hmd), rel);
+    }
+    vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &s.pose);
+    PlaceChrome(s);
+}
+
+void Pin(Screen &s, vr::TrackedDeviceIndex_t dev, const Mat &rel) {
+    // Wrist / legacy path: map device to mode.
+    AnchorMode mode = AnchorMode::World;
+    if (dev == vr::k_unTrackedDeviceIndex_Hmd) mode = AnchorMode::HeadRigid;
+    else if (!std::strcmp(AnchorName(dev), "left")) mode = AnchorMode::Left;
+    else if (!std::strcmp(AnchorName(dev), "right")) mode = AnchorMode::Right;
+    else return;
+    SetFollow(s, mode, rel);
+}
+
+void EndDrag(Screen &s);  // defined with drag handling below
+
+void RefreshSlotTextures(Screen &s) {
+    for (int i = 0; i < kSlotCount; ++i) {
+        if (s.slotButton[i] == vr::k_ulOverlayHandleInvalid) continue;
+        const bool lit = (i + 1) == g_currentSlot;
+        auto px = DigitTexture(64, i + 1, lit);
+        vr::VROverlay()->SetOverlayRaw(s.slotButton[i], px.data(), 64, 64, 4);
+    }
+    if (s.anchorButton != vr::k_ulOverlayHandleInvalid) {
+        auto px = AnchorTexture(64, s.anchor);
+        vr::VROverlay()->SetOverlayRaw(s.anchorButton, px.data(), 64, 64, 4);
+    }
+}
+
+void CycleScreenAnchor(Screen &s) {
+    Mat world;
+    if (!ScreenPose(s, &world)) return;
+    EndDrag(s);
+    const AnchorMode next = CycleAnchor(s.anchor);
+    if (next == AnchorMode::World) {
+        SetAbsolute(s, world);
+    } else {
+        Mat hmd;
+        if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+        SetFollow(s, next, Mul(Inverse(ReferenceFrame(next, hmd)), world));
+    }
+    RefreshSlotTextures(s);
+    std::printf("screen: anchor %s\n", AnchorModeName(s.anchor));
+}
+
+void UpdateFollow() {
+    const auto now = Clock::now();
+    const double dt = std::chrono::duration<double>(now - g_lastFollow).count();
+    g_lastFollow = now;
+    if (dt <= 0 || dt > 0.25) return;  // skip huge stalls
+    Mat hmd;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+    const double tau = g_followLagMs / 1000.0;
+    for (auto &[i, s] : g_screens) {
+        if (s.drag != Drag::None || !IsSoftFollow(s.anchor)) continue;
+        const Mat target = Mul(ReferenceFrame(s.anchor, hmd), s.pinRel);
+        SmoothToward(&s.pose, target, dt, tau);
+        vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &s.pose);
+        PlaceChrome(s);
     }
 }
 
@@ -540,20 +916,6 @@ void RefreshChrome() {
         if (std::fabs(s.chrome - before) > before * 0.08) PlaceChrome(s);
         else s.chrome = before;
     }
-}
-
-void SetAbsolute(Screen &s, const Mat &pose) {
-    s.pinned = kNone;
-    s.pose = pose;
-    vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &pose);
-    PlaceChrome(s);
-}
-
-void Pin(Screen &s, vr::TrackedDeviceIndex_t dev, const Mat &rel) {
-    s.pinned = dev;
-    s.pinRel = rel;
-    vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(s.overlay, dev, &s.pinRel);
-    PlaceChrome(s);
 }
 
 void SetWidth(Screen &s, double metres) {
@@ -628,20 +990,34 @@ bool ModeVisible() {
 // The screen at its alpha; each control dimmer (kChromeIdle) unless a laser is on it or
 // it's being dragged.
 void ApplyAlpha(const Screen &s) {
-    vr::VROverlay()->SetOverlayAlpha(s.overlay, s.alpha);
-    const bool active[4] = {s.hover[0] || s.drag == Drag::Move, s.hover[1], s.hover[2] || s.drag == Drag::Roll,
-                            s.hover[3] || s.drag == Drag::Resize};
+    const float alpha = s.ComposedAlpha();
+    vr::VROverlay()->SetOverlayAlpha(s.overlay, alpha);
     const auto controls = s.Controls();
-    for (int k = 0; k < 4; ++k)
-        vr::VROverlay()->SetOverlayAlpha(controls[k], s.alpha * s.controls * (active[k] ? 1.f : kChromeIdle));
+    for (size_t k = 0; k < controls.size(); ++k) {
+        bool active = false;
+        float fill = 1.f;
+        if (k == 0) active = s.hover[0] || s.drag == Drag::Move;
+        else if (k == 1) active = s.hover[1];
+        else if (k == 2) active = s.hover[2] || s.drag == Drag::Roll;
+        else if (k == 3) active = s.hover[3] || s.drag == Drag::Resize;
+        else if (k == 4) active = s.hoverAnchor;
+        else if (k >= 5 && k < 5 + kSlotCount) {
+            active = s.hoverSlot[k - 5];
+            fill = g_slotFilled[k - 5] ? 1.f : 0.35f;
+        }
+        vr::VROverlay()->SetOverlayAlpha(controls[k], alpha * s.controls * (active ? 1.f : kChromeIdle) * fill);
+    }
 }
 
-void SetVisible(Screen &s, bool visible, float alpha) {
-    if (visible && std::fabs(alpha - s.alpha) > 0.01f) {
-        s.alpha = alpha;
-        ApplyAlpha(s);
+void SetVisible(Screen &s, bool visible, float visibilityFade) {
+    s.visibilityFade = visibilityFade;
+    const float alpha = s.ComposedAlpha();
+    if (visible) ApplyAlpha(s);
+    if (visible == s.visible) {
+        // Still refresh alpha when factors change while shown.
+        if (visible) ApplyAlpha(s);
+        return;
     }
-    if (visible == s.visible) return;
     s.visible = visible;
     if (visible) {
         vr::VROverlay()->ShowOverlay(s.overlay);
@@ -659,18 +1035,43 @@ void UpdateVisibility() {
     const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
     for (auto &[i, s] : g_screens) {
         bool visible = s.shown && (shared || s.drag != Drag::None);
-        float alpha = 1;
+        float visFade = 1;
         Mat p;
-        // Wrist fade is only for controller-pinned screens. Head-anchored HUDs stay on
-        // under the shared visibility rules (they'd always face you otherwise).
+        // Wrist fade is only for controller-pinned screens.
         if (visible && s.pinned != kNone && IsHandController(s.pinned) && s.drag == Drag::None && haveHead &&
             ScreenPose(s, &p)) {
-            // Fully inside the wrist angle, fading out over the last kFade degrees, gone beyond.
             const double a = FacingAngle(p, head);
-            alpha = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
-            visible = alpha > 0.02f;
+            visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
+            visible = visFade > 0.02f;
         }
-        SetVisible(s, visible, alpha);
+        // Head-gaze attention (HMD forward, not eye tracking). Skipped for head-soft/head-rigid
+        // because those screens stay locked in view once caught up — angle-to-panel is meaningless.
+        float att = 1.f;
+        if (visible && s.attentionEnabled && AttentionApplies(s.anchor) && s.drag == Drag::None && haveHead &&
+            ScreenPose(s, &p)) {
+            double f[3], to[3] = {p.m[0][3] - head.m[0][3], p.m[1][3] - head.m[1][3], p.m[2][3] - head.m[2][3]};
+            Column(head, 2, f);  // +Z points backward
+            const double len = std::sqrt(Dot3(to, to)) + 1e-9;
+            const double ang = std::acos(std::clamp(-Dot3(f, to) / len, -1.0, 1.0)) * 180 / M_PI;
+            // 3° hysteresis on the inner edge to limit flicker at the attention boundary.
+            constexpr double kHyst = 3.0;
+            const double inner = s.attentionOn ? s.attentionAngle + kHyst : s.attentionAngle;
+            const double outer = s.attentionAngle + s.attentionBand;
+            if (ang <= inner) {
+                att = 1.f;
+                s.attentionOn = true;
+            } else if (ang >= outer) {
+                att = s.attentionMin;
+                s.attentionOn = false;
+            } else {
+                const double u = (ang - inner) / std::max(1e-3, outer - inner);
+                att = float(1.0 - u * (1.0 - s.attentionMin));
+            }
+        } else if (!s.attentionEnabled || !AttentionApplies(s.anchor)) {
+            s.attentionOn = false;
+        }
+        s.attentionFade = att;
+        SetVisible(s, visible, visFade);
     }
 }
 
@@ -705,7 +1106,7 @@ void UpdateControls() {
             const auto offsets = ControlOffsets(s);
             for (double f : {-0.5, -0.25, 0.0, 0.25, 0.5})
                 spots.push_back(Mul(p, Mul(offsets[0], Translation(f * s.chrome, 0, 0))));
-            for (int k = 1; k < 4; ++k) spots.push_back(Mul(p, offsets[k]));
+            for (size_t k = 1; k < offsets.size(); ++k) spots.push_back(Mul(p, offsets[k]));
             const double reach = std::max(s.grip * 1.5, s.chrome * 0.12);
             for (const Mat &d : lasers) {
                 const double o[3] = {d.m[0][3], d.m[1][3], d.m[2][3]}, dir[3] = {-d.m[0][2], -d.m[1][2], -d.m[2][2]};
@@ -723,7 +1124,9 @@ void UpdateControls() {
                 }
             }
         }
-        const bool inUse = s.drag != Drag::None || s.hover[0] || s.hover[1] || s.hover[2] || s.hover[3];
+        bool anyHover = s.hover[0] || s.hover[1] || s.hover[2] || s.hover[3] || s.hoverAnchor;
+        for (int i = 0; i < kSlotCount; ++i) anyHover = anyHover || s.hoverSlot[i];
+        const bool inUse = s.drag != Drag::None || anyHover;
         const bool want = s.visible && (inUse || g_tick < s.nearUntil);
         // The controls stay shown while their screen is, just fully transparent when not
         // wanted: SteamVR's laser still hits them, and the hover event brings them in, for
@@ -830,10 +1233,14 @@ void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
     Mat d, p;
     if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) return;
     s.pinTarget = kNone;
+    s.dragRestore = s.anchor;
     if (s.pinned != kNone && mode == Drag::Move) {
         // Carried freely; let go, it goes back on the same wrist (unless disarmed).
         s.pinTarget = s.pinned;
-        SetAbsolute(s, p);
+        s.pinned = kNone;
+        s.pose = p;
+        vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &p);
+        PlaceChrome(s);
     }
     s.drag = mode;
     s.dragDevice = dev;
@@ -868,12 +1275,21 @@ void EndDrag(Screen &s) {
 void FinishDrag(Screen &s, int index) {
     const bool moved = s.drag == Drag::Move;
     const vr::TrackedDeviceIndex_t target = s.pinTarget;
+    const AnchorMode restore = s.dragRestore;
     EndDrag(s);
+    s.dragRestore = AnchorMode::World;
     Mat c, p;
     if (!moved) return;
     if (target != kNone && DevicePose(target, &c) && ScreenPose(s, &p)) {
         Pin(s, target, Mul(Inverse(c), p));
         std::printf("screen %d: pinned to %s\n", index + 1, AnchorName(target));
+        return;
+    }
+    if (IsSoftFollow(restore) && ScreenPose(s, &p)) {
+        Mat hmd;
+        if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+        SetFollow(s, restore, Mul(Inverse(ReferenceFrame(restore, hmd)), p));
+        RefreshSlotTextures(s);
     }
 }
 
@@ -1076,6 +1492,14 @@ void ft_vr_screen_create(int index, double metres, int count) {
     std::snprintf(key, sizeof key, "frametop.screen.%d.resize", index + 1);
     std::snprintf(name, sizeof name, "Screen %d: resize", index + 1);
     s.handle = MakeChrome(key, name, corner, 64, 64);
+    std::snprintf(key, sizeof key, "frametop.screen.%d.anchor", index + 1);
+    std::snprintf(name, sizeof name, "Screen %d: anchor", index + 1);
+    s.anchorButton = MakeChrome(key, name, AnchorTexture(64, AnchorMode::World), 64, 64);
+    for (int i = 0; i < kSlotCount; ++i) {
+        std::snprintf(key, sizeof key, "frametop.screen.%d.slot%d", index + 1, i + 1);
+        std::snprintf(name, sizeof name, "Screen %d: profile %d", index + 1, i + 1);
+        s.slotButton[i] = MakeChrome(key, name, DigitTexture(64, i + 1, false), 64, 64);
+    }
     ApplyAlpha(s);
     // Until the layout places it: 2 m ahead of the head, in a row, screen 1 on the left.
     RefreshPoses();
@@ -1143,6 +1567,7 @@ void ft_vr_forget(const void *key) {
 
 void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     RefreshPoses();
+    UpdateFollow();
     for (auto &[index, s] : g_screens) {
         vr::VREvent_t ev;
         // The screen itself: input for KWin.
@@ -1223,6 +1648,27 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                 ApplyRoll(s, ev.data.scroll.ydelta * kRollStep * M_PI / 180);
             }
         }
+        auto hoverExtra = [&](bool *flag) {
+            const bool on = ev.eventType == vr::VREvent_MouseMove || ev.eventType == vr::VREvent_FocusEnter;
+            if (!on && ev.eventType != vr::VREvent_FocusLeave) return;
+            if (*flag != on) *flag = on, ApplyAlpha(s);
+        };
+        while (vr::VROverlay()->PollNextOverlayEvent(s.anchorButton, &ev, sizeof ev)) {
+            hoverExtra(&s.hoverAnchor);
+            if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
+                CycleScreenAnchor(s);
+        }
+        for (int si = 0; si < kSlotCount; ++si) {
+            while (vr::VROverlay()->PollNextOverlayEvent(s.slotButton[si], &ev, sizeof ev)) {
+                hoverExtra(&s.hoverSlot[si]);
+                if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left) {
+                    if (!g_slotFilled[si]) continue;
+                    char slot[24];
+                    std::snprintf(slot, sizeof slot, "profile.slot.%d", si + 1);
+                    SpawnLayoutAsync({"action", slot});
+                }
+            }
+        }
         if (s.drag != Drag::None) UpdateDrag(s, index);
     }
     RefreshChrome();
@@ -1271,7 +1717,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
     RefreshPoses();
     int n;
     double x, y, z, yaw, pitch, roll, w;
-    char word[16], hand[16];
+    char word[16], hand[32], filled[64];
     float r[12];
     auto each = [&](const char *which, auto fn) -> bool {  // "all" or a screen number
         if (std::strcmp(which, "all") == 0) {
@@ -1305,42 +1751,99 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         ApplyCurve(*s);
         PlaceChrome(*s);
         std::snprintf(reply, size, "ok");
-    } else if (const int got = std::sscanf(cmd, "pin %15s %15s %f %f %f %f %f %f %f %f %f %f %f %f", word, hand,
+    } else if (const int got = std::sscanf(cmd, "pin %15s %31s %f %f %f %f %f %f %f %f %f %f %f %f", word, hand,
                                            &r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8], &r[9],
                                            &r[10], &r[11]);
                got >= 2) {
-        if (std::strcmp(hand, "left") && std::strcmp(hand, "right") && std::strcmp(hand, "head"))
-            return (void)std::snprintf(reply, size, "error anchors: left right head");
-        const vr::TrackedDeviceIndex_t dev = AnchorDevice(hand);
-        Mat c;
-        if (dev == kNone || !DevicePose(dev, &c))
-            return (void)std::snprintf(reply, size, "error no %s tracked", hand);
+        const AnchorMode mode = ParseAnchorMode(hand);
+        if (std::strcmp(hand, "left") && std::strcmp(hand, "right") && std::strcmp(hand, "head") &&
+            std::strcmp(hand, "head-rigid") && std::strcmp(hand, "yaw-follow") &&
+            std::strcmp(hand, "position-follow") && std::strcmp(hand, "world"))
+            return (void)std::snprintf(reply, size,
+                                       "error anchors: left right head head-rigid yaw-follow position-follow world");
         Mat rel = Identity();
         for (int k = 0; k < 12; ++k) rel.m[k / 4][k % 4] = r[k];
         const bool found = each(word, [&](Screen &s) {
-            Mat p;
+            Mat p, hmd;
             EndDrag(s);
-            if (got == 14) Pin(s, dev, rel);
-            else if (ScreenPose(s, &p)) Pin(s, dev, Mul(Inverse(c), p));
+            if (mode == AnchorMode::World) {
+                if (ScreenPose(s, &p)) SetAbsolute(s, p);
+                return;
+            }
+            if (got == 14) {
+                SetFollow(s, mode, rel);
+                return;
+            }
+            if (!ScreenPose(s, &p)) return;
+            if (IsRigidDevice(mode)) {
+                const auto dev = DeviceForMode(mode);
+                Mat c;
+                if (dev == kNone || !DevicePose(dev, &c)) return;
+                SetFollow(s, mode, Mul(Inverse(c), p));
+            } else {
+                if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+                SetFollow(s, mode, Mul(Inverse(ReferenceFrame(mode, hmd)), p));
+            }
+            RefreshSlotTextures(s);
         });
         std::snprintf(reply, size, found ? "ok" : "error no such screen");
     } else if (std::sscanf(cmd, "unpin %15s", word) == 1) {
         const bool found = each(word, [&](Screen &s) {
             Mat p;
-            if (s.pinned != kNone && ScreenPose(s, &p)) SetAbsolute(s, p);
+            if (ScreenPose(s, &p)) SetAbsolute(s, p);
+            RefreshSlotTextures(s);
         });
         std::snprintf(reply, size, found ? "ok" : "error no such screen");
+    } else if (std::sscanf(cmd, "opacity %d %lf", &n, &w) == 2) {
+        Screen *s = Find(n);
+        if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
+        s->userOpacity = float(std::clamp(w, 0.0, 1.0));
+        ApplyAlpha(*s);
+        std::snprintf(reply, size, "ok %.3f", s->userOpacity);
+    } else if (std::sscanf(cmd, "attention %d %15s %lf %lf %lf", &n, word, &x, &y, &z) >= 2) {
+        Screen *s = Find(n);
+        if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
+        if (!std::strcmp(word, "off")) {
+            s->attentionEnabled = false;
+            s->attentionFade = 1.f;
+        } else {
+            s->attentionEnabled = true;
+            if (std::sscanf(cmd, "attention %*d %*s %lf %lf %lf", &x, &y, &z) >= 1)
+                s->attentionAngle = std::clamp(x, 5.0, 90.0);
+            if (std::sscanf(cmd, "attention %*d %*s %*lf %lf %lf", &y, &z) >= 1)
+                s->attentionBand = std::clamp(y, 1.0, 60.0);
+            if (std::sscanf(cmd, "attention %*d %*s %*lf %*lf %lf", &z) == 1)
+                s->attentionMin = float(std::clamp(z, 0.0, 1.0));
+        }
+        UpdateVisibility();
+        std::snprintf(reply, size, "ok");
+    } else if (std::sscanf(cmd, "followlag %lf", &w) == 1) {
+        g_followLagMs = std::clamp(w, 0.0, 1000.0);
+        std::snprintf(reply, size, "ok %.0f", g_followLagMs);
+    } else if (std::sscanf(cmd, "slots-state %d %63s", &n, filled) == 2) {
+        g_currentSlot = std::clamp(n, 0, kSlotCount);
+        for (int i = 0; i < kSlotCount; ++i) g_slotFilled[i] = false;
+        if (std::strcmp(filled, "-")) {
+            char *p = filled;
+            while (*p) {
+                int slot = std::strtol(p, &p, 10);
+                if (slot >= 1 && slot <= kSlotCount) g_slotFilled[slot - 1] = true;
+                if (*p == ',') ++p;
+            }
+        }
+        for (auto &[i, s] : g_screens) RefreshSlotTextures(s);
+        std::snprintf(reply, size, "ok");
     } else if (std::sscanf(cmd, "get %d", &n) == 1) {
         Screen *s = Find(n);
         Mat m;
         if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
         if (!ScreenPose(*s, &m)) return (void)std::snprintf(reply, size, "error screen %d has no pose", n);
         int len = std::snprintf(reply, size,
-                                "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %s",
+                                "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %.3f %s",
                                 m.m[0][3], m.m[1][3], m.m[2][3], m.m[0][0], m.m[1][0], m.m[2][0], m.m[0][1], m.m[1][1],
                                 m.m[2][1], m.m[0][2], m.m[1][2], m.m[2][2], s->metres, s->heightMetres(), s->curve,
-                                s->pinned == kNone ? "none" : AnchorName(s->pinned));
-        if (s->pinned != kNone)
+                                s->userOpacity, AnchorModeName(s->anchor));
+        if (s->anchor != AnchorMode::World)
             for (int k = 0; k < 12 && len < size; ++k)
                 len += std::snprintf(reply + len, size - len, " %.5f", s->pinRel.m[k / 4][k % 4]);
     } else if (std::strncmp(cmd, "screens", 7) == 0) {

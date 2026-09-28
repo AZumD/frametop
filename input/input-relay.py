@@ -18,8 +18,9 @@ keyboard node for its extra buttons). Roles, from ~/.config/frametop-input.json
 Buttons and keys of pointer devices go through a per-device map to actions
 (left, right, middle, back, scroll_up, scroll_down, dashboard, recenter,
 pointer_toggle, sens_up, sens_down, layout_reset = put the desktop screens back in
-their saved layout, screens_toggle = hide or show the desktop screens, key = pass
-through as a key, none).
+their saved layout, screens_toggle = hide or show the desktop screens,
+profile_slot_1..6 / profile_next / profile_previous = apply named profile slots via
+ft-layout, key = pass through as a key, none).
 
 Keys also go to ft-screens (@ft_screens, the Frametop desktop's compositor), which
 types them into the desktop screen that has focus (not while the SteamVR dashboard is
@@ -109,11 +110,26 @@ def eviocguniq(length):
 VIRTUAL_PREFIX = "frametop virtual"
 RULES_PATH = os.path.expanduser("~/.config/frametop-input.json")
 ACTIONS = ("left", "right", "middle", "back", "scroll_up", "scroll_down", "dashboard", "recenter",
-           "pointer_toggle", "sens_up", "sens_down", "layout_reset", "screens_toggle", "key", "none")
+           "pointer_toggle", "sens_up", "sens_down", "layout_reset", "screens_toggle",
+           "profile_slot_1", "profile_slot_2", "profile_slot_3", "profile_slot_4", "profile_slot_5",
+           "profile_slot_6", "profile_next", "profile_previous", "key", "none")
 SCREENS = "\0ft_screens"
 FT_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "layout", "ft-layout")
 DEFAULT_BUTTONS = {BTN_LEFT: "left", BTN_RIGHT: "right", BTN_MIDDLE: "middle",
                    BTN_SIDE: "back", BTN_EXTRA: "back"}
+# Button-map names that route through `ft-layout action` (canonical registry in ft_layout.py).
+# screens_toggle stays a direct @ft_screens datagram for lower latency.
+LAYOUT_ACTIONS = frozenset({
+    "layout_reset",
+    "profile_slot_1", "profile_slot_2", "profile_slot_3", "profile_slot_4",
+    "profile_slot_5", "profile_slot_6", "profile_next", "profile_previous",
+})
+
+
+def spawn_layout(*args):
+    """Fire-and-forget ft-layout; never block the relay loop."""
+    subprocess.Popen([FT_LAYOUT, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def log(*args):
@@ -316,11 +332,10 @@ class Pointer:
                 self.sock.sendto(b"toggle", SCREENS)
             except OSError:
                 pass  # ft-screens not running
-        elif name == "layout_reset":
-            # Runs a few seconds and borrows the pointer; ft-layout refuses a second copy.
-            subprocess.Popen([FT_LAYOUT, "apply"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            log("layout reset")
+        elif name in LAYOUT_ACTIONS:
+            # One path with VR chrome / Quickshell: ft-layout action <name|alias>.
+            spawn_layout("action", name)
+            log(name)
         elif name in ("sens_up", "sens_down"):
             self.sensitivity *= 1.25 if name == "sens_up" else 0.8
             log(f"sensitivity {self.sensitivity:.4f} deg/count")

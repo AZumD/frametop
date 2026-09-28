@@ -39,8 +39,12 @@ ACTION_LABELS = {
     "scroll_up": "Scroll up", "scroll_down": "Scroll down", "dashboard": "Toggle SteamVR dashboard",
     "recenter": "Recenter pointer", "pointer_toggle": "Pointer on/off", "sens_up": "Faster pointer",
     "sens_down": "Slower pointer", "layout_reset": "Reset desktop screen layout",
-    "screens_toggle": "Hide/show desktop screens", "key": "Pass through as key",
-    "none": "Do nothing",
+    "screens_toggle": "Hide/show desktop screens",
+    "profile_slot_1": "Apply profile slot 1", "profile_slot_2": "Apply profile slot 2",
+    "profile_slot_3": "Apply profile slot 3", "profile_slot_4": "Apply profile slot 4",
+    "profile_slot_5": "Apply profile slot 5", "profile_slot_6": "Apply profile slot 6",
+    "profile_next": "Next profile slot", "profile_previous": "Previous profile slot",
+    "key": "Pass through as key", "none": "Do nothing",
 }
 ROLE_LABELS = {"pointer": "3D pointer", "passthrough": "Pass through", "ignore": "Ignore"}
 # Pointer settings: key, label, default, min, max, step, unit.

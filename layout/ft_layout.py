@@ -46,13 +46,19 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout plan                     print the arrangement as JSON (no VR needed)
   ft-layout scale                    per-screen scale, positions, and primary to KWin
   ft-layout screen-args              ft-screens' --screen arguments for the session script
+  ft-layout screen state --json      per-screen anchor/opacity + slot info
+  ft-layout action NAME [--duration MS]   # semantic actions (chrome / input / Quickshell)
+  ft-layout action list [--json]
   ft-layout toggle                   hide or show all screens (ft-screens)
-  ft-layout pin all|N left|right|head   pin screens to an anchor; unpin all|N
+  ft-layout pin all|N left|right|head|head-rigid|yaw-follow|position-follow
   ft-layout profile list [--json]
   ft-layout profile current [--json]
   ft-layout profile save NAME
-  ft-layout profile apply NAME [--duration MS]
+  ft-layout profile apply NAME [--duration MS]   # default duration 450; 0 = instant
   ft-layout profile delete NAME
+  ft-layout profile slot N NAME | unslot N | slots [--json]
+  ft-layout profile apply-slot N [--duration MS]
+  ft-layout profile next|previous [--duration MS]
 """
 import fcntl
 import json
@@ -82,8 +88,15 @@ DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
             "screens": [], "panel_size": list(DEFAULT_PANEL)}
 # Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
-PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin")
-ANCHORS = ("left", "right", "head")
+PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity", "attention")
+# Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
+ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
+CONTROLLER_ANCHORS = ("left", "right")
+SOFT_FOLLOW_ANCHORS = ("head", "yaw-follow", "position-follow")
+SLOT_COUNT = 6
+DEFAULT_PROFILE_DURATION_MS = 450
+DEFAULT_FOLLOW_LAG_MS = 120
+DEFAULT_OPACITY = 1.0
 
 
 def log(*args, **kwargs):
@@ -151,34 +164,71 @@ def atomic_write_json(path, data):
     os.replace(tmp, path)
 
 
+def normalize_anchor(name):
+    """Map a pin/anchor string to a canonical mode. Legacy 'head' stays 'head' (soft)."""
+    if not name or name in ("none", "world"):
+        return "world"
+    if name in ANCHOR_MODES:
+        return name
+    return None
+
+
 def pin_anchor(pin):
-    """Anchor name from a pin dict: prefer 'anchor', fall back to legacy 'hand'."""
+    """Canonical follow mode from a pin dict: prefer 'anchor', fall back to legacy 'hand'."""
     if not isinstance(pin, dict):
         return None
-    a = pin.get("anchor") or pin.get("hand")
-    return a if a in ANCHORS else None
+    return normalize_anchor(pin.get("anchor") or pin.get("hand"))
 
 
 def make_pin(anchor, rel):
-    """Pin dict for layout JSON. Keeps legacy 'hand' for left/right."""
-    pin = {"anchor": anchor, "rel": list(rel)}
-    if anchor in ("left", "right"):
-        pin["hand"] = anchor
+    """Pin dict for layout JSON. Keeps legacy 'hand' for left/right/head."""
+    anchor = normalize_anchor(anchor)
+    if not anchor or anchor == "world":
+        return None
+    pin = {"anchor": anchor, "rel": [float(v) for v in rel]}
+    if anchor in ("left", "right", "head"):
+        pin["hand"] = anchor  # iteration-1 readers; head => soft
     return pin
+
+
+def screen_opacity(entry):
+    try:
+        return max(0.0, min(1.0, float(entry.get("opacity", DEFAULT_OPACITY))))
+    except (TypeError, ValueError):
+        return DEFAULT_OPACITY
+
+
+def screen_attention(entry):
+    """Optional head-gaze attention fade settings (meaningless for locked head-follow HUDs)."""
+    a = entry.get("attention")
+    if not isinstance(a, dict):
+        return {"enabled": False, "angle": 25.0, "band": 15.0, "min": 0.25}
+    return {
+        "enabled": bool(a.get("enabled", False)),
+        "angle": float(a.get("angle", 25.0)),
+        "band": float(a.get("band", 15.0)),
+        "min": float(a.get("min", 0.25)),
+    }
 
 
 def spatial_screen(entry):
     """Profile payload for one screen (spatial only)."""
     out = {}
     for k in PROFILE_SCREEN_KEYS:
-        if k == "pin":
+        if k in ("pin", "attention"):
+            continue
+        if k == "opacity":
+            out["opacity"] = round(screen_opacity(entry), 3)
             continue
         if k in entry:
             out[k] = entry[k]
     pin = entry.get("pin")
     anchor = pin_anchor(pin)
-    if anchor and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
+    if anchor and anchor != "world" and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
         out["pin"] = make_pin(anchor, pin["rel"])
+    att = screen_attention(entry)
+    if att["enabled"]:
+        out["attention"] = att
     return out
 
 
@@ -436,14 +486,28 @@ def send_visibility(sock, layout):
 
 
 def parse_get(reply):
-    """ft-screens' "get": pose, size, curve, and the pin (anchor and device->screen)."""
+    """ft-screens' "get": pose, size, curve, opacity, anchor mode, and device->screen rel."""
     f = reply.split()[1:]
     g = list(map(float, f[:15]))
-    anchor = f[15] if len(f) > 15 else "none"
+    # Newer replies: ... curve opacity anchor [rel...]
+    # Older: ... curve anchor [rel...]
+    opacity = DEFAULT_OPACITY
+    anchor = "none"
+    rel_start = 16
+    if len(f) > 15:
+        # If field 15 looks like a float, it's opacity (new format).
+        try:
+            opacity = float(f[15])
+            anchor = f[16] if len(f) > 16 else "none"
+            rel_start = 17
+        except ValueError:
+            anchor = f[15]
+            rel_start = 16
     out = {"center": tuple(g[0:3]), "x": tuple(g[3:6]), "y": tuple(g[6:9]), "z": tuple(g[9:12]),
-           "metres": g[12], "height": g[13], "curve": g[14], "anchor": anchor, "hand": anchor}
-    if out["anchor"] != "none" and len(f) >= 28:
-        out["rel"] = [round(float(v), 5) for v in f[16:28]]
+           "metres": g[12], "height": g[13], "curve": g[14], "opacity": opacity,
+           "anchor": normalize_anchor(anchor) or "world", "hand": anchor}
+    if out["anchor"] != "world" and len(f) >= rel_start + 12:
+        out["rel"] = [round(float(v), 5) for v in f[rel_start:rel_start + 12]]
     return out
 
 
@@ -471,12 +535,65 @@ def vec_lerp(a, b, t):
 
 def apply_pin(sock, index, pin):
     anchor = pin_anchor(pin)
-    if not anchor or len(pin.get("rel", [])) != 12:
+    if not anchor or anchor == "world" or len(pin.get("rel", [])) != 12:
+        try:
+            sock.ask(f"unpin {index}")
+        except RuntimeError:
+            pass
         return
     try:
         sock.ask(f"pin {index} {anchor} " + " ".join(f"{v:.5f}" for v in pin["rel"]))
     except RuntimeError as e:
         log(f"screen {index}: {e}")  # that device isn't tracked
+
+
+def apply_opacity(sock, index, opacity):
+    try:
+        sock.ask(f"opacity {index} {float(opacity):.3f}")
+    except RuntimeError as e:
+        log(f"screen {index} opacity: {e}")
+
+
+def apply_attention(sock, index, attention):
+    att = screen_attention({"attention": attention} if isinstance(attention, dict) else {})
+    try:
+        if att["enabled"]:
+            sock.ask(f"attention {index} on {att['angle']:.1f} {att['band']:.1f} {att['min']:.3f}")
+        else:
+            sock.ask(f"attention {index} off")
+    except RuntimeError as e:
+        log(f"screen {index} attention: {e}")
+
+
+def push_slot_state(sock=None):
+    """Tell ft-screens which profile slots are filled and which is current (for chrome)."""
+    if backend() != "screens":
+        return
+    store = load_profiles()
+    slots = normalized_slots(store)
+    current = 0
+    cur_name = store.get("current")
+    for i, name in enumerate(slots, 1):
+        if name and name == cur_name:
+            current = i
+            break
+    filled = ",".join(str(i) for i, n in enumerate(slots, 1) if n) or "-"
+    cmd = f"slots-state {current} {filled}"
+    try:
+        (sock or screens_socket()).ask(cmd)
+    except RuntimeError:
+        pass
+
+
+def push_follow_lag(sock=None):
+    try:
+        ms = float(read_conf().get("FOLLOW_LAG_MS", str(DEFAULT_FOLLOW_LAG_MS)))
+    except ValueError:
+        ms = DEFAULT_FOLLOW_LAG_MS
+    try:
+        (sock or screens_socket()).ask(f"followlag {ms:.0f}")
+    except RuntimeError:
+        pass
 
 
 def place_screen(sock, index, center, face, roll, metres, curve):
@@ -499,7 +616,10 @@ def live_screen_targets(sock, layout, count, eye, heading):
             "roll": t["roll"],
             "metres": screen_metres(layout, i),
             "curve": float(entry.get("curve", 0)),
-            "pin": pin if pin_anchor(pin) and len((pin or {}).get("rel", [])) == 12 else None,
+            "opacity": screen_opacity(entry),
+            "attention": screen_attention(entry),
+            "pin": pin if pin_anchor(pin) and pin_anchor(pin) != "world"
+                         and len((pin or {}).get("rel", [])) == 12 else None,
         })
     return targets
 
@@ -515,11 +635,12 @@ def live_screen_state(sock, count):
         up = cross(g["z"], right)
         roll = math.degrees(math.atan2(dot(g["x"], up), dot(g["x"], right)))
         pin = None
-        if g["anchor"] in ANCHORS and "rel" in g:
+        if g["anchor"] != "world" and "rel" in g:
             pin = make_pin(g["anchor"], g["rel"])
         out.append({
             "center": g["center"], "face": (fyaw, fpitch), "roll": roll,
-            "metres": g["metres"], "curve": g["curve"], "pin": pin,
+            "metres": g["metres"], "curve": g["curve"], "opacity": g.get("opacity", DEFAULT_OPACITY),
+            "pin": pin,
         })
     return out
 
@@ -539,6 +660,8 @@ def transition_screens(sock, starts, targets, duration_ms):
             place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"])
             if t["pin"]:
                 apply_pin(sock, i + 1, t["pin"])
+            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+            apply_attention(sock, i + 1, t.get("attention"))
         return
     steps = max(2, int(duration * 30))  # ~30 Hz over the control socket
     t0 = time.time()
@@ -568,6 +691,9 @@ def transition_screens(sock, starts, targets, duration_ms):
     for i, t in enumerate(targets):
         if t["pin"]:
             apply_pin(sock, i + 1, t["pin"])
+        apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+        if "attention" in t:
+            apply_attention(sock, i + 1, t["attention"])
 
 
 def apply_screens(wait=0, duration_ms=0):
@@ -586,6 +712,7 @@ def apply_screens(wait=0, duration_ms=0):
     f = sock.ask("head").split()
     eye, heading = tuple(map(float, f[1:4])), float(f[4])
     send_visibility(sock, layout)
+    push_follow_lag(sock)
     targets = live_screen_targets(sock, layout, count, eye, heading)
     if duration_ms > 0:
         starts = live_screen_state(sock, count)
@@ -597,6 +724,9 @@ def apply_screens(wait=0, duration_ms=0):
             results.append(place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"]))
             if t["pin"]:
                 apply_pin(sock, i + 1, t["pin"])
+            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+            apply_attention(sock, i + 1, t.get("attention"))
+    push_slot_state(sock)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
     return results
 
@@ -613,8 +743,9 @@ def capture_screens():
         entry.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
         entry["metres"] = round(g["metres"], 4)  # resized by hand
         entry["curve"] = round(g["curve"], 3)
+        entry["opacity"] = round(float(g.get("opacity", DEFAULT_OPACITY)), 3)
         entry.pop("pin", None)
-        if g.get("anchor") in ANCHORS and "rel" in g:
+        if g.get("anchor") and g["anchor"] != "world" and "rel" in g:
             entry["pin"] = make_pin(g["anchor"], g["rel"])
         screens.append(entry)
     layout["screens"] = screens + layout.get("screens", [])[len(screens):]
@@ -752,7 +883,7 @@ def capture():
 
 def load_profiles():
     """Load profiles file. Missing/corrupt -> empty store; never touches the active layout."""
-    empty = {"current": None, "profiles": {}}
+    empty = {"current": None, "profiles": {}, "slots": [None] * SLOT_COUNT}
     try:
         with open(PROFILES_PATH) as f:
             data = json.load(f)
@@ -770,11 +901,33 @@ def load_profiles():
     current = data.get("current")
     if current is not None and current not in profiles:
         current = None
-    return {"current": current, "profiles": profiles}
+    store = {"current": current, "profiles": profiles, "slots": data.get("slots")}
+    store["slots"] = normalized_slots(store)
+    return store
 
 
 def save_profiles(store):
-    atomic_write_json(PROFILES_PATH, store)
+    out = {
+        "current": store.get("current"),
+        "profiles": store.get("profiles") or {},
+        "slots": normalized_slots(store),
+    }
+    atomic_write_json(PROFILES_PATH, out)
+
+
+def normalized_slots(store):
+    """Always SLOT_COUNT entries; unknown/missing profile names become None."""
+    raw = store.get("slots") if isinstance(store, dict) else None
+    profiles = (store.get("profiles") or {}) if isinstance(store, dict) else {}
+    out = [None] * SLOT_COUNT
+    if isinstance(raw, list):
+        for i in range(min(SLOT_COUNT, len(raw))):
+            name = raw[i]
+            if isinstance(name, str) and name in profiles:
+                out[i] = name
+            elif name in (None, "", "-"):
+                out[i] = None
+    return out
 
 
 def profile_from_layout(layout):
@@ -798,24 +951,38 @@ def merge_profile_into_layout(layout, profile):
     for i in range(count):
         entry = dict(screens[i])
         spatial = src[i] or {}
-        for k in ("pos", "face", "roll", "metres", "curve"):
+        for k in ("pos", "face", "roll", "metres", "curve", "opacity"):
             if k in spatial:
                 entry[k] = spatial[k]
+        if "opacity" not in spatial:
+            entry.setdefault("opacity", DEFAULT_OPACITY)
         entry.pop("pin", None)
         pin = spatial.get("pin")
-        if pin_anchor(pin) and len((pin or {}).get("rel", [])) == 12:
+        if pin_anchor(pin) and pin_anchor(pin) != "world" and len((pin or {}).get("rel", [])) == 12:
             entry["pin"] = make_pin(pin_anchor(pin), pin["rel"])
+        if "attention" in spatial and isinstance(spatial["attention"], dict):
+            entry["attention"] = screen_attention(spatial)
+        else:
+            entry.pop("attention", None)
         screens[i] = entry
     layout["screens"] = screens
     layout["mode"] = "custom"
     return layout
 
 
+def resolve_duration(argv, default=DEFAULT_PROFILE_DURATION_MS):
+    """--duration MS overrides; absent => default (450). Explicit 0 = instant."""
+    if "--duration" in argv:
+        return float(argv[argv.index("--duration") + 1])
+    return float(default)
+
+
 def profile_list(as_json=False):
     store = load_profiles()
     names = sorted(store["profiles"])
     if as_json:
-        print(json.dumps({"current": store["current"], "profiles": names}, separators=(",", ":")))
+        print(json.dumps({"current": store["current"], "profiles": names,
+                          "slots": store["slots"]}, separators=(",", ":")))
     else:
         for name in names:
             mark = " *" if name == store["current"] else ""
@@ -846,11 +1013,14 @@ def profile_save(name):
     store["profiles"][name] = profile_from_layout(layout)
     store["current"] = name
     save_profiles(store)
-    log(f"saved profile {name!r} ({len(store['profiles'][name]['screens'])} screen(s))")
+    push_slot_state()
+    log(f"saved profile {name!r} ({len(store['profiles'][name]['screens'])} screen(s))", file=sys.stderr)
     return 0
 
 
-def profile_apply(name, duration_ms=0):
+def profile_apply(name, duration_ms=None):
+    if duration_ms is None:
+        duration_ms = DEFAULT_PROFILE_DURATION_MS
     store = load_profiles()
     if name not in store["profiles"]:
         raise RuntimeError(f"no profile named {name!r}")
@@ -859,7 +1029,7 @@ def profile_apply(name, duration_ms=0):
     store["current"] = name
     save_profiles(store)
     apply(duration_ms=duration_ms)
-    log(f"applied profile {name!r}")
+    log(f"applied profile {name!r}", file=sys.stderr)
     return 0
 
 
@@ -870,9 +1040,220 @@ def profile_delete(name):
     del store["profiles"][name]
     if store["current"] == name:
         store["current"] = None
+    slots = normalized_slots(store)
+    store["slots"] = [None if s == name else s for s in slots]
     save_profiles(store)
-    log(f"deleted profile {name!r}")
+    push_slot_state()
+    log(f"deleted profile {name!r}", file=sys.stderr)
     return 0
+
+
+def profile_slot(slot, name):
+    slot = int(slot)
+    if not 1 <= slot <= SLOT_COUNT:
+        raise RuntimeError(f"slot must be 1..{SLOT_COUNT}")
+    store = load_profiles()
+    if name not in store["profiles"]:
+        raise RuntimeError(f"no profile named {name!r}")
+    slots = normalized_slots(store)
+    slots[slot - 1] = name
+    store["slots"] = slots
+    save_profiles(store)
+    push_slot_state()
+    log(f"slot {slot} -> {name!r}", file=sys.stderr)
+    return 0
+
+
+def profile_unslot(slot):
+    slot = int(slot)
+    if not 1 <= slot <= SLOT_COUNT:
+        raise RuntimeError(f"slot must be 1..{SLOT_COUNT}")
+    store = load_profiles()
+    slots = normalized_slots(store)
+    slots[slot - 1] = None
+    store["slots"] = slots
+    save_profiles(store)
+    push_slot_state()
+    log(f"slot {slot} cleared", file=sys.stderr)
+    return 0
+
+
+def profile_slots(as_json=False):
+    store = load_profiles()
+    slots = normalized_slots(store)
+    current_slot = 0
+    for i, name in enumerate(slots, 1):
+        if name and name == store.get("current"):
+            current_slot = i
+            break
+    if as_json:
+        print(json.dumps({"slots": [{"index": i, "profile": n} for i, n in enumerate(slots, 1)],
+                          "current": store.get("current"), "current_slot": current_slot},
+                         separators=(",", ":")))
+    else:
+        for i, name in enumerate(slots, 1):
+            mark = " *" if i == current_slot else ""
+            print(f"{i}: {name or '-'}{mark}")
+    return 0
+
+
+def profile_apply_slot(slot, duration_ms=None):
+    slot = int(slot)
+    if not 1 <= slot <= SLOT_COUNT:
+        raise RuntimeError(f"slot must be 1..{SLOT_COUNT}")
+    store = load_profiles()
+    name = normalized_slots(store)[slot - 1]
+    if not name:
+        raise RuntimeError(f"slot {slot} is empty")
+    return profile_apply(name, duration_ms=duration_ms)
+
+
+def profile_step(delta, duration_ms=None):
+    """Next/previous among filled slots, wrapping."""
+    store = load_profiles()
+    slots = normalized_slots(store)
+    filled = [i for i, n in enumerate(slots, 1) if n]
+    if not filled:
+        raise RuntimeError("no profiles assigned to slots")
+    cur = 0
+    for i, name in enumerate(slots, 1):
+        if name and name == store.get("current"):
+            cur = i
+            break
+    if cur in filled:
+        idx = filled.index(cur)
+        nxt = filled[(idx + delta) % len(filled)]
+    else:
+        nxt = filled[0 if delta >= 0 else -1]
+    return profile_apply_slot(nxt, duration_ms=duration_ms)
+
+
+def screen_state_json():
+    """Machine-readable per-screen state for Quickshell / debugging."""
+    layout = load_layout()
+    store = load_profiles()
+    slots = normalized_slots(store)
+    current_slot = 0
+    for i, name in enumerate(slots, 1):
+        if name and name == store.get("current"):
+            current_slot = i
+            break
+    screens = []
+    live = None
+    if backend() == "screens":
+        try:
+            sock = screens_socket()
+            live = [parse_get(sock.ask(f"get {i + 1}")) for i in range(screen_count(layout))]
+        except RuntimeError:
+            live = None
+    for i in range(screen_count(layout)):
+        entry = screen_entry(layout, i)
+        pin = entry.get("pin")
+        row = {
+            "index": i + 1,
+            "anchor": pin_anchor(pin) or "world",
+            "opacity": screen_opacity(entry),
+            "attention": screen_attention(entry),
+            "metres": screen_metres(layout, i),
+            "curve": float(entry.get("curve", 0)),
+        }
+        if live and i < len(live):
+            row["live_anchor"] = live[i].get("anchor", "world")
+            row["live_opacity"] = live[i].get("opacity", DEFAULT_OPACITY)
+        screens.append(row)
+    print(json.dumps({
+        "current_profile": store.get("current"),
+        "current_slot": current_slot,
+        "slots": slots,
+        "follow_lag_ms": float(read_conf().get("FOLLOW_LAG_MS", DEFAULT_FOLLOW_LAG_MS)),
+        "screens": screens,
+    }, separators=(",", ":")))
+    return 0
+
+
+# ---------------------------------------------------------------- Semantic actions
+# One name → one implementation. VR chrome, input-relay button maps, Display Settings,
+# Quickshell, and future gestures should call these instead of re-encoding CLI argv.
+
+# Canonical dotted names (preferred for new callers / Quickshell).
+SEMANTIC_ACTIONS = tuple(
+    [f"profile.slot.{i}" for i in range(1, SLOT_COUNT + 1)]
+    + ["profile.next", "profile.previous", "layout.reset", "screens.toggle"]
+)
+
+# Input Settings / button-map aliases → canonical names (kept for existing bindings).
+ACTION_ALIASES = {
+    "profile_slot_1": "profile.slot.1",
+    "profile_slot_2": "profile.slot.2",
+    "profile_slot_3": "profile.slot.3",
+    "profile_slot_4": "profile.slot.4",
+    "profile_slot_5": "profile.slot.5",
+    "profile_slot_6": "profile.slot.6",
+    "profile_next": "profile.next",
+    "profile_previous": "profile.previous",
+    "layout_reset": "layout.reset",
+    "screens_toggle": "screens.toggle",
+}
+
+ACTION_LABELS = {
+    "profile.slot.1": "Apply profile slot 1",
+    "profile.slot.2": "Apply profile slot 2",
+    "profile.slot.3": "Apply profile slot 3",
+    "profile.slot.4": "Apply profile slot 4",
+    "profile.slot.5": "Apply profile slot 5",
+    "profile.slot.6": "Apply profile slot 6",
+    "profile.next": "Next profile slot",
+    "profile.previous": "Previous profile slot",
+    "layout.reset": "Reset desktop screen layout",
+    "screens.toggle": "Hide/show desktop screens",
+}
+
+
+def normalize_action(name):
+    """Map an alias or canonical name to a canonical semantic action, or None."""
+    if not name:
+        return None
+    name = str(name).strip()
+    if name in ACTION_ALIASES:
+        return ACTION_ALIASES[name]
+    if name in SEMANTIC_ACTIONS:
+        return name
+    return None
+
+
+def list_actions(as_json=False):
+    rows = [{"name": n, "label": ACTION_LABELS.get(n, n),
+             "aliases": sorted(a for a, c in ACTION_ALIASES.items() if c == n)}
+            for n in SEMANTIC_ACTIONS]
+    if as_json:
+        print(json.dumps({"actions": rows}, separators=(",", ":")))
+    else:
+        for r in rows:
+            alias = f"  (aliases: {', '.join(r['aliases'])})" if r["aliases"] else ""
+            print(f"{r['name']}: {r['label']}{alias}")
+    return 0
+
+
+def run_action(name, duration_ms=None):
+    """Execute a semantic action. Raises RuntimeError on unknown names / apply failures."""
+    canonical = normalize_action(name)
+    if not canonical:
+        known = ", ".join(SEMANTIC_ACTIONS)
+        raise RuntimeError(f"unknown action {name!r}; try: {known}")
+    if canonical.startswith("profile.slot."):
+        slot = int(canonical.rsplit(".", 1)[1])
+        return profile_apply_slot(slot, duration_ms=duration_ms)
+    if canonical == "profile.next":
+        return profile_step(1, duration_ms=duration_ms)
+    if canonical == "profile.previous":
+        return profile_step(-1, duration_ms=duration_ms)
+    if canonical == "layout.reset":
+        apply(duration_ms=0 if duration_ms is None else duration_ms)
+        return 0
+    if canonical == "screens.toggle":
+        log(screens_socket().ask("toggle"))
+        return 0
+    raise RuntimeError(f"unhandled action {canonical!r}")
 
 
 # ---------------------------------------------------------------- KWin (scale, positions, primary)
@@ -968,34 +1349,67 @@ def main(argv):
             log(screens_socket().ask("toggle"))
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
+        elif cmd == "screen" and len(argv) >= 3 and argv[2] == "state":
+            return screen_state_json()
+        elif cmd == "action":
+            if len(argv) < 3:
+                print("usage: ft-layout action NAME|--list [--json] [--duration MS]", file=sys.stderr)
+                return 2
+            if argv[2] in ("list", "--list"):
+                return list_actions(as_json="--json" in argv)
+            name = argv[2]
+
+            def locked_action():
+                with open(LOCK_PATH, "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        log("another ft-layout is already running", file=sys.stderr)
+                        return 1
+                    return run_action(name, duration_ms=resolve_duration(argv))
+
+            # screens.toggle is instant and should not block behind a layout lock.
+            if normalize_action(name) == "screens.toggle":
+                return run_action(name)
+            return locked_action()
         elif cmd == "profile":
             if len(argv) < 3:
-                print("usage: ft-layout profile list|current|save|apply|delete ...", file=sys.stderr)
+                print("usage: ft-layout profile list|current|save|apply|delete|slot|unslot|slots|"
+                      "apply-slot|next|previous ...", file=sys.stderr)
                 return 2
             sub = argv[2]
+
+            def locked(fn):
+                with open(LOCK_PATH, "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        log("another ft-layout is already running", file=sys.stderr)
+                        return 1
+                    return fn()
+
             if sub == "list":
                 return profile_list(as_json="--json" in argv)
             if sub == "current":
                 return profile_current(as_json="--json" in argv)
+            if sub == "slots":
+                return profile_slots(as_json="--json" in argv)
             if sub == "save" and len(argv) >= 4:
-                with open(LOCK_PATH, "w") as lock:
-                    try:
-                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        log("another ft-layout is already running", file=sys.stderr)
-                        return 1
-                    return profile_save(argv[3])
+                return locked(lambda: profile_save(argv[3]))
             if sub == "apply" and len(argv) >= 4:
-                duration = float(argv[argv.index("--duration") + 1]) if "--duration" in argv else 0
-                with open(LOCK_PATH, "w") as lock:
-                    try:
-                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        log("another ft-layout is already running", file=sys.stderr)
-                        return 1
-                    return profile_apply(argv[3], duration_ms=duration)
+                return locked(lambda: profile_apply(argv[3], duration_ms=resolve_duration(argv)))
             if sub == "delete" and len(argv) >= 4:
                 return profile_delete(argv[3])
+            if sub == "slot" and len(argv) >= 5:
+                return profile_slot(argv[3], argv[4])
+            if sub == "unslot" and len(argv) >= 4:
+                return profile_unslot(argv[3])
+            if sub == "apply-slot" and len(argv) >= 4:
+                return locked(lambda: profile_apply_slot(argv[3], duration_ms=resolve_duration(argv)))
+            if sub == "next":
+                return locked(lambda: profile_step(1, duration_ms=resolve_duration(argv)))
+            if sub == "previous":
+                return locked(lambda: profile_step(-1, duration_ms=resolve_duration(argv)))
             print(f"unknown profile command: {' '.join(argv[2:])}", file=sys.stderr)
             return 2
         elif cmd in ("apply", "capture", "scale"):
