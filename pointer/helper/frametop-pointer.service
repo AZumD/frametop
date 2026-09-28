@@ -3,6 +3,7 @@
 Description=Frametop pointer helper: the universal 3D mouse (cursor, collision, ft_pointer driver)
 Documentation=file://@REPO@/README.md
 # Needs SteamVR's IPC; it starts and stops with SteamVR.
+# After= only: a hung helper must never delay SteamVR itself.
 After=steamvr.service frametop-input-relay.service
 PartOf=steamvr.service
 
@@ -17,6 +18,9 @@ ExecStart=%h/.local/bin/distrobox enter dev -- @REPO@/pointer/helper/build/ft-po
 ExecStopPost=-/usr/bin/pkill -x ft-pointer
 Restart=on-failure
 RestartSec=3
+StartLimitIntervalSec=120
+StartLimitBurst=3
+TimeoutStartSec=45
 # The container session (conmon) ignores SIGTERM; don't wait 90 s for it.
 TimeoutStopSec=5
 

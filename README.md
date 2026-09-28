@@ -24,7 +24,7 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
    ./install.sh
    ```
 
-   The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and everything else. The first run downloads 1–2 GB. It asks you two things along the way. The Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. SteamVR has to restart once at the end, which closes everything open in VR, including the terminal. Rebooting the headset works too.
+   The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and the multi-screen desktop plus input relay. The optional 3D-mouse OpenVR driver (`ft_pointer`) is **off by default** (pass `--with-pointer` to enable it); a broken external driver can black-screen SteamVR. The first run downloads 1–2 GB. It asks you along the way. The Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. If SteamVR ever black-screens after enabling optional VR pieces, from SSH run `./scripts/recover-vr.sh --yes`, then reboot. SteamVR has to restart once when you enable the pointer or first install the relay; that closes everything open in VR, including the terminal. Rebooting the headset works too.
 
 After the restart, Launch a program → Desktop opens the multi-screen desktop, with its screens arranged around where you're facing. Frametop Display Settings and Frametop Input Settings are in the desktop's application menu, under Settings.
 
@@ -49,6 +49,8 @@ If you work in the desktop for long stretches, stop Steam from putting the heads
 | Click the curve button (next to the bar) | Curves the screen around you, or flattens it |
 | Drag the roll button sideways, or scroll on it | Rolls the screen; it snaps level near straight |
 | While carrying a screen, sweep its laser across your other controller's ring, then let go | Pins it to that wrist, at its size and distance, as you hold it when you let go; it shows while you see its front. Grab its bar to adjust it (it stays pinned); sweep across the ring again to take it off |
+| `ft-layout pin 1 head` (or Pin to head in Display Settings) | Anchors that screen to the headset as a HUD; it follows shared visibility rules (not the wrist fade) |
+| `ft-layout profile save Desk` / `profile apply Desk` | Named spatial arrangements for the same screen count (also on the Layout page) |
 | Meta+Shift+R in the desktop | Puts the screens back in their layout (also in the menu as Reset Screen Layout, and mappable to a mouse button) |
 | Meta+Shift+H in the desktop | Hides or shows all screens (also in the menu as Hide/Show Screens, and mappable). The Visibility & wrist tab of Frametop Display Settings can instead show them only with the dashboard open, or while you look at your wrist |
 | Play a VR game | The screens hide and your controllers stay in the game. Open the SteamVR dashboard, or press Meta+Shift+H, to see and use them. To keep them visible over games, change During VR games on the Visibility & wrist tab; the controllers still stay in the game, and you use the screens with the mouse or the dashboard |

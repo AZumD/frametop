@@ -210,6 +210,11 @@ class Backend(QObject):
     def layout(self):
         return ft_layout.load_layout()
 
+    @Property("QVariantMap", notify=changed)
+    def profiles(self):
+        store = ft_layout.load_profiles()
+        return {"current": store["current"], "names": sorted(store["profiles"])}
+
     @Property("QVariantList", notify=changed)
     def plan(self):
         """The arrangement in the head frame, for the preview."""
@@ -374,8 +379,9 @@ class Backend(QObject):
     def pinAll(self, hand):
         reply = self._ask_screens(f"pin all {hand}") if self._running else None
         if reply and reply.startswith("ok"):
-            self.message.emit(f"All screens ride on your {hand} wrist now; grab a screen's bar to take it off. "
-                              "Save current arrangement keeps it.", False)
+            where = "your headset (HUD)" if hand == "head" else f"your {hand} wrist"
+            self.message.emit(f"All screens ride on {where} now; grab a screen's bar to take it off. "
+                              "Save current arrangement / Save profile keeps it.", False)
         else:
             self.message.emit(f"Couldn't pin: {reply or 'the desktop is not running'}", True)
 
@@ -384,6 +390,28 @@ class Backend(QObject):
         reply = self._ask_screens("unpin all") if self._running else None
         if not (reply and reply.startswith("ok")):
             self.message.emit(f"Couldn't unpin: {reply or 'the desktop is not running'}", True)
+
+    @Slot(str)
+    def applyProfile(self, name):
+        if not name:
+            self.message.emit("Pick a profile first", True)
+            return
+        self._run("Applying profile", "profile", "apply", name)
+
+    @Slot(str)
+    def saveProfile(self, name):
+        name = (name or "").strip()
+        if not name:
+            self.message.emit("Enter a profile name", True)
+            return
+        self._run("Saving profile", "profile", "save", name)
+
+    @Slot(str)
+    def deleteProfile(self, name):
+        if not name:
+            self.message.emit("Pick a profile first", True)
+            return
+        self._run("Deleting profile", "profile", "delete", name)
 
     @Slot()
     def restartDesktop(self):

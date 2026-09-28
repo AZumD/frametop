@@ -433,6 +433,72 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: backend.backend === "screens"
+                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Named profiles" }
+
+                    Controls.ComboBox {
+                        id: profilePick
+                        Kirigami.FormData.label: "Profile:"
+                        model: (backend.profiles.names || []).length ? backend.profiles.names : ["(none yet)"]
+                        enabled: (backend.profiles.names || []).length > 0
+                        Component.onCompleted: {
+                            const cur = backend.profiles.current
+                            if (cur) currentIndex = Math.max(0, model.indexOf(cur))
+                        }
+                        Connections {
+                            target: backend
+                            function onChanged() {
+                                const names = backend.profiles.names || []
+                                profilePick.model = names.length ? names : ["(none yet)"]
+                                profilePick.enabled = names.length > 0
+                                const cur = backend.profiles.current
+                                if (cur && names.indexOf(cur) >= 0)
+                                    profilePick.currentIndex = names.indexOf(cur)
+                            }
+                        }
+                    }
+
+                    Controls.TextField {
+                        id: profileName
+                        Kirigami.FormData.label: "Save as:"
+                        placeholderText: "Desk, Cinema, HUD…"
+                    }
+
+                    RowLayout {
+                        Kirigami.FormData.label: ""
+                        Controls.Button {
+                            text: "Apply"
+                            enabled: backend.desktopRunning && backend.busy === "" && (backend.profiles.names || []).length > 0
+                            onClicked: backend.applyProfile(profilePick.currentText)
+                        }
+                        Controls.Button {
+                            text: "Save current as…"
+                            enabled: backend.desktopRunning && backend.busy === "" && profileName.text.trim() !== ""
+                            onClicked: backend.saveProfile(profileName.text.trim())
+                        }
+                        Controls.Button {
+                            text: "Update selected"
+                            enabled: backend.desktopRunning && backend.busy === "" && (backend.profiles.names || []).length > 0
+                            onClicked: backend.saveProfile(profilePick.currentText)
+                        }
+                        Controls.Button {
+                            text: "Delete"
+                            enabled: backend.busy === "" && (backend.profiles.names || []).length > 0
+                            onClicked: backend.deleteProfile(profilePick.currentText)
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        opacity: 0.7
+                        text: "Profiles store where the screens sit (pose, width in metres, curve, wrist/head anchors). "
+                              + "They do not change screen count, resolution, or scale. CLI: ft-layout profile apply NAME"
+                    }
+                }
+
                 // Preview: from above (you at the bottom) and from the front.
                 Kirigami.Heading { level: 3; text: "Preview" }
                 Canvas {
@@ -677,7 +743,7 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Screens on a wrist" }
+                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Screens on a wrist or head" }
 
                     RowLayout {
                         Kirigami.FormData.label: "Show while facing you within:"
@@ -703,6 +769,11 @@ Kirigami.ApplicationWindow {
                             onClicked: backend.pinAll("right")
                         }
                         Controls.Button {
+                            text: "Pin to head"
+                            enabled: backend.desktopRunning
+                            onClicked: backend.pinAll("head")
+                        }
+                        Controls.Button {
                             text: "Unpin"
                             enabled: backend.desktopRunning
                             onClicked: backend.unpinAll()
@@ -719,8 +790,9 @@ Kirigami.ApplicationWindow {
                           + "and bar turn blue), crossing it again disarms it. Turn and place the screen the way you want, "
                           + "then let go: it rides on that wrist at that size and distance, however far away. To adjust a "
                           + "pinned screen, grab its bar, move it, and let go (it stays pinned); sweep across the ring to "
-                          + "take it off. It shows while you see its front within the angle above, and fades out beyond "
-                          + "it. Save current arrangement (Layout) keeps pins."
+                          + "take it off. Wrist-pinned screens show while you see their front within the angle above. "
+                          + "Head-anchored screens stay visible relative to the headset (HUD). "
+                          + "CLI: ft-layout pin 1 head. Save current arrangement / a named profile keeps pins."
                 }
             }
         }

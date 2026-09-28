@@ -69,11 +69,17 @@ if pgrep -f '[k]rdpserver --plasma' >/dev/null; then echo 'capture (krdp, 127.0.
         "$root/scripts/sync.sh" >/dev/null
         # Enabled, not started: started under a running SteamVR it would grab the
         # mouse away from it. It comes up before SteamVR on the next start.
+        # WantedBy=steamvr.service only (see the unit); TimeoutStartSec keeps a hung
+        # READY from blocking SteamVR forever. Not RequiredBy steamvr.
         fill_template "$root/input/$unit" | on_frame "mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/$unit"
         "$frame" --host "set -e
-systemctl --user daemon-reload; systemctl --user enable $unit
-echo 'enabled; starts before SteamVR on the next reboot or SteamVR restart'" ;;
-      uninstall) "$frame" --host "systemctl --user disable --now $unit 2>/dev/null; systemctl --user clean --what=fdstore $unit 2>/dev/null; rm -f ~/.config/systemd/user/$unit; systemctl --user daemon-reload; echo removed" ;;
+systemctl --user daemon-reload
+# Drop a leftover default.target want from older installs.
+rm -f ~/.config/systemd/user/default.target.wants/$unit
+systemctl --user enable $unit
+echo 'enabled; WantedBy=steamvr.service, Before=steamvr, TimeoutStartSec=20'
+echo \"recover: $FRAME_REPO/scripts/recover-vr.sh\"" ;;
+      uninstall) "$frame" --host "systemctl --user disable --now $unit 2>/dev/null; systemctl --user clean --what=fdstore $unit 2>/dev/null; rm -f ~/.config/systemd/user/$unit ~/.config/systemd/user/default.target.wants/$unit; systemctl --user daemon-reload; echo removed" ;;
       status) "$frame" --host "systemctl --user is-enabled $unit 2>/dev/null; systemctl --user is-active $unit 2>/dev/null
 echo \"fd store: \$(systemctl --user show -p NFileDescriptorStore --value $unit)\"
 p=\$(pgrep -x vrserver | head -1); [ -n \"\$p\" ] && for e in \$(ls -l /proc/\$p/fd 2>/dev/null | grep -oE 'event[0-9]+( \\(deleted\\))?' | sort -u | tr ' ' '_'); do n=\${e%%_*}; echo \"vrserver has \$e: \$(cat /sys/class/input/\$n/device/name 2>/dev/null)\"; done; true" ;;

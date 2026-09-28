@@ -46,7 +46,7 @@ Wherever ft-screens needs to know where a laser points (showing the controls, th
 
 Pinning started as "bring the screen to your wrist", which doesn't work for big screens, because their centre is far from the edge you bring close. It became aiming: while a screen is carried, the line from the carrying device to its bar is tested against the other hand controllers. Crossing a controller's 6 cm ring arms the pin (leaving past 9 cm, so it doesn't flicker), and crossing it again disarms it. The pin happens on release, with the screen's pose at that moment, so you can arm it and then turn the screen. An earlier version pinned the moment the laser touched the wrist, which left the screen at whatever angle the carrying hand had while pointing there.
 
-A pinned screen's alpha follows the angle between its front and the direction to your head, fully visible inside the wrist angle and fading over the last 10°.
+A pinned screen's alpha follows the angle between its front and the direction to your head, fully visible inside the wrist angle and fading over the last 10°. That fade applies only to controller (wrist) pins. Head-anchored screens use `SetOverlayTransformTrackedDeviceRelative` on `k_unTrackedDeviceIndex_Hmd` and follow the shared visibility rules so a HUD stays put relative to the headset.
 
 ### Visibility and VR games
 

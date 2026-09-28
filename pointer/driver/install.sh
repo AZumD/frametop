@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Install, remove, or poke the ft_pointer SteamVR driver on the Frame.
+# This is OPTIONAL VR integration. A normal Frametop install does not register it;
+# a broken external driver can prevent SteamVR from finding the HMD.
+#
 # Usage: pointer/driver/install.sh install     # copy to ~/.local/share/frametop/ft_pointer and register
 #        pointer/driver/install.sh uninstall   # unregister and delete
 #        pointer/driver/install.sh send '<cmd>' # e.g. 'btn trigger 1', 'aim 20 -5', 'gaze'
@@ -14,6 +17,19 @@ frame="$root/scripts/frame.sh"
 src=$FRAME_REPO/pointer/driver
 dest=/home/steamos/.local/share/frametop/ft_pointer
 reg='/opt/steamvr/bin/linuxarm64/vrpathreg'
+paths_file='$HOME/.config/openvr/openvrpaths.vrpath'
+
+backup_paths() {
+  # Preserve openvrpaths before vrpathreg mutates it, so recovery can compare or restore.
+  "$frame" --host "set -e
+paths=$paths_file
+[ -f \"\$paths\" ] || exit 0
+bak=\$paths.frametop-pre-ft_pointer.\$(date +%Y%m%d%H%M%S)
+cp -a \"\$paths\" \"\$bak\"
+# Keep a stable \"last before register\" pointer for recover-vr / uninstall messages.
+ln -sfn \"\$bak\" \$paths.frametop-pre-ft_pointer.latest
+echo \"backed up openvrpaths -> \$bak\""
+}
 
 case ${1:-install} in
   install)
@@ -26,15 +42,32 @@ rm -rf $dest.new; mkdir -p $dest.new/bin/linuxarm64
 cp -r $src/ft_pointer/. $dest.new/
 cp $src/build/driver_ft_pointer.so $dest.new/bin/linuxarm64/
 if [ -d $dest ] && diff -r -q $dest $dest.new >/dev/null; then
-  rm -rf $dest.new; echo 'driver unchanged'
+  rm -rf $dest.new; echo 'driver files unchanged'
 else
   rm -rf $dest; mv $dest.new $dest
-  echo 'installed; restart SteamVR to load it'
-fi
+  echo 'driver files installed at $dest'
+fi"
+    backup_paths
+    "$frame" --host "set -e
 LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg adddriver $dest
-LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg show | grep -A3 -i 'external'" ;;
+echo 'registered with vrpathreg (restart SteamVR to load it)'
+LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg show | grep -A3 -i 'external' || true
+echo
+echo 'OPTIONAL: ft_pointer is now an external SteamVR driver.'
+echo 'If the headset black-screens after the next SteamVR start, run:'
+echo '  $FRAME_REPO/scripts/recover-vr.sh --yes'
+echo 'To unregister without deleting files: $reg removedriver $dest'" ;;
   uninstall)
-    "$frame" --host "LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg removedriver $dest; rm -rf $dest; echo 'removed; restart SteamVR to unload it'" ;;
+    backup_paths
+    "$frame" --host "set -e
+if LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg show 2>/dev/null | grep -F '$dest' >/dev/null; then
+  LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 $reg removedriver $dest
+  echo 'unregistered via vrpathreg'
+else
+  echo 'not registered (ok)'
+fi
+rm -rf $dest
+echo 'removed driver files; restart SteamVR to unload it'" ;;
   send)
     "$frame" --host "python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM); s.sendto(sys.argv[1].encode(), \"\\0ft_pointer\")' $(printf %q "${2:?command}")" ;;
   probe) "$frame" -C pointer/probe 'LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 ./build/vrprobe' ;;

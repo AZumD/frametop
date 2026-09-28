@@ -14,15 +14,16 @@
 //   The controls are translucent, like SteamVR's own, and brighten under a laser. They
 //   are invisible until a laser (a controller's, or the 3D mouse's) lands on or passes very close to
 //   one of them (UpdateControls).
-//   - pin to a wrist: while carrying a screen, sweep the laser (the line from the carrying
-//     device to the bar) across your other controller. A ring around each controller
-//     shows the target and a dot where the laser passes it; crossing the ring arms the pin
-//     (ring and bar turn blue), crossing it again disarms it. Let go while armed and the
-//     screen rides on that controller as it is then, at any size and distance, so you can
-//     arm it and then turn it the way you want before letting go. Grabbing a pinned
-//     screen keeps it armed for its wrist: move it, let go, and it's re-pinned there
-//     (sweep across the ring to take it off). A pinned screen shows only while you see
-//     its front, within the wrist angle (and fades out over the last kFade degrees).
+//   - pin to a wrist or the head: while carrying a screen, sweep the laser (the line from
+//     the carrying device to the bar) across your other controller. A ring around each
+//     controller shows the target and a dot where the laser passes it; crossing the ring
+//     arms the pin (ring and bar turn blue), crossing it again disarms it. Let go while
+//     armed and the screen rides on that controller as it is then. Grabbing a
+//     controller-pinned screen keeps it armed for its wrist. Control-socket `pin` also
+//     accepts "head" (HMD) via SetOverlayTransformTrackedDeviceRelative. A
+//     controller-pinned screen shows only while you see its front, within the wrist
+//     angle (fades over the last kFade degrees). Head-anchored screens follow the shared
+//     visibility rules and stay put relative to the headset.
 //   - visibility modes: always (the hide hotkey toggles), only with the SteamVR dashboard
 //     open, while you look at a chosen controller (the wrist gesture), or toggle only
 //     (hidden until the hotkey shows them).
@@ -164,17 +165,24 @@ bool IsHandController(vr::TrackedDeviceIndex_t i) {
     vr::VRSystem()->GetStringTrackedDeviceProperty(i, vr::Prop_ControllerType_String, type, sizeof type);
     return std::strcmp(type, "ft_pointer") != 0;  // not the 3D mouse's virtual controller
 }
-vr::TrackedDeviceIndex_t HandDevice(const char *hand) {
-    return vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(
-        std::strcmp(hand, "right") == 0 ? vr::TrackedControllerRole_RightHand : vr::TrackedControllerRole_LeftHand);
+// Resolve a pin/anchor name to a tracked device: left/right controller roles, or the HMD.
+vr::TrackedDeviceIndex_t AnchorDevice(const char *name) {
+    if (std::strcmp(name, "head") == 0) return vr::k_unTrackedDeviceIndex_Hmd;
+    if (std::strcmp(name, "right") == 0)
+        return vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+    if (std::strcmp(name, "left") == 0)
+        return vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand);
+    return vr::k_unTrackedDeviceIndexInvalid;
 }
-const char *HandName(vr::TrackedDeviceIndex_t i) {
+const char *AnchorName(vr::TrackedDeviceIndex_t i) {
+    if (i == vr::k_unTrackedDeviceIndex_Hmd) return "head";
     switch (vr::VRSystem()->GetControllerRoleForTrackedDeviceIndex(i)) {
         case vr::TrackedControllerRole_LeftHand: return "left";
         case vr::TrackedControllerRole_RightHand: return "right";
         default: return "none";
     }
 }
+vr::TrackedDeviceIndex_t HandDevice(const char *hand) { return AnchorDevice(hand); }
 
 enum class Drag { None, Move, Resize, Roll };
 enum class Mode { Always, Dashboard, Gesture, Toggle };
@@ -203,8 +211,8 @@ struct Screen {
     const void *shown = nullptr;  // a frame arrived
     bool visible = false;         // shown in VR right now
     float alpha = 1;
-    vr::TrackedDeviceIndex_t pinned = kNone;  // riding on this controller
-    Mat pinRel = Identity();                  // controller -> screen
+    vr::TrackedDeviceIndex_t pinned = kNone;  // riding on this device (controller or HMD)
+    Mat pinRel = Identity();                  // anchor device -> screen
     Mat pose = Identity();                    // where it is in the room, when not pinned
     Drag drag = Drag::None;
     vr::TrackedDeviceIndex_t dragDevice = kNone;
@@ -217,7 +225,7 @@ struct Screen {
     float controls = 0;                       // the controls' fade, 0 (hidden) .. 1
     bool controlsUp = false;                  // the controls' overlays are shown
     long nearUntil = 0;                       // a laser was near the controls until this tick
-    vr::TrackedDeviceIndex_t pinTarget = kNone;  // moving: rides on this controller when let go
+    vr::TrackedDeviceIndex_t pinTarget = kNone;  // moving: rides on this device when let go
     vr::TrackedDeviceIndex_t onWrist = kNone;    // moving: the laser is in this controller's ring
     bool barLit = false;
     double chrome = 0.3;          // the bar's width; the other controls follow it (ChromeSize)
@@ -437,7 +445,7 @@ void ApplyCurve(const Screen &s) {
     vr::VROverlay()->SetOverlayCurvature(s.overlay, float(c));
 }
 
-// The screen's pose in the room (a pinned one: its controller's pose times pinRel).
+// The screen's pose in the room (a pinned one: its anchor device's pose times pinRel).
 bool ScreenPose(const Screen &s, Mat *out) {
     if (s.pinned != kNone) {
         Mat d;
@@ -653,9 +661,11 @@ void UpdateVisibility() {
         bool visible = s.shown && (shared || s.drag != Drag::None);
         float alpha = 1;
         Mat p;
-        if (visible && s.pinned != kNone && s.drag == Drag::None && haveHead && ScreenPose(s, &p)) {
-            // A pinned screen shows while you see its front: fully inside the wrist angle,
-            // fading out over the last kFade degrees, gone beyond it (and from behind).
+        // Wrist fade is only for controller-pinned screens. Head-anchored HUDs stay on
+        // under the shared visibility rules (they'd always face you otherwise).
+        if (visible && s.pinned != kNone && IsHandController(s.pinned) && s.drag == Drag::None && haveHead &&
+            ScreenPose(s, &p)) {
+            // Fully inside the wrist angle, fading out over the last kFade degrees, gone beyond.
             const double a = FacingAngle(p, head);
             alpha = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
             visible = alpha > 0.02f;
@@ -863,7 +873,7 @@ void FinishDrag(Screen &s, int index) {
     if (!moved) return;
     if (target != kNone && DevicePose(target, &c) && ScreenPose(s, &p)) {
         Pin(s, target, Mul(Inverse(c), p));
-        std::printf("screen %d: pinned to the %s controller\n", index + 1, HandName(target));
+        std::printf("screen %d: pinned to %s\n", index + 1, AnchorName(target));
     }
 }
 
@@ -1239,15 +1249,15 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
 //   width <screen> <metres>
 //   curve <screen> <radius>   cylinder radius in metres; 0 = flat
 //   curve <screen> on|off     on: the radius is the head's distance to it now -> "ok <radius>"
-//   pin <screen|all> <left|right> [12 numbers]   pin to that hand's controller: as it is now,
-//                             or at the given controller->screen transform (rows of a 3x4)
+//   pin <screen|all> <left|right|head> [12 numbers]   pin to that anchor: as it is now,
+//                             or at the given device->screen transform (rows of a 3x4)
 //   unpin <screen|all>
-//   get <screen>  -> "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve hand
-//                     [12 numbers: controller->screen, when pinned]"
+//   get <screen>  -> "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve anchor
+//                     [12 numbers: device->screen, when pinned]"
 //   screens       -> "ok <count> <index>:<pixels w>x<h>:<metres> ..."
 //   head          -> "ok x y z yaw"
 //   visibility always|dashboard|gesture|toggle
-//   wrist <degrees>           a pinned screen shows while you see its front within this
+//   wrist <degrees>           a controller-pinned screen shows while you see its front within this
 //   gesture <left|right> <degrees>   the gesture mode: look within this of that controller
 //   hide | show | toggle      the manual switch (see g_manual)
 //   controllers always|outside_games|dashboard   when controllers' lasers work the screens
@@ -1299,10 +1309,12 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                                            &r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8], &r[9],
                                            &r[10], &r[11]);
                got >= 2) {
-        const vr::TrackedDeviceIndex_t dev = HandDevice(hand);
+        if (std::strcmp(hand, "left") && std::strcmp(hand, "right") && std::strcmp(hand, "head"))
+            return (void)std::snprintf(reply, size, "error anchors: left right head");
+        const vr::TrackedDeviceIndex_t dev = AnchorDevice(hand);
         Mat c;
         if (dev == kNone || !DevicePose(dev, &c))
-            return (void)std::snprintf(reply, size, "error no %s controller tracked", hand);
+            return (void)std::snprintf(reply, size, "error no %s tracked", hand);
         Mat rel = Identity();
         for (int k = 0; k < 12; ++k) rel.m[k / 4][k % 4] = r[k];
         const bool found = each(word, [&](Screen &s) {
@@ -1327,7 +1339,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                                 "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %s",
                                 m.m[0][3], m.m[1][3], m.m[2][3], m.m[0][0], m.m[1][0], m.m[2][0], m.m[0][1], m.m[1][1],
                                 m.m[2][1], m.m[0][2], m.m[1][2], m.m[2][2], s->metres, s->heightMetres(), s->curve,
-                                s->pinned == kNone ? "none" : HandName(s->pinned));
+                                s->pinned == kNone ? "none" : AnchorName(s->pinned));
         if (s->pinned != kNone)
             for (int k = 0; k < 12 && len < size; ++k)
                 len += std::snprintf(reply + len, size - len, " %.5f", s->pinRel.m[k / 4][k % 4]);

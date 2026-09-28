@@ -67,33 +67,35 @@ hide | show | toggle    controllers always|outside_games|dashboard    ingames hi
 
 SteamVR opens input devices only when it starts. A Bluetooth mouse that sleeps and reconnects gets new device nodes, SteamVR keeps reading the dead ones, and the mouse stops working until SteamVR restarts. `input/input-relay.py` avoids this. It creates two virtual devices, `frametop virtual mouse` and `frametop virtual keyboard`, through `/dev/uinput` before SteamVR starts. It then grabs USB and Bluetooth mice and keyboards as they come and go and forwards their events, so SteamVR only ever sees the virtual devices, which never go away.
 
-It runs as the user service `frametop-input-relay.service`, ordered before `steamvr.service`.
+It runs as the user service `frametop-input-relay.service`, ordered before `steamvr.service` (`Before=`, not `Requires=`), with `TimeoutStartSec=20` so a hung READY cannot block SteamVR forever. It is `WantedBy=steamvr.service` only (not `default.target`).
 
 ```
 desktops.sh relay install     # enable it (starts with the next reboot or SteamVR start)
 desktops.sh relay status | log | uninstall
 input/input-relay.py --no-grab   # try it without taking devices from SteamVR
+scripts/recover-vr.sh [--yes]    # stop/disable relay+pointer, unregister ft_pointer
 ```
 
 The first time, the relay has to start before SteamVR, so reboot or restart SteamVR after installing it. After that it's safe to restart on its own: systemd keeps the virtual devices open in its file descriptor store (`FileDescriptorStorePreserve=yes`), so SteamVR keeps the same devices.
 
 ## The 3D mouse
 
-A mouse drives SteamVR the way a controller's laser does, but shows up as a small dot anchored in the room. It snaps onto panels and works on the dashboard, Steam, overlays, and the desktop. Three pieces make it work:
+A mouse drives SteamVR the way a controller's laser does, but shows up as a small dot anchored in the room. It snaps onto panels and works on the dashboard, Steam, overlays, and the desktop. The OpenVR driver is **opt-in**: a normal `./install.sh` does not register `ft_pointer` (pass `--with-pointer`, or install later). A broken external driver can prevent SteamVR from finding the HMD; recover with `scripts/recover-vr.sh --yes`. Three pieces make it work:
 
 - The input relay, in pointer mode (`POINTER=1`), sends mouse motion, clicks, and scrolling to the helper. A deliberate movement or a click wakes the pointer, and 30 seconds without mouse input releases it.
-- The helper, `pointer/helper/ft-pointer`, runs in the `dev` container as `frametop-pointer.service` and starts with SteamVR. It keeps the cursor, tests it against every visible overlay, draws the dot, and sends the driver an exact pose.
-- The driver, `pointer/driver/` (`ft_pointer`), is loaded by SteamVR. It's an invisible virtual right-hand controller whose laser follows the cursor.
+- The helper, `pointer/helper/ft-pointer`, runs in the `dev` container as `frametop-pointer.service` and starts with SteamVR (`After=steamvr`, `TimeoutStartSec=45`). It keeps the cursor, tests it against every visible overlay, draws the dot, and sends the driver an exact pose.
+- The driver, `pointer/driver/` (`ft_pointer`), is loaded by SteamVR. It's an invisible virtual right-hand controller whose laser follows the cursor. `pointer/driver/install.sh` backs up `openvrpaths.vrpath` before `vrpathreg adddriver`.
 
 Whichever device you used last wins. Picking up a controller hands the laser back at once, and moving the mouse takes it again. When the headset comes off, the pointer lets go, so the displays can sleep, and it stays off until you're wearing the headset again.
 
-To move a floating panel, left-drag its grab bar. The scroll wheel pushes and pulls it while you drag. Hold the right button while dragging and move the mouse to tilt the panel around the grab point; the right press isn't sent as a click. The tilt stays for the rest of the drag, and releasing the left button drops the panel as it is. A mapped Toggle dashboard button (or a Meta tap, with `META_DASHBOARD=1`) wakes the pointer if needed and holds the virtual system button for 0.12 s, because SteamVR ignores a press and release in the same instant.
+To move a floating panel, left-drag its grab bar. The scroll wheel pushes and pulls it while you drag. Hold the right button while dragging and move the mouse to tilt the panel around the grab point; the right press isn't sent as a click. The tilt stays for the rest of the drag, and releasing the left button drops the panel as it is. A mapped Toggle dashboard button (or a Meta tap) wakes the pointer if needed and holds the virtual system button for 0.12 s, because SteamVR ignores a press and release in the same instant.
 
 ```
 pointer/driver/build.sh && pointer/driver/install.sh install   # then restart SteamVR
 pointer/helper/build.sh && pointer/helper/run.sh install
 pointer/helper/run.sh status | log | restart
 pointer/driver/install.sh probe     # devices, hand roles, who owns the dashboard pointer
+scripts/recover-vr.sh --yes        # if SteamVR black-screens after enabling the pointer
 ```
 
 The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `POINTER_IDLE`, `POINTER_WAKE_COUNTS`, `POINTER_DISTANCE`, `POINTER_CURSOR_DEG`, `POINTER_ORIGIN_FRACTION`, `POINTER_ORIGIN_MARGIN`, `POINTER_SCENE_RADIUS`, `POINTER_EDGE_REACH`, and `POINTER_LASER_WIDTH`. The example config explains each. Frametop Input Settings changes them live; after editing the file by hand, restart the relay or the helper.
@@ -102,7 +104,7 @@ The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `P
 
 A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs in the `dev` container and talks to the relay over its control socket, `@frametop_relay`. It has four pages:
 
-- Devices lists every USB and Bluetooth mouse and keyboard, with a light that flashes when the device is used. Each device gets a role: 3D pointer (grabbed, drives the pointer; the default for anything with a mouse), Pass through (not grabbed; the default for keyboards, where a Meta tap toggles the dashboard if `META_DASHBOARD=1` is in `~/.config/frametop.conf`), or Ignore. A device is identified by its Bluetooth address, or its USB ids and name, so all of its input nodes share one role. Forget drops everything saved for a device.
+- Devices lists every USB and Bluetooth mouse and keyboard, with a light that flashes when the device is used. Each device gets a role: 3D pointer (grabbed, drives the pointer; the default for anything with a mouse), Pass through (not grabbed; the default for keyboards, where a Meta tap still toggles the dashboard), or Ignore. A device is identified by its Bluetooth address, or its USB ids and name, so all of its input nodes share one role. Forget drops everything saved for a device.
 - Buttons maps a pointer device's buttons. Choose Capture a button, press the button or key, then pick an action: a click, back, scroll, toggle dashboard, recenter, pointer on or off, faster or slower, pass the key through, or nothing. Devices with saved mappings are listed even while they're asleep.
 - Pointer has sliders for the pointer settings, which apply immediately, and a Recenter button.
 - Bluetooth lists paired devices and has Apply Bluetooth fixes, which runs `/etc/steamframe/bt-fixups.sh` through `pkexec`. Pair new devices in Steam.
@@ -116,21 +118,27 @@ When the desktop starts, its screens arrange themselves around where you're faci
 Frametop Display Settings has three tabs:
 
 - Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), its scale, whether it's curved, and whether it has the taskbar. Resolution, width, and curve apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
-- Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
-- Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist or unpin them.
+- Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. Named spatial profiles (same screen count; pose, metres, curve, anchors) can be saved and applied without changing resolution or scale. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
+- Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, to the head (HUD), or unpin them.
 
 `layout/ft-layout` does the arranging. It's a Python script that uses only the standard library and runs on the host:
 
 ```
-layout/ft-layout apply      # arrange every screen
-layout/ft-layout capture    # save the current arrangement and sizes as the layout
-layout/ft-layout plan       # print the arrangement as JSON (no VR needed)
-layout/ft-layout scale      # per-screen scale, positions, and taskbar screen, to KWin
-layout/ft-layout toggle     # hide or show all screens
+layout/ft-layout apply [--duration MS]   # arrange every screen (optional ease-in/out move)
+layout/ft-layout capture                 # save the current arrangement and sizes as the layout
+layout/ft-layout plan                    # print the arrangement as JSON (no VR needed)
+layout/ft-layout scale                   # per-screen scale, positions, and taskbar screen, to KWin
+layout/ft-layout toggle                  # hide or show all screens
+layout/ft-layout pin N|all left|right|head
+layout/ft-layout profile list [--json]
+layout/ft-layout profile current [--json]
+layout/ft-layout profile save NAME
+layout/ft-layout profile apply NAME [--duration MS]
+layout/ft-layout profile delete NAME
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
 
-The layout is stored relative to your head when it's applied. `/tmp/frametop-layout.log` has the run from the last desktop start.
+The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json`. `/tmp/frametop-layout.log` has the run from the last desktop start.
 
 ## Remote desktop over VNC
 
@@ -144,7 +152,6 @@ With remote access on, the nested KWin runs with `KWIN_WAYLAND_NO_PERMISSION_CHE
 
 ## Limits
 
-- There's no way yet to pin a screen to your head like a HUD.
 - A controller button can't show hidden screens; a mapped mouse or keyboard button can.
 - KWin's cursor isn't drawn on the screens, because KWin draws it as a host cursor, which ft-screens doesn't render. The 3D mouse's dot and SteamVR's laser dot show where you're pointing.
 - The old gamescope backend (`BACKEND=gamescope`) still works, but it gives every screen the same resolution, at most 1920×1080 pixels' worth, and arranging screens borrows the pointer for a few seconds.

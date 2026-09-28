@@ -18,15 +18,21 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
    "visibility": {"mode": "always",   ft-screens: always | dashboard (only with the SteamVR
                   "wrist_angle": 60,    dashboard open) | gesture (while you look at a controller)
                   "gesture_hand": "left", "gesture_angle": 20},   | toggle (hidden until shown);
-                                      wrist_angle: a pinned screen shows while you see its front
-                                      within this many degrees
+                                      wrist_angle: a controller-pinned screen shows while you see
+                                      its front within this many degrees
    "screens": [{"size": [w, h], "metres": 3.6,        ft-screens: pixels, and width in VR
                 "curve": 0,                           ft-screens: cylinder radius in metres, 0 = flat
-                "pin": {"hand": "left", "rel": [12]},  ft-screens: riding on that controller
+                "pin": {"anchor": "left"|"right"|"head", "rel": [12],
+                        "hand": "left"},              ft-screens: tracked-device anchor (hand kept
+                                                      for left/right for older readers)
                 "scale": 1.0,                         KWin output scale (1.0 = 100%)
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
    "panel_size": [w, h]}              gamescope: last measured panel size
+
+Named spatial profiles (same screen count; no resolution/scale/visibility) live in
+~/.config/frametop-layout-profiles.json. The active layout file stays compatible.
+
 Custom positions: x right, y up, -z forward from the head, in metres; face = the
 direction you look to see the screen's front straight on, in degrees, relative to your
 heading; roll = the panel turned about its front, counterclockwise as you see it.
@@ -35,14 +41,18 @@ Presets: "arc" hinges the screens edge to edge around you, each turned to face y
 is top left, then left to right.
 
 Usage (on the Frame host; Frametop Display Settings calls it too):
-  ft-layout apply [--wait SECONDS]   arrange every screen; --wait is for desktop start:
-                                     wait for the screens, skip if "auto" is off
+  ft-layout apply [--wait SECONDS] [--duration MS]
   ft-layout capture                  save the current arrangement as the custom layout
   ft-layout plan                     print the arrangement as JSON (no VR needed)
   ft-layout scale                    per-screen scale, positions, and primary to KWin
   ft-layout screen-args              ft-screens' --screen arguments for the session script
   ft-layout toggle                   hide or show all screens (ft-screens)
-  ft-layout pin all|N left|right     pin screens to a wrist as they are; unpin all|N
+  ft-layout pin all|N left|right|head   pin screens to an anchor; unpin all|N
+  ft-layout profile list [--json]
+  ft-layout profile current [--json]
+  ft-layout profile save NAME
+  ft-layout profile apply NAME [--duration MS]
+  ft-layout profile delete NAME
 """
 import fcntl
 import json
@@ -55,6 +65,7 @@ import sys
 import time
 
 LAYOUT_PATH = os.path.expanduser("~/.config/frametop-layout.json")
+PROFILES_PATH = os.path.expanduser("~/.config/frametop-layout-profiles.json")
 CONF_PATH = os.path.expanduser("~/.config/frametop.conf")
 VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
 HELPER = "\0ft_pointer_helper"
@@ -70,10 +81,14 @@ VISIBILITY = {"mode": "always", "wrist_angle": 60, "gesture_hand": "left", "gest
 DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
             "screens": [], "panel_size": list(DEFAULT_PANEL)}
+# Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
+PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin")
+ANCHORS = ("left", "right", "head")
 
 
-def log(*args):
-    print(*args, flush=True)
+def log(*args, **kwargs):
+    kwargs.setdefault("flush", True)
+    print(*args, **kwargs)
 
 
 # ---------------------------------------------------------------- config
@@ -126,6 +141,45 @@ def save_layout(layout):
     with open(tmp, "w") as f:
         json.dump(layout, f, indent=2)
     os.replace(tmp, LAYOUT_PATH)
+
+
+def atomic_write_json(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def pin_anchor(pin):
+    """Anchor name from a pin dict: prefer 'anchor', fall back to legacy 'hand'."""
+    if not isinstance(pin, dict):
+        return None
+    a = pin.get("anchor") or pin.get("hand")
+    return a if a in ANCHORS else None
+
+
+def make_pin(anchor, rel):
+    """Pin dict for layout JSON. Keeps legacy 'hand' for left/right."""
+    pin = {"anchor": anchor, "rel": list(rel)}
+    if anchor in ("left", "right"):
+        pin["hand"] = anchor
+    return pin
+
+
+def spatial_screen(entry):
+    """Profile payload for one screen (spatial only)."""
+    out = {}
+    for k in PROFILE_SCREEN_KEYS:
+        if k == "pin":
+            continue
+        if k in entry:
+            out[k] = entry[k]
+    pin = entry.get("pin")
+    anchor = pin_anchor(pin)
+    if anchor and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
+        out["pin"] = make_pin(anchor, pin["rel"])
+    return out
 
 
 def screen_entry(layout, i):
@@ -382,12 +436,13 @@ def send_visibility(sock, layout):
 
 
 def parse_get(reply):
-    """ft-screens' "get": pose, size, curve, and the pin (hand and controller->screen)."""
+    """ft-screens' "get": pose, size, curve, and the pin (anchor and device->screen)."""
     f = reply.split()[1:]
     g = list(map(float, f[:15]))
+    anchor = f[15] if len(f) > 15 else "none"
     out = {"center": tuple(g[0:3]), "x": tuple(g[3:6]), "y": tuple(g[6:9]), "z": tuple(g[9:12]),
-           "metres": g[12], "height": g[13], "curve": g[14], "hand": f[15] if len(f) > 15 else "none"}
-    if out["hand"] != "none" and len(f) >= 28:
+           "metres": g[12], "height": g[13], "curve": g[14], "anchor": anchor, "hand": anchor}
+    if out["anchor"] != "none" and len(f) >= 28:
         out["rel"] = [round(float(v), 5) for v in f[16:28]]
     return out
 
@@ -398,7 +453,124 @@ def screens_up(sock):
     return sum(1 for s in f[2:] if not s.split(":")[1].startswith("0x"))
 
 
-def apply_screens(wait=0):
+def ease_in_out(t):
+    """Smoothstep-ish ease: 0..1 -> 0..1."""
+    t = max(0.0, min(1.0, t))
+    return 0.5 * (1.0 - math.cos(math.pi * t))
+
+
+def angle_lerp(a, b, t):
+    """Shortest-path lerp for degrees (359 -> 1 travels +2, not -358)."""
+    d = (b - a + 180.0) % 360.0 - 180.0
+    return a + d * t
+
+
+def vec_lerp(a, b, t):
+    return tuple(x + (y - x) * t for x, y in zip(a, b))
+
+
+def apply_pin(sock, index, pin):
+    anchor = pin_anchor(pin)
+    if not anchor or len(pin.get("rel", [])) != 12:
+        return
+    try:
+        sock.ask(f"pin {index} {anchor} " + " ".join(f"{v:.5f}" for v in pin["rel"]))
+    except RuntimeError as e:
+        log(f"screen {index}: {e}")  # that device isn't tracked
+
+
+def place_screen(sock, index, center, face, roll, metres, curve):
+    sock.ask(f"width {index} {metres:.4f}")
+    sock.ask(f"curve {index} {float(curve):.3f}")
+    return sock.ask("place %d %.4f %.4f %.4f %.3f %.3f %.3f" % (index, *center, face[0], face[1], roll))
+
+
+def live_screen_targets(sock, layout, count, eye, heading):
+    """World-space place targets + pin info for the planned layout (for transitions)."""
+    targets = []
+    for i, t in enumerate(plan(layout, count)):
+        world = turn_yaw(t["pos"], heading)
+        center = tuple(e + v for e, v in zip(eye, world))
+        entry = screen_entry(layout, i)
+        pin = entry.get("pin") if layout.get("mode") == "custom" else None
+        targets.append({
+            "center": center,
+            "face": (t["face"][0] + heading, t["face"][1]),
+            "roll": t["roll"],
+            "metres": screen_metres(layout, i),
+            "curve": float(entry.get("curve", 0)),
+            "pin": pin if pin_anchor(pin) and len((pin or {}).get("rel", [])) == 12 else None,
+        })
+    return targets
+
+
+def live_screen_state(sock, count):
+    """Current live poses from ft-screens get (world absolute)."""
+    out = []
+    for i in range(count):
+        g = parse_get(sock.ask(f"get {i + 1}"))
+        # Recover facing from axes: -z is the panel front in ScreenPose export.
+        fyaw, fpitch = yaw_pitch(tuple(-c for c in g["z"]))
+        right = normalize(cross((0.0, 1.0, 0.0), g["z"]))
+        up = cross(g["z"], right)
+        roll = math.degrees(math.atan2(dot(g["x"], up), dot(g["x"], right)))
+        pin = None
+        if g["anchor"] in ANCHORS and "rel" in g:
+            pin = make_pin(g["anchor"], g["rel"])
+        out.append({
+            "center": g["center"], "face": (fyaw, fpitch), "roll": roll,
+            "metres": g["metres"], "curve": g["curve"], "pin": pin,
+        })
+    return out
+
+
+def transition_screens(sock, starts, targets, duration_ms):
+    """Interpolate place/width/curve over duration_ms. Cross-anchor pins snap at the end."""
+    n = len(targets)
+    # Animate in world; drop pins for the duration so place commands stick.
+    for i in range(n):
+        try:
+            sock.ask(f"unpin {i + 1}")
+        except RuntimeError:
+            pass
+    duration = max(0.0, duration_ms) / 1000.0
+    if duration <= 0:
+        for i, t in enumerate(targets):
+            place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"])
+            if t["pin"]:
+                apply_pin(sock, i + 1, t["pin"])
+        return
+    steps = max(2, int(duration * 30))  # ~30 Hz over the control socket
+    t0 = time.time()
+    for step in range(1, steps + 1):
+        # Pace by wall clock so a slow socket still finishes near duration.
+        elapsed = time.time() - t0
+        u = ease_in_out(min(1.0, elapsed / duration if duration else 1.0))
+        if step == steps:
+            u = 1.0
+        for i in range(n):
+            a, b = starts[i], targets[i]
+            place_screen(
+                sock, i + 1,
+                vec_lerp(a["center"], b["center"], u),
+                (angle_lerp(a["face"][0], b["face"][0], u), angle_lerp(a["face"][1], b["face"][1], u)),
+                angle_lerp(a["roll"], b["roll"], u),
+                a["metres"] + (b["metres"] - a["metres"]) * u,
+                a["curve"] + (b["curve"] - a["curve"]) * u,
+            )
+        if u >= 1.0:
+            break
+        # Sleep toward the next frame boundary.
+        target_t = t0 + duration * step / steps
+        delay = target_t - time.time()
+        if delay > 0:
+            time.sleep(delay)
+    for i, t in enumerate(targets):
+        if t["pin"]:
+            apply_pin(sock, i + 1, t["pin"])
+
+
+def apply_screens(wait=0, duration_ms=0):
     layout = load_layout()
     count = screen_count(layout)
     deadline = time.time() + wait
@@ -414,22 +586,18 @@ def apply_screens(wait=0):
     f = sock.ask("head").split()
     eye, heading = tuple(map(float, f[1:4])), float(f[4])
     send_visibility(sock, layout)
-    results = []
-    for i, t in enumerate(plan(layout, count)):
-        world = turn_yaw(t["pos"], heading)
-        center = tuple(e + v for e, v in zip(eye, world))
-        entry = screen_entry(layout, i)
-        sock.ask(f"width {i + 1} {screen_metres(layout, i):.4f}")
-        sock.ask(f"curve {i + 1} {float(entry.get('curve', 0)):.3f}")
-        results.append(sock.ask("place %d %.4f %.4f %.4f %.3f %.3f %.3f" % (i + 1, *center, t["face"][0] + heading,
-                                                                             t["face"][1], t["roll"])))
-        pin = entry.get("pin") if layout.get("mode") == "custom" else None
-        if pin and len(pin.get("rel", [])) == 12:
-            try:
-                sock.ask(f"pin {i + 1} {pin['hand']} " + " ".join(f"{v:.5f}" for v in pin["rel"]))
-            except RuntimeError as e:
-                log(f"screen {i + 1}: {e}")  # that controller isn't on
-    log(f"arranged {count} screen(s)")
+    targets = live_screen_targets(sock, layout, count, eye, heading)
+    if duration_ms > 0:
+        starts = live_screen_state(sock, count)
+        transition_screens(sock, starts, targets, duration_ms)
+        results = ["ok"] * count
+    else:
+        results = []
+        for i, t in enumerate(targets):
+            results.append(place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"]))
+            if t["pin"]:
+                apply_pin(sock, i + 1, t["pin"])
+    log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
     return results
 
 
@@ -446,8 +614,8 @@ def capture_screens():
         entry["metres"] = round(g["metres"], 4)  # resized by hand
         entry["curve"] = round(g["curve"], 3)
         entry.pop("pin", None)
-        if "rel" in g:
-            entry["pin"] = {"hand": g["hand"], "rel": g["rel"]}
+        if g.get("anchor") in ANCHORS and "rel" in g:
+            entry["pin"] = make_pin(g["anchor"], g["rel"])
         screens.append(entry)
     layout["screens"] = screens + layout.get("screens", [])[len(screens):]
     layout["mode"] = "custom"
@@ -568,12 +736,143 @@ def capture_gamescope():
     return screens
 
 
-def apply(wait=0):
-    return apply_screens(wait) if backend() == "screens" else apply_gamescope(wait)
+def apply(wait=0, duration_ms=0):
+    if backend() == "screens":
+        return apply_screens(wait, duration_ms=duration_ms)
+    if duration_ms:
+        log("warning: --duration is only supported with the screens backend; applying instantly", file=sys.stderr)
+    return apply_gamescope(wait)
 
 
 def capture():
     return capture_screens() if backend() == "screens" else capture_gamescope()
+
+
+# ---------------------------------------------------------------- named spatial profiles
+
+def load_profiles():
+    """Load profiles file. Missing/corrupt -> empty store; never touches the active layout."""
+    empty = {"current": None, "profiles": {}}
+    try:
+        with open(PROFILES_PATH) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return empty
+    except (OSError, ValueError) as e:
+        log(f"warning: profiles file unreadable ({e}); treating as empty", file=sys.stderr)
+        return empty
+    if not isinstance(data, dict):
+        log("warning: profiles file malformed; treating as empty", file=sys.stderr)
+        return empty
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    current = data.get("current")
+    if current is not None and current not in profiles:
+        current = None
+    return {"current": current, "profiles": profiles}
+
+
+def save_profiles(store):
+    atomic_write_json(PROFILES_PATH, store)
+
+
+def profile_from_layout(layout):
+    """Spatial snapshot for the configured screen count."""
+    count = screen_count(layout)
+    screens = [spatial_screen(screen_entry(layout, i)) for i in range(count)]
+    return {"screens": screens}
+
+
+def merge_profile_into_layout(layout, profile):
+    """Apply spatial fields onto the active layout; leave size/scale/primary/visibility alone."""
+    layout = json.loads(json.dumps(layout))  # deep copy
+    screens = layout.setdefault("screens", [])
+    count = screen_count(layout)
+    src = profile.get("screens") or []
+    if len(src) != count:
+        raise RuntimeError(f"profile has {len(src)} screen(s); active layout has {count} "
+                           "(profiles assume a fixed screen count)")
+    while len(screens) < count:
+        screens.append({"size": [1920, 1080], "metres": 1920 / PIXELS_PER_METRE})
+    for i in range(count):
+        entry = dict(screens[i])
+        spatial = src[i] or {}
+        for k in ("pos", "face", "roll", "metres", "curve"):
+            if k in spatial:
+                entry[k] = spatial[k]
+        entry.pop("pin", None)
+        pin = spatial.get("pin")
+        if pin_anchor(pin) and len((pin or {}).get("rel", [])) == 12:
+            entry["pin"] = make_pin(pin_anchor(pin), pin["rel"])
+        screens[i] = entry
+    layout["screens"] = screens
+    layout["mode"] = "custom"
+    return layout
+
+
+def profile_list(as_json=False):
+    store = load_profiles()
+    names = sorted(store["profiles"])
+    if as_json:
+        print(json.dumps({"current": store["current"], "profiles": names}, separators=(",", ":")))
+    else:
+        for name in names:
+            mark = " *" if name == store["current"] else ""
+            print(f"{name}{mark}")
+    return 0
+
+
+def profile_current(as_json=False):
+    store = load_profiles()
+    name = store["current"]
+    if as_json:
+        print(json.dumps({"current": name}, separators=(",", ":")))
+    else:
+        print(name or "")
+    return 0
+
+
+def profile_save(name):
+    if not name or name.startswith("-"):
+        raise RuntimeError("profile name required")
+    # Capture live arrangement first so the profile matches what you see.
+    if backend() == "screens":
+        capture_screens()
+    else:
+        capture_gamescope()
+    layout = load_layout()
+    store = load_profiles()
+    store["profiles"][name] = profile_from_layout(layout)
+    store["current"] = name
+    save_profiles(store)
+    log(f"saved profile {name!r} ({len(store['profiles'][name]['screens'])} screen(s))")
+    return 0
+
+
+def profile_apply(name, duration_ms=0):
+    store = load_profiles()
+    if name not in store["profiles"]:
+        raise RuntimeError(f"no profile named {name!r}")
+    layout = merge_profile_into_layout(load_layout(), store["profiles"][name])
+    save_layout(layout)
+    store["current"] = name
+    save_profiles(store)
+    apply(duration_ms=duration_ms)
+    log(f"applied profile {name!r}")
+    return 0
+
+
+def profile_delete(name):
+    store = load_profiles()
+    if name not in store["profiles"]:
+        raise RuntimeError(f"no profile named {name!r}")
+    del store["profiles"][name]
+    if store["current"] == name:
+        store["current"] = None
+    save_profiles(store)
+    log(f"deleted profile {name!r}")
+    return 0
 
 
 # ---------------------------------------------------------------- KWin (scale, positions, primary)
@@ -669,15 +968,46 @@ def main(argv):
             log(screens_socket().ask("toggle"))
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
+        elif cmd == "profile":
+            if len(argv) < 3:
+                print("usage: ft-layout profile list|current|save|apply|delete ...", file=sys.stderr)
+                return 2
+            sub = argv[2]
+            if sub == "list":
+                return profile_list(as_json="--json" in argv)
+            if sub == "current":
+                return profile_current(as_json="--json" in argv)
+            if sub == "save" and len(argv) >= 4:
+                with open(LOCK_PATH, "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        log("another ft-layout is already running", file=sys.stderr)
+                        return 1
+                    return profile_save(argv[3])
+            if sub == "apply" and len(argv) >= 4:
+                duration = float(argv[argv.index("--duration") + 1]) if "--duration" in argv else 0
+                with open(LOCK_PATH, "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        log("another ft-layout is already running", file=sys.stderr)
+                        return 1
+                    return profile_apply(argv[3], duration_ms=duration)
+            if sub == "delete" and len(argv) >= 4:
+                return profile_delete(argv[3])
+            print(f"unknown profile command: {' '.join(argv[2:])}", file=sys.stderr)
+            return 2
         elif cmd in ("apply", "capture", "scale"):
             with open(LOCK_PATH, "w") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
-                    log("another ft-layout is already running")
+                    log("another ft-layout is already running", file=sys.stderr)
                     return 1
                 if cmd == "apply":
                     wait = float(argv[argv.index("--wait") + 1]) if "--wait" in argv else 0
+                    duration = float(argv[argv.index("--duration") + 1]) if "--duration" in argv else 0
                     if wait and not load_layout().get("auto", True):
                         log("auto-arrange is off")
                         if backend() == "screens":  # the visibility settings apply anyway
@@ -690,7 +1020,7 @@ def main(argv):
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                     else:
-                        apply(wait)
+                        apply(wait, duration_ms=duration)
                     if wait:
                         # KWin keeps these, but new screens or a changed layout need them once.
                         for _ in range(30):  # Plasma may still be starting
@@ -712,7 +1042,7 @@ def main(argv):
             print(f"unknown command: {cmd}", file=sys.stderr)
             return 2
     except RuntimeError as e:
-        log(f"error: {e}")
+        log(f"error: {e}", file=sys.stderr)
         return 1
     return 0
 
