@@ -148,4 +148,22 @@ if [ "$remote" = 1 ]; then
   "$here/vnc-bridge.sh" "$width" "$height" > /tmp/frametop-vnc.log 2>&1 &
 fi
 
-dbus-run-session startplasma-wayland
+# Marker for ft-shell-watch: when this file disappears (cleanup), stop respawning plasmashell.
+touch "$runtime/session-active"
+
+# Private D-Bus session (no systemd1 on this bus — Plasma falls back to direct launches).
+# Watchdog starts first, waits for the real nested plasmashell, then snapshots its /proc
+# environ (wayland-0 under …/frametop) for respawns — never the pre-Plasma outer display.
+dbus-run-session -- bash -c '
+  set -eu
+  here=$1
+  bash "$here/ft-shell-watch.sh" &
+  watch=$!
+  set +e
+  startplasma-wayland
+  status=$?
+  set -e
+  kill "$watch" 2>/dev/null || true
+  wait "$watch" 2>/dev/null || true
+  exit "$status"
+' bash "$here"

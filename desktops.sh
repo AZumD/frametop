@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start, stop, or inspect the multi-screen Plasma desktop in VR on the Frame.
-# Usage: desktops.sh start [screens] | stop | restart | status | log [lines]
+# Usage: desktops.sh start [screens] | stop | restart | shell-restart | status | log [lines]
 #        desktops.sh install     # make the VR launcher's "Desktop" entry start Frametop
 #        desktops.sh uninstall   # give the launcher back the stock SteamOS desktop
 #        desktops.sh screens N   # set the default screen count in ~/.config/frametop.conf
@@ -100,7 +100,31 @@ pkill -f '[m]ultidesk-session.sh --inner' 2>/dev/null; pkill -f '[k]rdpserver --
 pkill -f '[X]vnc :20 ' 2>/dev/null; pkill -f '[x]freerdp /v:.*:3390' 2>/dev/null
 $running && { echo 'still running'; exit 1; } || echo 'stopped (forced)'" ;;
   restart) "$0" stop; sleep 3; exec "$0" start ${screens:+"$screens"} ;;
-  status) "$frame" --host "if $running; then pgrep -af '$match|[m]d-screens --socket' | cut -c1-120; else echo 'not running'; fi" ;;
+  shell-restart)
+    # Restart ONLY plasmashell inside the nested session (taskbar/desktop recovery).
+    # Does not touch KWin, ft-screens, SteamVR, or open app windows' compositor clients.
+    "$root/scripts/sync.sh" >/dev/null
+    "$frame" --host "set -e
+$running || { echo 'Frametop desktop is not running'; exit 1; }
+chmod +x $session/ft-shell-restart.sh $session/ft-shell-watch.sh 2>/dev/null || true
+exec $session/ft-shell-restart.sh" ;;
+  status) "$frame" --host "if $running; then
+  pgrep -af '$match|[f]t-screens --socket|[f]t-shell-watch' | cut -c1-120 || true
+  echo \"plasmashell: \$(pgrep -c -x plasmashell 2>/dev/null || echo 0)\"
+  echo \"kwin_wayland: \$(pgrep -c -x kwin_wayland 2>/dev/null || echo 0)\"
+  wpid=\$(cat /run/user/\$(id -u)/frametop/ft-shell-watch.pid 2>/dev/null || true)
+  if [ -n \"\$wpid\" ] && [ -r /proc/\$wpid/cmdline ] && tr '\\0' ' ' < /proc/\$wpid/cmdline | grep -q ft-shell-watch; then
+    echo \"ft-shell-watch: 1 (pid=\$wpid)\"
+  else
+    echo \"ft-shell-watch: 0\"
+  fi
+  if [ -f /run/user/\$(id -u)/frametop/plasmashell.env ]; then
+    echo \"plasmashell.env: present\"
+    tr '\\0' '\\n' < /run/user/\$(id -u)/frametop/plasmashell.env 2>/dev/null | awk -F= '\$1==\"WAYLAND_DISPLAY\"||\$1==\"DISPLAY\"||\$1==\"XDG_RUNTIME_DIR\"||\$1==\"XDG_SESSION_TYPE\"{print \"  \" \$0}'
+  else
+    echo \"plasmashell.env: missing\"
+  fi
+else echo 'not running'; fi" ;;
   log) "$frame" --host "grep -vE '^\s*$' $log | tail -n ${2:-40}" ;;
-  *) echo "usage: $0 start [screens] | stop | restart | status | log [lines] | install | uninstall | screens N | remote on|off|info | relay install|uninstall|status|log" >&2; exit 2 ;;
+  *) echo "usage: $0 start [screens] | stop | restart | shell-restart | status | log [lines] | install | uninstall | screens N | remote on|off|info | relay install|uninstall|status|log" >&2; exit 2 ;;
 esac
