@@ -1,5 +1,24 @@
 # Frametop
 
+> **Experimental personal fork of [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop).**
+>
+> This fork builds on the original Frametop with spatial profiles, additional anchoring and follow modes, Steam Frame eye-gaze-driven screen attention, desktop recovery, pointer-scaling fixes, and other experiments around using the Steam Frame as a spatial desktop.
+>
+> Development on this fork is heavily AI-assisted and primarily tested on my own setup. Expect rough edges. For the original project and upstream-supported version, use [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop).
+
+## What's different in this fork?
+
+Compared with upstream Frametop, this fork currently adds:
+
+- Named spatial screen profiles with animated switching
+- Head-soft, head-rigid, yaw-follow, and position-follow anchors
+- Direct profile-slot controls and shared semantic layout actions
+- Steam Frame eye-gaze attention with configurable opacity transitions
+- A soft-follow glance dead zone
+- Plasma shell watchdog and recovery without restarting the whole desktop
+- Correct pointer mapping across fractional KDE display scales
+- Safer opt-in handling and recovery for the optional SteamVR pointer driver
+
 Frametop puts a multi-monitor KDE Plasma desktop into SteamVR on the Valve Steam Frame, and lets a Bluetooth mouse drive all of SteamVR. It installs and runs on the headset itself.
 
 Each screen is its own monitor with its own resolution, so you can have an ultrawide in the middle and two portrait screens beside it, at whatever size and distance you like. The screens come back to your saved layout when the desktop starts. You can move, resize, curve, and roll them, pin one to your wrist, and put them all back with a shortcut.
@@ -19,7 +38,7 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
 3. Clone the repo and run the installer:
 
    ```
-   git clone https://github.com/DeeJanuz/frametop.git ~/frametop
+   git clone https://github.com/AZumD/frametop.git ~/frametop
    cd ~/frametop
    ./install.sh
    ```
@@ -72,13 +91,15 @@ This is an early release, tested on one Steam Frame (SteamOS 0.3.0 build 2026092
 
 ## Reporting problems
 
+If you're using this fork, please report problems here rather than to the upstream Frametop repository unless you've reproduced the problem on upstream Frametop as well.
+
 In a terminal on the headset, run:
 
 ```
 cd ~/frametop && scripts/report.sh
 ```
 
-This writes `frametop-report-<date>.txt` with version numbers, service states, settings, and recent logs. Bluetooth addresses and the headset's serial number are masked. Then [open an issue](https://github.com/DeeJanuz/frametop/issues), describe what you did, what you expected, and what happened, and attach the file.
+This writes `frametop-report-<date>.txt` with version numbers, service states, settings, and recent logs. Bluetooth addresses and the headset's serial number are masked. Then [open an issue](https://github.com/AZumD/frametop/issues), describe what you did, what you expected, and what happened, and attach the file.
 
 ## Update
 
