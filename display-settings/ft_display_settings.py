@@ -239,6 +239,21 @@ class Backend(QObject):
             "current_slot": current_slot,
         }
 
+    @Property("QVariantMap", notify=changed)
+    def clockInstrument(self):
+        """Spatial Instruments — Clock card."""
+        layout = ft_layout.load_layout()
+        inst = ft_layout.instrument_entry(layout, "clock") or ft_layout.default_clock_instrument()
+        att = inst.get("attention") or {}
+        return {
+            "enabled": bool(inst.get("enabled")),
+            "anchor": ft_layout.pin_anchor(inst.get("pin")) or "world",
+            "metres": float(inst.get("metres", ft_layout.DEFAULT_INSTRUMENT_METRES)),
+            "activeOpacity": float(inst.get("active_opacity", 1.0)),
+            "idleOpacity": float(inst.get("idle_opacity", ft_layout.DEFAULT_INSTRUMENT_IDLE)),
+            "attentionEnabled": bool(att.get("enabled", True)),
+        }
+
     @Property("QVariantList", notify=changed)
     def plan(self):
         """The arrangement in the head frame, for the preview."""
@@ -535,6 +550,92 @@ class Backend(QObject):
         reply = self._ask_screens("unpin all") if self._running else None
         if not (reply and reply.startswith("ok")):
             self.message.emit(f"Couldn't unpin: {reply or 'the desktop is not running'}", True)
+
+    def _edit_clock(self, mutate):
+        layout = ft_layout.load_layout()
+        inst = ft_layout.instrument_entry(layout, "clock") or ft_layout.default_clock_instrument()
+        mutate(inst)
+        layout = ft_layout.upsert_instrument(layout, inst)
+        ft_layout.save_layout(layout)
+        self.changed.emit()
+        return inst
+
+    @Slot(bool)
+    def setClockEnabled(self, enabled):
+        self._edit_clock(lambda i: i.__setitem__("enabled", bool(enabled)))
+        if self._running:
+            self._run("Clock", "instrument", "enable" if enabled else "disable", "clock")
+
+    @Slot(str)
+    def setClockAnchor(self, mode):
+        mode = ft_layout.normalize_anchor(mode) or "world"
+        if mode not in ft_layout.INSTRUMENT_ANCHORS:
+            mode = "world"
+
+        def edit(inst):
+            if mode == "world":
+                inst.pop("pin", None)
+            else:
+                rel = (inst.get("pin") or {}).get("rel") or [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+                inst["pin"] = ft_layout.make_pin(mode, rel)
+
+        self._edit_clock(edit)
+        if self._running:
+            if mode == "world":
+                self._ask_screens("instrument unpin clock")
+            else:
+                self._ask_screens(f"instrument pin clock {mode}")
+
+    @Slot(float)
+    def setClockMetres(self, metres):
+        metres = max(0.08, min(2.0, float(metres)))
+        self._edit_clock(lambda i: i.__setitem__("metres", metres))
+        if self._running:
+            self._ask_screens(f"instrument width clock {metres:.4f}")
+
+    @Slot(float)
+    def setClockActiveOpacity(self, value):
+        value = max(0.0, min(1.0, float(value)))
+
+        def edit(inst):
+            inst["active_opacity"] = value
+            inst["opacity"] = value
+
+        inst = self._edit_clock(edit)
+        if self._running:
+            self._ask_screens(
+                f"instrument opacity clock {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
+
+    @Slot(float)
+    def setClockIdleOpacity(self, value):
+        value = max(0.0, min(1.0, float(value)))
+
+        def edit(inst):
+            inst["idle_opacity"] = value
+
+        inst = self._edit_clock(edit)
+        if self._running:
+            self._ask_screens(
+                f"instrument opacity clock {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
+
+    @Slot(bool)
+    def setClockAttention(self, enabled):
+        def edit(inst):
+            att = dict(inst.get("attention") or ft_layout.screen_attention({}))
+            att["enabled"] = bool(enabled)
+            inst["attention"] = att
+
+        self._edit_clock(edit)
+        if self._running:
+            self._ask_screens(f"instrument attention clock {'on' if enabled else 'off'}")
+
+    @Slot()
+    def recenterClock(self):
+        self._edit_clock(lambda i: i.__setitem__("enabled", True))
+        if self._running:
+            self._run("Place clock", "instrument", "recenter", "clock")
+        else:
+            self.message.emit("Desktop not running — enable Clock when Frametop is up", False)
 
     @Slot(str)
     def applyProfile(self, name):

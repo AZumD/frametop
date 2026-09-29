@@ -6,6 +6,7 @@ Profile switching must stay on one path:
 
 - VR chrome slot circles → `ft-layout action profile.slot.N`
 - Hide/show screens → `screens.toggle`
+- Spatial Instruments → Display Settings tab; Clock is the first type (`ft-layout instrument …`)
 - SteamVR digital keyboard → removed for now (chrome "K" / ShowKeyboard path withdrawn)
 - Aurora / passthrough → not exposed (no public OpenVR API for overlay apps)
 - Input Settings button maps → same aliases (`profile_slot_N`, `profile_next`, …)

@@ -9,7 +9,13 @@ Why Frametop is built the way it is, and what we learned about SteamVR on the St
 - Controllers stay fully usable, and VR games aren't disturbed.
 - Everything runs on the Frame itself, installed from a terminal on the headset.
 
-## Screens
+## Screens and Spatial Instruments
+
+Screens are application/content surfaces (nested KWin outputs in SteamVR).
+
+**Spatial Instruments** are lightweight ambient information that exists directly in VR space rather than inside a virtual display. They reuse the same anchor/follow, soft-follow dead zone, and true eye-gaze attention opacity model as screens, but they are not Wayland surfaces and do not drive the desktop pointer.
+
+**Clock** is the first experimental instrument: transparent floating `HH:MM` (24-hour local time). Configure it under Display Settings → Spatial Instruments. Profiles capture instrument state with the screens.
 
 ### Why our own compositor
 

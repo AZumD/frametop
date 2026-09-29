@@ -28,10 +28,14 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                 "scale": 1.0,                         KWin output scale (1.0 = 100%)
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
+   "instruments": [{"id": "clock", "type": "clock", "enabled": true,  Spatial Instruments (ambient VR
+                     "pos"/"face"/"roll" or "pin", "metres",            info outside virtual displays;
+                     "active_opacity", "idle_opacity", "attention"}],   Clock is the first type)
    "panel_size": [w, h]}              gamescope: last measured panel size
 
 Named spatial profiles (same screen count; no resolution/scale/visibility) live in
-~/.config/frametop-layout-profiles.json. The active layout file stays compatible.
+~/.config/frametop-layout-profiles.json and may include instruments. Old files without
+instruments still load (empty instruments). The active layout file stays compatible.
 
 Custom positions: x right, y up, -z forward from the head, in metres; face = the
 direction you look to see the screen's front straight on, in degrees, relative to your
@@ -63,6 +67,8 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout profile slot N NAME | unslot N | slots [--json]
   ft-layout profile apply-slot N [--duration MS]
   ft-layout profile next|previous [--duration MS]
+  ft-layout instrument list|state [--json]
+  ft-layout instrument enable|disable|recenter clock
 """
 import json
 import math
@@ -94,18 +100,22 @@ VISIBILITY = {"mode": "always", "wrist_angle": 60, "gesture_hand": "left", "gest
               "controllers": "outside_games", "in_games": "hide"}
 DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
-            "screens": [], "panel_size": list(DEFAULT_PANEL)}
+            "screens": [], "instruments": [], "panel_size": list(DEFAULT_PANEL)}
 # Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
 PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity",
                        "active_opacity", "idle_opacity", "attention", "follow_deadzone")
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
+INSTRUMENT_ANCHORS = ("world", "head", "head-rigid", "yaw-follow", "position-follow")
+KNOWN_INSTRUMENT_TYPES = ("clock",)
 CONTROLLER_ANCHORS = ("left", "right")
 SOFT_FOLLOW_ANCHORS = ("head", "yaw-follow", "position-follow")
 SLOT_COUNT = 6
 DEFAULT_PROFILE_DURATION_MS = 450
 DEFAULT_FOLLOW_LAG_MS = 120
 DEFAULT_OPACITY = 1.0
+DEFAULT_INSTRUMENT_METRES = 0.35
+DEFAULT_INSTRUMENT_IDLE = 0.35
 DEFAULT_ATTENTION_IN_MS = 150.0
 DEFAULT_ATTENTION_OUT_MS = 250.0
 DEFAULT_ATTENTION_DWELL_MS = 80.0
@@ -299,6 +309,149 @@ def spatial_screen(entry):
             "metres": round(dz["metres"], 3),
         }
     return out
+
+
+def default_clock_instrument():
+    return {
+        "id": "clock",
+        "type": "clock",
+        "enabled": False,
+        "metres": DEFAULT_INSTRUMENT_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "attention": {
+            "enabled": True,
+            "in_ms": DEFAULT_ATTENTION_IN_MS,
+            "out_ms": DEFAULT_ATTENTION_OUT_MS,
+            "dwell_ms": DEFAULT_ATTENTION_DWELL_MS,
+            "hold_ms": DEFAULT_ATTENTION_HOLD_MS,
+        },
+    }
+
+
+def normalize_instrument(entry, warn=True):
+    """Sanitize one instrument dict. Unknown types return None (skipped safely)."""
+    if not isinstance(entry, dict):
+        if warn:
+            log("warning: ignoring non-object instrument entry", file=sys.stderr)
+        return None
+    itype = str(entry.get("type") or "").strip().lower()
+    if itype not in KNOWN_INSTRUMENT_TYPES:
+        if warn:
+            log(f"warning: ignoring unknown instrument type {itype!r}", file=sys.stderr)
+        return None
+    iid = str(entry.get("id") or itype).strip() or itype
+    out = default_clock_instrument() if itype == "clock" else {"id": iid, "type": itype}
+    out["id"] = iid
+    out["type"] = itype
+    out["enabled"] = bool(entry.get("enabled", False))
+    try:
+        out["metres"] = max(0.08, min(2.0, float(entry.get("metres", DEFAULT_INSTRUMENT_METRES))))
+    except (TypeError, ValueError):
+        out["metres"] = DEFAULT_INSTRUMENT_METRES
+    active, idle = screen_opacities(entry if ("active_opacity" in entry or "idle_opacity" in entry
+                                             or "opacity" in entry) else {
+        "active_opacity": out["active_opacity"], "idle_opacity": out["idle_opacity"]})
+    # Prefer explicit fields when present.
+    try:
+        if "active_opacity" in entry:
+            active = max(0.0, min(1.0, float(entry["active_opacity"])))
+        elif "opacity" in entry:
+            active = max(0.0, min(1.0, float(entry["opacity"])))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if "idle_opacity" in entry:
+            idle = max(0.0, min(1.0, float(entry["idle_opacity"])))
+        elif "opacity" in entry and "active_opacity" not in entry:
+            idle = active
+    except (TypeError, ValueError):
+        idle = active
+    out["active_opacity"] = round(active, 3)
+    out["idle_opacity"] = round(idle, 3)
+    out["opacity"] = round(active, 3)
+    for k in ("pos", "face", "roll"):
+        if k in entry:
+            out[k] = entry[k]
+    pin = entry.get("pin")
+    anchor = pin_anchor(pin)
+    if anchor and anchor in INSTRUMENT_ANCHORS and anchor != "world" and isinstance(pin, dict) \
+            and len(pin.get("rel", [])) == 12:
+        out["pin"] = make_pin(anchor, pin["rel"])
+    else:
+        out.pop("pin", None)
+    att = screen_attention(entry)
+    out["attention"] = att
+    return out
+
+
+def instruments_from_layout(layout):
+    """Return sanitized instruments list (unknown types dropped)."""
+    raw = layout.get("instruments") if isinstance(layout, dict) else None
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        log("warning: instruments field is not a list; treating as empty", file=sys.stderr)
+        return []
+    out, seen = [], set()
+    for entry in raw:
+        inst = normalize_instrument(entry)
+        if not inst:
+            continue
+        if inst["id"] in seen:
+            log(f"warning: duplicate instrument id {inst['id']!r}; keeping first", file=sys.stderr)
+            continue
+        seen.add(inst["id"])
+        out.append(inst)
+    return out
+
+
+def spatial_instrument(entry):
+    """Profile payload for one instrument."""
+    inst = normalize_instrument(entry, warn=False)
+    if not inst:
+        return None
+    out = {
+        "id": inst["id"],
+        "type": inst["type"],
+        "enabled": bool(inst["enabled"]),
+        "metres": round(float(inst["metres"]), 4),
+        "opacity": round(float(inst["active_opacity"]), 3),
+        "active_opacity": round(float(inst["active_opacity"]), 3),
+        "idle_opacity": round(float(inst["idle_opacity"]), 3),
+    }
+    for k in ("pos", "face", "roll"):
+        if k in inst:
+            out[k] = inst[k]
+    if inst.get("pin"):
+        out["pin"] = inst["pin"]
+    att = inst.get("attention") or {}
+    if att.get("enabled"):
+        out["attention"] = att
+    return out
+
+
+def instrument_entry(layout, iid):
+    for inst in instruments_from_layout(layout):
+        if inst["id"] == iid:
+            return inst
+    return None
+
+
+def upsert_instrument(layout, inst):
+    layout = json.loads(json.dumps(layout))
+    items = instruments_from_layout(layout)
+    found = False
+    for i, cur in enumerate(items):
+        if cur["id"] == inst["id"]:
+            items[i] = normalize_instrument(inst)
+            found = True
+            break
+    if not found:
+        items.append(normalize_instrument(inst))
+    layout["instruments"] = [x for x in items if x]
+    return layout
 
 
 def screen_entry(layout, i):
@@ -827,8 +980,63 @@ def apply_screens(wait=0, duration_ms=0):
             apply_attention(sock, i + 1, t.get("attention"))
             apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
     push_slot_state(sock)
+    apply_instruments(sock, layout)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
     return results
+
+
+def apply_instruments(sock, layout=None):
+    """Push Spatial Instruments from layout to ft-screens (instant; no transition yet)."""
+    layout = layout or load_layout()
+    if backend() != "screens":
+        return
+    try:
+        sock = sock or screens_socket()
+    except RuntimeError:
+        return
+    # Clear first so removed instruments disappear.
+    try:
+        sock.ask("instrument clear")
+    except RuntimeError:
+        pass
+    f = sock.ask("head").split()
+    eye = tuple(map(float, f[1:4]))
+    heading = float(f[4])
+    for inst in instruments_from_layout(layout):
+        iid = inst["id"]
+        try:
+            if not inst["enabled"]:
+                sock.ask(f"instrument disable {iid}")
+                continue
+            sock.ask(f"instrument enable {iid}")
+            sock.ask(f"instrument width {iid} {float(inst['metres']):.4f}")
+            active, idle = inst["active_opacity"], inst["idle_opacity"]
+            sock.ask(f"instrument opacity {iid} {active:.3f} {idle:.3f}")
+            att = inst.get("attention") or {}
+            if att.get("enabled"):
+                sock.ask(f"instrument attention {iid} on")
+            else:
+                sock.ask(f"instrument attention {iid} off")
+            pin = inst.get("pin")
+            anchor = pin_anchor(pin)
+            if "pos" in inst and "face" in inst:
+                pos = inst["pos"]
+                face = inst["face"]
+                roll = float(inst.get("roll", 0))
+                world = turn_yaw(tuple(pos), heading)
+                center = tuple(e + v for e, v in zip(eye, world))
+                sock.ask("instrument place %s %.4f %.4f %.4f %.3f %.3f %.3f" % (
+                    iid, center[0], center[1], center[2],
+                    float(face[0]) + heading, float(face[1]) if len(face) > 1 else 0.0, roll))
+            else:
+                sock.ask(f"instrument recenter {iid}")
+            if anchor and anchor != "world" and pin and len(pin.get("rel", [])) == 12:
+                rel = " ".join(f"{float(v):.6f}" for v in pin["rel"])
+                sock.ask(f"instrument pin {iid} {anchor} {rel}")
+            else:
+                sock.ask(f"instrument unpin {iid}")
+        except RuntimeError as e:
+            log(f"warning: instrument {iid}: {e}", file=sys.stderr)
 
 
 def capture_screens():
@@ -854,8 +1062,146 @@ def capture_screens():
         screens.append(entry)
     layout["screens"] = screens + layout.get("screens", [])[len(screens):]
     layout["mode"] = "custom"
+    layout["instruments"] = capture_instruments(sock, eye, heading)
     save_layout(layout)
     return screens
+
+
+def capture_instruments(sock, eye, heading):
+    """Read live instrument state into layout entries."""
+    out = []
+    try:
+        reply = sock.ask("instrument list")
+    except RuntimeError:
+        return instruments_from_layout(load_layout())
+    # ok N id:type:enabled ...
+    parts = reply.split()
+    if not parts or parts[0] != "ok":
+        return []
+    for token in parts[2:]:
+        bits = token.split(":")
+        if len(bits) < 3:
+            continue
+        iid, itype, en = bits[0], bits[1], bits[2]
+        try:
+            g = parse_instrument_get(sock.ask(f"instrument get {iid}"))
+        except RuntimeError:
+            continue
+        entry = {
+            "id": iid,
+            "type": itype,
+            "enabled": en in ("1", "true", "on", "yes"),
+            "metres": float(g.get("metres", DEFAULT_INSTRUMENT_METRES)),
+            "active_opacity": float(g.get("active_opacity", g.get("opacity", 1.0))),
+            "idle_opacity": float(g.get("idle_opacity", g.get("active_opacity", 1.0))),
+        }
+        entry["opacity"] = entry["active_opacity"]
+        if "center" in g and "x" in g:
+            entry.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
+            entry["roll"] = float(g.get("roll", 0))
+        if g.get("anchor") and g["anchor"] != "world" and "rel" in g:
+            entry["pin"] = make_pin(g["anchor"], g["rel"])
+        if g.get("attention"):
+            entry["attention"] = {"enabled": True}
+        else:
+            entry["attention"] = {"enabled": False}
+        inst = normalize_instrument(entry)
+        if inst:
+            out.append(inst)
+    return out
+
+
+def parse_instrument_get(reply):
+    """Parse `instrument get` — same pose block as screen get, then metres active idle attention anchor [rel]."""
+    f = reply.split()[1:]
+    if len(f) < 18:
+        raise RuntimeError(reply)
+    g = list(map(float, f[:15]))
+    out = {
+        "center": tuple(g[0:3]),
+        "x": tuple(g[3:6]),
+        "y": tuple(g[6:9]),
+        "z": tuple(g[9:12]),
+        "metres": g[12],
+        "height": g[13],
+        "curve": g[14],
+        "active_opacity": float(f[15]),
+        "idle_opacity": float(f[16]),
+        "opacity": float(f[15]),
+        "attention": int(float(f[17])) != 0,
+        "anchor": "world",
+    }
+    if len(f) > 18:
+        out["anchor"] = normalize_anchor(f[18]) or "world"
+    if out["anchor"] != "world" and len(f) >= 31:
+        out["rel"] = [round(float(v), 5) for v in f[19:31]]
+    return out
+
+
+def instrument_cmd(argv):
+    """ft-layout instrument list|state|enable|disable|recenter [id] [--json]."""
+    if len(argv) < 3:
+        print("usage: ft-layout instrument list|state|enable|disable|recenter [clock] [--json]",
+              file=sys.stderr)
+        return 2
+    sub = argv[2]
+    as_json = "--json" in argv
+    args = [a for a in argv[3:] if a != "--json"]
+    iid = args[0] if args else "clock"
+
+    if sub in ("list", "state"):
+        layout = load_layout()
+        items = instruments_from_layout(layout)
+        if as_json:
+            print(json.dumps({"instruments": items}, separators=(",", ":")))
+        else:
+            if not items:
+                print("(no instruments)")
+            for inst in items:
+                pin = pin_anchor(inst.get("pin")) or "world"
+                print(f"{inst['id']}\ttype={inst['type']}\tenabled={int(inst['enabled'])}\t"
+                      f"anchor={pin}\tmetres={inst['metres']}\t"
+                      f"active={inst['active_opacity']}\tidle={inst['idle_opacity']}\t"
+                      f"attention={int(bool((inst.get('attention') or {}).get('enabled')))}")
+        return 0
+
+    if sub in ("enable", "disable", "recenter"):
+        layout = load_layout()
+        inst = instrument_entry(layout, iid) or default_clock_instrument()
+        if inst["id"] != iid:
+            inst["id"] = iid
+        if sub == "enable":
+            inst["enabled"] = True
+        elif sub == "disable":
+            inst["enabled"] = False
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            sock = screens_socket()
+            if sub == "enable":
+                sock.ask(f"instrument enable {iid}")
+                if "pos" not in inst:
+                    sock.ask(f"instrument recenter {iid}")
+                apply_instruments(sock, layout)
+            elif sub == "disable":
+                sock.ask(f"instrument disable {iid}")
+            else:
+                sock.ask(f"instrument enable {iid}")
+                sock.ask(f"instrument recenter {iid}")
+                # Persist new pose
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                layout["instruments"] = capture_instruments(sock, eye, heading)
+                # Keep enabled true after recenter
+                for e in layout["instruments"]:
+                    if e["id"] == iid:
+                        e["enabled"] = True
+                save_layout(layout)
+        log(f"instrument {iid}: {sub}")
+        return 0
+
+    print(f"unknown instrument command {sub!r}", file=sys.stderr)
+    return 2
 
 
 # ---------------------------------------------------------------- gamescope (dashboard panels)
@@ -1035,10 +1381,15 @@ def normalized_slots(store):
 
 
 def profile_from_layout(layout):
-    """Spatial snapshot for the configured screen count."""
+    """Spatial snapshot for the configured screen count (+ instruments)."""
     count = screen_count(layout)
     screens = [spatial_screen(screen_entry(layout, i)) for i in range(count)]
-    return {"screens": screens}
+    instruments = []
+    for entry in instruments_from_layout(layout):
+        snap = spatial_instrument(entry)
+        if snap:
+            instruments.append(snap)
+    return {"screens": screens, "instruments": instruments}
 
 
 def merge_profile_into_layout(layout, profile):
@@ -1077,6 +1428,13 @@ def merge_profile_into_layout(layout, profile):
         screens[i] = entry
     layout["screens"] = screens
     layout["mode"] = "custom"
+    # Missing instruments key => no instruments (old profiles).
+    if "instruments" not in profile:
+        layout["instruments"] = []
+    else:
+        layout["instruments"] = [
+            x for x in (normalize_instrument(e) for e in (profile.get("instruments") or [])) if x
+        ]
     return layout
 
 
@@ -1523,6 +1881,8 @@ def main(argv):
             return screen_state_json()
         elif cmd == "gaze":
             return gaze_cmd(argv)
+        elif cmd == "instrument":
+            return instrument_cmd(argv)
         elif cmd == "action":
             if len(argv) < 3:
                 print("usage: ft-layout action NAME|--list [--json] [--duration MS]", file=sys.stderr)

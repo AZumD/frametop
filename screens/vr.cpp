@@ -50,6 +50,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
@@ -429,15 +430,16 @@ enum class Lasers { Always, OutsideGames, Dashboard };
 enum class InGames { Visible, Hide };
 
 enum class GazeKind {
-    None, Screen, Bar, Curve, Roll, Resize, Anchor, Slot
+    None, Screen, Bar, Curve, Roll, Resize, Anchor, Slot, Instrument
 };
 
 struct GazeTarget {
     GazeKind kind = GazeKind::None;
-    int screen = -1;   // 0-based index into g_screens map key
-    int slot = -1;     // 0-based profile slot when kind == Slot
-    double localX = 0, localY = 0;  // metres on screen plane (centre origin)
-    double u = 0, v = 0;            // 0..1 across the screen (top-left origin for pixels)
+    int screen = -1;       // 0-based index into g_screens
+    int instrument = -1;   // 0-based index into g_instruments
+    int slot = -1;         // 0-based profile slot when kind == Slot
+    double u = 0, v = 0;   // normalized on screen surface (0..1 top-left)
+    double localX = 0, localY = 0;
     double distance = 1e9;
     explicit operator bool() const { return kind != GazeKind::None; }
 };
@@ -551,6 +553,62 @@ struct Screen {
 };
 std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
+
+// --- Spatial Instruments (ambient VR info; not desktop surfaces) ---
+enum class InstrumentType { Clock };
+
+struct Instrument {
+    std::string id;
+    InstrumentType type = InstrumentType::Clock;
+    bool enabled = false;
+    vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
+    vr::VROverlayHandle_t bar = vr::k_ulOverlayHandleInvalid;
+    double metres = 0.35;
+    float activeOpacity = 1.f;
+    float idleOpacity = 0.35f;
+    float attentionResolved = 1.f;
+    bool attentionEnabled = true;
+    double attentionInMs = 150;
+    double attentionOutMs = 250;
+    double attentionDwellMs = 80;
+    double attentionHoldMs = 150;
+    double attentionFocusMs = 0;
+    bool attentionFocused = false;
+    AnchorMode anchor = AnchorMode::World;
+    vr::TrackedDeviceIndex_t pinned = kNone;
+    Mat pinRel = Identity();
+    Mat pose = Identity();
+    bool followDeadzone = false;
+    double followDeadzoneDeg = 15;
+    double followDeadzoneM = 0.15;
+    bool followLockValid = false;
+    Mat followLock = Identity();
+    Drag drag = Drag::None;
+    vr::TrackedDeviceIndex_t dragDevice = kNone;
+    Mat dragRel = Identity();
+    AnchorMode dragRestore = AnchorMode::World;
+    bool hoverBar = false;
+    bool barLit = false;
+    float controls = 0;
+    bool controlsUp = false;
+    long nearUntil = 0;
+    bool gazeHover = false;
+    bool visible = false;
+    int lastMinute = -1;
+    int texW = 384, texH = 128;
+    std::vector<uint8_t> pixels;
+    double heightMetres() const { return metres * double(texH) / double(texW); }
+    float ComposedAlpha() const { return attentionResolved; }
+};
+
+std::vector<Instrument> g_instruments;
+
+bool InstrumentPose(const Instrument &inst, Mat *out);
+void UpdateInstrumentAttention(double dt);
+void TickInstruments(double dt);
+void EndInstrumentDragsBy(vr::TrackedDeviceIndex_t dev);
+void ClearInstruments();
+
 
 // Visibility (see the top). g_manual is the hide/show switch: in the always mode it hides
 // the screens, in the others it shows them anyway.
@@ -1313,12 +1371,39 @@ GazeTarget PickGazeTarget(const double origin[3], const double dir[3]) {
         // Screen surface.
         if (std::fabs(hx) <= halfW && std::fabs(hy) <= halfH) consider(GazeKind::Screen, -1, dist);
     }
+    for (size_t ii = 0; ii < g_instruments.size(); ++ii) {
+        Instrument &inst = g_instruments[ii];
+        if (!inst.enabled || !inst.visible) continue;
+        Mat ip;
+        if (!InstrumentPose(inst, &ip)) continue;
+        double hx, hy;
+        if (!RayOnPlane(ip, ray, &hx, &hy)) continue;
+        const double halfW = inst.metres / 2, halfH = inst.heightMetres() / 2;
+        if (std::fabs(hx) > halfW * 1.1 || std::fabs(hy) > halfH * 1.25) continue;
+        const double o[3] = {origin[0], origin[1], origin[2]};
+        const double hit[3] = {ip.m[0][3] + float(hx) * ip.m[0][0] + float(hy) * ip.m[0][1],
+                               ip.m[1][3] + float(hx) * ip.m[1][0] + float(hy) * ip.m[1][1],
+                               ip.m[2][3] + float(hx) * ip.m[2][0] + float(hy) * ip.m[2][1]};
+        const double dvec[3] = {hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]};
+        const double dist = std::sqrt(Dot3(dvec, dvec));
+        if (dist >= best.distance) continue;
+        best.kind = GazeKind::Instrument;
+        best.screen = -1;
+        best.instrument = int(ii);
+        best.slot = -1;
+        best.localX = hx;
+        best.localY = hy;
+        best.u = halfW > 0 ? (hx + halfW) / inst.metres : 0.5;
+        best.v = halfH > 0 ? (halfH - hy) / inst.heightMetres() : 0.5;
+        best.distance = dist;
+    }
     return best;
 }
 
 void UpdateGaze(double dt) {
     (void)dt;
     for (auto &[i, s] : g_screens) s.gazeHover = false;
+    for (auto &inst : g_instruments) inst.gazeHover = false;
     double origin[3], dir[3];
     bool got = SampleEyeGaze(origin, dir);
     if (!got && g_gazeFallbackHead) got = SampleHeadFallbackGaze(origin, dir);
@@ -1329,8 +1414,13 @@ void UpdateGaze(double dt) {
     for (int k = 0; k < 3; ++k) g_gazeOrigin[k] = origin[k], g_gazeDir[k] = dir[k];
     g_gazeTarget = PickGazeTarget(origin, dir);
     if (g_gazeTarget) {
-        auto it = g_screens.find(g_gazeTarget.screen);
-        if (it != g_screens.end()) it->second.gazeHover = true;
+        if (g_gazeTarget.kind == GazeKind::Instrument && g_gazeTarget.instrument >= 0 &&
+            g_gazeTarget.instrument < int(g_instruments.size())) {
+            g_instruments[size_t(g_gazeTarget.instrument)].gazeHover = true;
+        } else {
+            auto it = g_screens.find(g_gazeTarget.screen);
+            if (it != g_screens.end()) it->second.gazeHover = true;
+        }
     }
     if (g_gazeDebug && (g_tick % 45) == 0) {
         const char *kind = "none";
@@ -1342,6 +1432,7 @@ void UpdateGaze(double dt) {
             case GazeKind::Resize: kind = "resize"; break;
             case GazeKind::Anchor: kind = "anchor"; break;
             case GazeKind::Slot: kind = "slot"; break;
+            case GazeKind::Instrument: kind = "instrument"; break;
             default: break;
         }
         std::printf("gaze: eye=%s valid=%s target=%s screen=%d u=%.3f v=%.3f dist=%.3f\n",
@@ -1664,6 +1755,7 @@ void FinishDrag(Screen &s, int index) {
 void EndDragsBy(vr::TrackedDeviceIndex_t dev) {
     for (auto &[index, s] : g_screens)
         if (s.drag != Drag::None && s.dragDevice == dev) FinishDrag(s, index);
+    EndInstrumentDragsBy(dev);
 }
 
 // While moving: the laser entering a controller's ring flips whether the screen pins to
@@ -1788,6 +1880,588 @@ const char *ModeName() {
 }
 
 
+// ---------------------------------------------------------------- Spatial Instruments
+
+Instrument *FindInstrument(const char *id) {
+    if (!id) return nullptr;
+    for (auto &inst : g_instruments)
+        if (inst.id == id) return &inst;
+    return nullptr;
+}
+
+Instrument &FindOrCreateClock() {
+    if (Instrument *existing = FindInstrument("clock")) return *existing;
+    Instrument inst;
+    inst.id = "clock";
+    inst.type = InstrumentType::Clock;
+    g_instruments.push_back(inst);
+    return g_instruments.back();
+}
+
+bool InstrumentPose(const Instrument &inst, Mat *out) {
+    if (inst.pinned != kNone) {
+        Mat d;
+        if (!DevicePose(inst.pinned, &d)) return false;
+        *out = Mul(d, inst.pinRel);
+        return true;
+    }
+    *out = inst.pose;
+    return true;
+}
+
+bool IsIdentityMat(const Mat &m) {
+    const Mat id = Identity();
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 4; ++j)
+            if (std::fabs(m.m[i][j] - id.m[i][j]) > 1e-4f) return false;
+    return true;
+}
+
+Mat DefaultInstrumentPose() {
+    Mat head;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) head = Identity();
+    const double heading = std::atan2(head.m[0][2], head.m[2][2]) * 180 / M_PI;
+    const double dx = -std::sin(heading * M_PI / 180), dz = -std::cos(heading * M_PI / 180);
+    return PanelPose(head.m[0][3] + dx * 1.0, head.m[1][3] + 0.12, head.m[2][3] + dz * 1.0, heading, 0, 0);
+}
+
+double InstrumentBarY(const Instrument &inst) {
+    const double chrome = std::max(0.04, inst.metres * 0.18);
+    return -(inst.heightMetres() / 2 + chrome * 0.06 + chrome * 12 / 256);
+}
+
+Mat InstrumentBarOffset(const Instrument &inst) {
+    return Translation(0, InstrumentBarY(inst), 0.003);
+}
+
+void PlaceInstrumentChrome(Instrument &inst) {
+    if (inst.bar == vr::k_ulOverlayHandleInvalid) return;
+    const double chrome = std::max(0.04, inst.metres * 0.18);
+    vr::VROverlay()->SetOverlayWidthInMeters(inst.bar, float(chrome));
+    const Mat offset = InstrumentBarOffset(inst);
+    if (inst.pinned != kNone) {
+        const Mat m = Mul(inst.pinRel, offset);
+        vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(inst.bar, inst.pinned, &m);
+        return;
+    }
+    Mat p;
+    if (!InstrumentPose(inst, &p)) return;
+    const Mat m = Mul(p, offset);
+    vr::VROverlay()->SetOverlayTransformAbsolute(inst.bar, vr::TrackingUniverseStanding, &m);
+}
+
+void ApplyInstrumentAlpha(const Instrument &inst) {
+    if (inst.overlay == vr::k_ulOverlayHandleInvalid) return;
+    const float a = inst.ComposedAlpha();
+    vr::VROverlay()->SetOverlayAlpha(inst.overlay, a);
+    if (inst.bar != vr::k_ulOverlayHandleInvalid) {
+        const bool active = inst.hoverBar || inst.drag == Drag::Move ||
+                            (inst.gazeHover && g_gazeTarget.kind == GazeKind::Instrument);
+        vr::VROverlay()->SetOverlayAlpha(inst.bar, a * inst.controls * (active ? 1.f : kChromeIdle));
+    }
+}
+
+void LightInstrumentBar(Instrument &inst, bool lit) {
+    if (inst.bar == vr::k_ulOverlayHandleInvalid || inst.barLit == lit) return;
+    inst.barLit = lit;
+    const auto &px = BarTexture(lit);
+    vr::VROverlay()->SetOverlayRaw(inst.bar, const_cast<uint8_t *>(px.data()), 256, 24, 4);
+}
+
+void SetInstrumentAbsolute(Instrument &inst, const Mat &pose) {
+    inst.anchor = AnchorMode::World;
+    inst.pinned = kNone;
+    inst.pose = pose;
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayTransformAbsolute(inst.overlay, vr::TrackingUniverseStanding, &pose);
+    PlaceInstrumentChrome(inst);
+}
+
+void SetInstrumentFollow(Instrument &inst, AnchorMode mode, const Mat &rel) {
+    Mat seed;
+    const bool haveSeed = InstrumentPose(inst, &seed);
+    inst.anchor = mode;
+    inst.pinRel = rel;
+    if (IsRigidDevice(mode)) {
+        const vr::TrackedDeviceIndex_t dev = DeviceForMode(mode);
+        Mat c;
+        if (dev == kNone || !DevicePose(dev, &c)) return;
+        inst.pinned = dev;
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+            vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(inst.overlay, dev, &inst.pinRel);
+        PlaceInstrumentChrome(inst);
+        return;
+    }
+    inst.pinned = kNone;
+    if (haveSeed) {
+        inst.pose = seed;
+    } else {
+        Mat hmd;
+        if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) hmd = Identity();
+        inst.pose = Mul(ReferenceFrame(mode, hmd), rel);
+    }
+    {
+        Mat hmd;
+        if (DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) {
+            inst.followLock = ReferenceFrame(mode, hmd);
+            inst.followLockValid = true;
+        } else {
+            inst.followLockValid = false;
+        }
+    }
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayTransformAbsolute(inst.overlay, vr::TrackingUniverseStanding, &inst.pose);
+    PlaceInstrumentChrome(inst);
+}
+
+void UpdateInstrumentFollow(double dt) {
+    if (dt <= 0 || dt > 0.25) return;
+    Mat hmd;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+    const double tau = g_followLagMs / 1000.0;
+    for (auto &inst : g_instruments) {
+        if (!inst.enabled || inst.drag != Drag::None || !IsSoftFollow(inst.anchor)) continue;
+        const Mat cur = ReferenceFrame(inst.anchor, hmd);
+        Mat ref = cur;
+        if (inst.followDeadzone) {
+            if (!inst.followLockValid) {
+                inst.followLock = cur;
+                inst.followLockValid = true;
+            }
+            PushFollowLock(&inst.followLock, cur, inst.anchor, inst.followDeadzoneDeg, inst.followDeadzoneM);
+            ref = inst.followLock;
+        } else {
+            inst.followLockValid = false;
+        }
+        const Mat target = Mul(ref, inst.pinRel);
+        SmoothToward(&inst.pose, target, dt, tau);
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+            vr::VROverlay()->SetOverlayTransformAbsolute(inst.overlay, vr::TrackingUniverseStanding, &inst.pose);
+        PlaceInstrumentChrome(inst);
+    }
+}
+
+// 7-segment digit: bit0=A (top), B(UL), C(UR), D(mid), E(LL), F(LR), G(bot).
+constexpr uint8_t kSegDigits[10] = {
+    0b1110111,  // 0 ABC EFG (no D)
+    0b0100100,  // 1 C F
+    0b1011101,  // 2 A C D E G
+    0b1101101,  // 3 A C D F G
+    0b0101110,  // 4 B C D F
+    0b1101011,  // 5 A B D F G
+    0b1111011,  // 6 A B D E F G
+    0b0100101,  // 7 A C F
+    0b1111111,  // 8
+    0b1101111,  // 9 A B C D F G
+};
+
+void PutInstrumentPixel(std::vector<uint8_t> &px, int w, int h, int x, int y, uint8_t r, uint8_t g, uint8_t b,
+                        uint8_t a) {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    uint8_t *p = &px[(size_t(y) * w + x) * 4];
+    if (a >= p[3]) {
+        p[0] = r;
+        p[1] = g;
+        p[2] = b;
+        p[3] = a;
+    }
+}
+
+void FillInstrumentRect(std::vector<uint8_t> &px, int w, int h, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g,
+                        uint8_t b, uint8_t a) {
+    if (x0 > x1) std::swap(x0, x1);
+    if (y0 > y1) std::swap(y0, y1);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) PutInstrumentPixel(px, w, h, x, y, r, g, b, a);
+}
+
+void DrawSegDigit(std::vector<uint8_t> &px, int w, int h, int ox, int oy, int dw, int dh, int digit, uint8_t r,
+                  uint8_t g, uint8_t b, uint8_t a) {
+    const uint8_t bits = kSegDigits[std::clamp(digit, 0, 9)];
+    const int t = std::max(2, dw / 8);
+    const int mid = oy + dh / 2;
+    auto segH = [&](int y) { FillInstrumentRect(px, w, h, ox + t, y - t / 2, ox + dw - t, y + t / 2, r, g, b, a); };
+    auto segV = [&](int x, int y0, int y1) {
+        FillInstrumentRect(px, w, h, x - t / 2, y0 + t / 2, x + t / 2, y1 - t / 2, r, g, b, a);
+    };
+    if (bits & 0x01) segH(oy + t);            // A
+    if (bits & 0x02) segV(ox + t, oy, mid);   // B
+    if (bits & 0x04) segV(ox + dw - t, oy, mid);  // C
+    if (bits & 0x08) segH(mid);               // D
+    if (bits & 0x10) segV(ox + t, mid, oy + dh);  // E
+    if (bits & 0x20) segV(ox + dw - t, mid, oy + dh);  // F
+    if (bits & 0x40) segH(oy + dh - t);       // G
+}
+
+void SoftOutlineInstrument(std::vector<uint8_t> &px, int w, int h) {
+    std::vector<uint8_t> alpha(size_t(w) * h, 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) alpha[size_t(y) * w + x] = px[(size_t(y) * w + x) * 4 + 3];
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (alpha[size_t(y) * w + x] == 0) continue;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (!dx && !dy) continue;
+                    const int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    if (alpha[size_t(ny) * w + nx] != 0) continue;
+                    PutInstrumentPixel(px, w, h, nx, ny, 20, 20, 24, 160);
+                }
+        }
+}
+
+void RefreshClockTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Clock) return;
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    const int minute = local.tm_hour * 60 + local.tm_min;
+    if (!force && minute == inst.lastMinute && !inst.pixels.empty()) return;
+    inst.lastMinute = minute;
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    const int digits[4] = {local.tm_hour / 10, local.tm_hour % 10, local.tm_min / 10, local.tm_min % 10};
+    const int dw = 56, dh = 88, gap = 14;
+    const int total = 4 * dw + 3 * gap + 18;
+    int ox = (w - total) / 2;
+    const int oy = (h - dh) / 2;
+    for (int i = 0; i < 4; ++i) {
+        if (i == 2) {
+            // Colon
+            const int cx = ox + 6;
+            FillInstrumentRect(inst.pixels, w, h, cx, oy + dh / 3 - 4, cx + 8, oy + dh / 3 + 4, 235, 240, 245, 230);
+            FillInstrumentRect(inst.pixels, w, h, cx, oy + 2 * dh / 3 - 4, cx + 8, oy + 2 * dh / 3 + 4, 235, 240, 245,
+                               230);
+            ox += 18;
+        }
+        DrawSegDigit(inst.pixels, w, h, ox, oy, dw, dh, digits[i], 235, 240, 245, 230);
+        ox += dw + gap;
+    }
+    SoftOutlineInstrument(inst.pixels, w, h);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+void DestroyInstrumentOverlays(Instrument &inst) {
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->DestroyOverlay(inst.overlay);
+        inst.overlay = vr::k_ulOverlayHandleInvalid;
+    }
+    if (inst.bar != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->DestroyOverlay(inst.bar);
+        inst.bar = vr::k_ulOverlayHandleInvalid;
+    }
+    inst.visible = false;
+    inst.controls = 0;
+    inst.controlsUp = false;
+    inst.barLit = false;
+    inst.hoverBar = false;
+}
+
+void EnsureInstrumentOverlays(Instrument &inst) {
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid) return;
+    char key[64], name[64];
+    std::snprintf(key, sizeof key, "frametop.instrument.%s", inst.id.c_str());
+    std::snprintf(name, sizeof name, "Instrument %s", inst.id.c_str());
+    if (vr::VROverlay()->CreateOverlay(key, name, &inst.overlay) != vr::VROverlayError_None) {
+        std::fprintf(stderr, "openvr: can't create instrument overlay %s\n", key);
+        return;
+    }
+    vr::VROverlay()->SetOverlayWidthInMeters(inst.overlay, float(inst.metres));
+    vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_None);
+    // Content is non-interactive; keep texture alpha (no IgnoreTextureAlpha).
+    // Do not set MakeOverlaysInteractiveIfVisible on the content overlay.
+    std::snprintf(key, sizeof key, "frametop.instrument.%s.bar", inst.id.c_str());
+    std::snprintf(name, sizeof name, "Instrument %s: move", inst.id.c_str());
+    inst.bar = MakeChrome(key, name, BarTexture(false), 256, 24);
+    if (inst.bar != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->SetOverlayFlag(inst.bar, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        vr::VROverlay()->SetOverlayFlag(inst.bar, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+    }
+    inst.attentionResolved = inst.activeOpacity;
+    RefreshClockTexture(inst, true);
+    ApplyInstrumentAlpha(inst);
+}
+
+void ShowInstrument(Instrument &inst, bool on) {
+    if (!on) {
+        if (inst.visible) {
+            if (inst.overlay != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->HideOverlay(inst.overlay);
+            if (inst.bar != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->HideOverlay(inst.bar);
+            inst.visible = false;
+            inst.controls = 0;
+            inst.controlsUp = false;
+        }
+        return;
+    }
+    EnsureInstrumentOverlays(inst);
+    if (inst.overlay == vr::k_ulOverlayHandleInvalid) return;
+    if (!inst.visible) {
+        vr::VROverlay()->ShowOverlay(inst.overlay);
+        inst.visible = true;
+    }
+    ApplyInstrumentAlpha(inst);
+}
+
+void RecenterInstrument(Instrument &inst) {
+    SetInstrumentAbsolute(inst, DefaultInstrumentPose());
+}
+
+void EndInstrumentDrag(Instrument &inst) {
+    inst.drag = Drag::None;
+    inst.dragDevice = kNone;
+    LightInstrumentBar(inst, false);
+    ApplyInstrumentAlpha(inst);
+}
+
+void FinishInstrumentDrag(Instrument &inst) {
+    const bool moved = inst.drag == Drag::Move;
+    const AnchorMode restore = inst.dragRestore;
+    EndInstrumentDrag(inst);
+    inst.dragRestore = AnchorMode::World;
+    if (!moved) return;
+    Mat p;
+    if (IsSoftFollow(restore) && InstrumentPose(inst, &p)) {
+        Mat hmd;
+        if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) return;
+        SetInstrumentFollow(inst, restore, Mul(Inverse(ReferenceFrame(restore, hmd)), p));
+    }
+}
+
+void EndInstrumentDragsBy(vr::TrackedDeviceIndex_t dev) {
+    for (auto &inst : g_instruments)
+        if (inst.drag != Drag::None && inst.dragDevice == dev) FinishInstrumentDrag(inst);
+}
+
+void StartInstrumentDrag(Instrument &inst, vr::TrackedDeviceIndex_t dev) {
+    Mat d, p;
+    if (dev == kNone || !DevicePose(dev, &d) || !InstrumentPose(inst, &p)) return;
+    inst.dragRestore = inst.anchor;
+    if (inst.pinned != kNone) {
+        inst.pinned = kNone;
+        inst.pose = p;
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+            vr::VROverlay()->SetOverlayTransformAbsolute(inst.overlay, vr::TrackingUniverseStanding, &p);
+        PlaceInstrumentChrome(inst);
+    }
+    inst.drag = Drag::Move;
+    inst.dragDevice = dev;
+    inst.dragRel = Mul(Inverse(d), p);
+    LightInstrumentBar(inst, false);
+    ApplyInstrumentAlpha(inst);
+}
+
+void UpdateInstrumentDrag(Instrument &inst) {
+    Mat d;
+    if (inst.drag != Drag::Move || !DevicePose(inst.dragDevice, &d)) return;
+    SetInstrumentAbsolute(inst, Mul(d, inst.dragRel));
+}
+
+void PushInstrument(Instrument &inst, double notches) {
+    Mat d, head;
+    if (!DevicePose(inst.dragDevice, &d) || !DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) return;
+    Mat p = Mul(d, inst.dragRel);
+    const double to[3] = {p.m[0][3] - head.m[0][3], p.m[1][3] - head.m[1][3], p.m[2][3] - head.m[2][3]};
+    const double len = std::sqrt(Dot3(to, to));
+    const double next = std::clamp(len * (1 + 0.08 * notches), 0.3, 10.0);
+    for (int k = 0; k < 3; ++k) p.m[k][3] = float(head.m[k][3] + to[k] / (len + 1e-9) * next);
+    inst.dragRel = Mul(Inverse(d), p);
+}
+
+void UpdateInstrumentAttention(double dt) {
+    for (size_t ii = 0; ii < g_instruments.size(); ++ii) {
+        Instrument &inst = g_instruments[ii];
+        if (!inst.enabled) continue;
+        const float before = inst.attentionResolved;
+        if (!inst.attentionEnabled) {
+            inst.attentionFocused = false;
+            inst.attentionFocusMs = 0;
+            inst.attentionResolved = inst.activeOpacity;
+        } else if (!g_eyeAvailable && !g_gazeFallbackHead) {
+            inst.attentionFocused = false;
+            inst.attentionFocusMs = 0;
+            inst.attentionResolved = inst.activeOpacity;
+        } else {
+            const bool hit = g_gazeTarget && g_gazeTarget.instrument == int(ii) &&
+                             g_gazeTarget.kind == GazeKind::Instrument;
+            const bool valid = g_eyeValid || (g_gazeFallbackHead && g_gazeTarget);
+            if (!valid) {
+                const double tau = inst.attentionOutMs / 1000.0;
+                const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
+                inst.attentionResolved =
+                    float(inst.attentionResolved + (inst.idleOpacity - inst.attentionResolved) * a);
+            } else {
+                if (hit) {
+                    inst.attentionFocusMs += dt * 1000.0;
+                    if (!inst.attentionFocused && inst.attentionFocusMs >= inst.attentionDwellMs)
+                        inst.attentionFocused = true;
+                } else if (inst.attentionFocused) {
+                    inst.attentionFocusMs += dt * 1000.0;
+                    if (inst.attentionFocusMs >= inst.attentionHoldMs) {
+                        inst.attentionFocused = false;
+                        inst.attentionFocusMs = 0;
+                    }
+                } else {
+                    inst.attentionFocusMs = 0;
+                }
+                if (hit && inst.attentionFocused) inst.attentionFocusMs = 0;
+                const float target = inst.attentionFocused ? inst.activeOpacity : inst.idleOpacity;
+                const double tauMs = inst.attentionFocused ? inst.attentionInMs : inst.attentionOutMs;
+                const double tau = tauMs / 1000.0;
+                const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
+                inst.attentionResolved = float(inst.attentionResolved + (target - inst.attentionResolved) * a);
+            }
+        }
+        if (std::fabs(inst.attentionResolved - before) > 0.001f) ApplyInstrumentAlpha(inst);
+    }
+}
+
+void UpdateInstrumentControls() {
+    std::vector<Mat> lasers;
+    for (vr::TrackedDeviceIndex_t i = 1; i < vr::k_unMaxTrackedDeviceCount; ++i) {
+        Mat d;
+        if (vr::VRSystem()->GetTrackedDeviceClass(i) == vr::TrackedDeviceClass_Controller && LaserPose(i, &d))
+            lasers.push_back(d);
+    }
+    for (auto &inst : g_instruments) {
+        if (!inst.enabled || !inst.visible) continue;
+        Mat p;
+        if (InstrumentPose(inst, &p)) {
+            const Mat bar = Mul(p, InstrumentBarOffset(inst));
+            const double chrome = std::max(0.04, inst.metres * 0.18);
+            const double reach = std::max(chrome * 0.5, 0.03);
+            std::vector<Mat> spots;
+            for (double f : {-0.5, -0.25, 0.0, 0.25, 0.5})
+                spots.push_back(Mul(bar, Translation(f * chrome, 0, 0)));
+            for (const Mat &d : lasers) {
+                const double o[3] = {d.m[0][3], d.m[1][3], d.m[2][3]}, dir[3] = {-d.m[0][2], -d.m[1][2], -d.m[2][2]};
+                bool close = false;
+                for (const Mat &c : spots) {
+                    const double v[3] = {c.m[0][3] - o[0], c.m[1][3] - o[1], c.m[2][3] - o[2]};
+                    const double t = Dot3(v, dir);
+                    if (t <= 0) continue;
+                    const double q[3] = {v[0] - dir[0] * t, v[1] - dir[1] * t, v[2] - dir[2] * t};
+                    if (Dot3(q, q) <= reach * reach) {
+                        close = true;
+                        break;
+                    }
+                }
+                if (close) {
+                    inst.nearUntil = g_tick + kControlsLinger;
+                    break;
+                }
+            }
+        }
+        const bool inUse = inst.drag != Drag::None || inst.hoverBar;
+        const bool want = inst.visible && (inUse || g_tick < inst.nearUntil);
+        if (inst.visible && !inst.controlsUp && inst.bar != vr::k_ulOverlayHandleInvalid) {
+            vr::VROverlay()->ShowOverlay(inst.bar);
+            inst.controlsUp = true;
+            ApplyInstrumentAlpha(inst);
+        }
+        const float before = inst.controls;
+        inst.controls = std::clamp(inst.controls + (want ? 0.2f : -0.1f), 0.f, 1.f);
+        if (inst.controls != before) ApplyInstrumentAlpha(inst);
+    }
+}
+
+void PollInstrumentBars() {
+    for (auto &inst : g_instruments) {
+        if (!inst.enabled || inst.bar == vr::k_ulOverlayHandleInvalid) continue;
+        vr::VREvent_t ev;
+        while (vr::VROverlay()->PollNextOverlayEvent(inst.bar, &ev, sizeof ev)) {
+            const bool on = ev.eventType == vr::VREvent_MouseMove || ev.eventType == vr::VREvent_FocusEnter;
+            if (on || ev.eventType == vr::VREvent_FocusLeave) {
+                if (inst.hoverBar != on) {
+                    inst.hoverBar = on;
+                    ApplyInstrumentAlpha(inst);
+                }
+            }
+            if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
+                StartInstrumentDrag(inst, ev.trackedDeviceIndex);
+            else if (ev.eventType == vr::VREvent_MouseButtonUp) {
+                EndInstrumentDragsBy(ev.trackedDeviceIndex);
+                EndDragsBy(ev.trackedDeviceIndex);
+            } else if (ev.eventType == vr::VREvent_ScrollDiscrete && inst.drag == Drag::Move)
+                PushInstrument(inst, ev.data.scroll.ydelta);
+        }
+        if (inst.drag != Drag::None) UpdateInstrumentDrag(inst);
+    }
+}
+
+void SetInstrumentWidth(Instrument &inst, double metres) {
+    inst.metres = std::clamp(metres, 0.08, 2.0);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayWidthInMeters(inst.overlay, float(inst.metres));
+    PlaceInstrumentChrome(inst);
+}
+
+void SetInstrumentOpacity(Instrument &inst, float active, float idle) {
+    inst.activeOpacity = std::clamp(active, 0.f, 1.f);
+    inst.idleOpacity = std::clamp(idle, 0.f, 1.f);
+    if (!inst.attentionEnabled || (!g_eyeAvailable && !g_gazeFallbackHead))
+        inst.attentionResolved = inst.activeOpacity;
+    else
+        inst.attentionResolved = std::clamp(inst.attentionResolved, std::min(inst.idleOpacity, inst.activeOpacity),
+                                            std::max(inst.idleOpacity, inst.activeOpacity));
+    ApplyInstrumentAlpha(inst);
+}
+
+void EnableInstrument(Instrument &inst, bool on) {
+    if (on) {
+        EnsureInstrumentOverlays(inst);
+        if (IsIdentityMat(inst.pose) && inst.pinned == kNone) RecenterInstrument(inst);
+        else if (inst.overlay != vr::k_ulOverlayHandleInvalid) {
+            if (inst.pinned != kNone)
+                vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(inst.overlay, inst.pinned, &inst.pinRel);
+            else
+                vr::VROverlay()->SetOverlayTransformAbsolute(inst.overlay, vr::TrackingUniverseStanding, &inst.pose);
+            PlaceInstrumentChrome(inst);
+        }
+        inst.enabled = true;
+        ShowInstrument(inst, true);
+    } else {
+        EndInstrumentDrag(inst);
+        ShowInstrument(inst, false);
+        DestroyInstrumentOverlays(inst);
+        inst.enabled = false;
+    }
+}
+
+void ClearInstruments() {
+    for (auto &inst : g_instruments) {
+        EndInstrumentDrag(inst);
+        DestroyInstrumentOverlays(inst);
+        inst.enabled = false;
+    }
+    g_instruments.clear();
+}
+
+const char *InstrumentTypeName(InstrumentType t) {
+    switch (t) {
+        case InstrumentType::Clock: return "clock";
+    }
+    return "clock";
+}
+
+void TickInstruments(double dt) {
+    for (auto &inst : g_instruments) {
+        if (!inst.enabled) continue;
+        RefreshClockTexture(inst, false);
+        ShowInstrument(inst, true);
+    }
+    UpdateInstrumentFollow(dt);
+    UpdateInstrumentControls();
+    PollInstrumentBars();
+}
+
+
+
 }  // namespace
 
 extern "C" {
@@ -1810,6 +2484,7 @@ bool ft_vr_init(void) {
 }
 
 void ft_vr_shutdown(void) {
+    ClearInstruments();
     for (auto &[i, s] : g_screens)
         for (auto o : s.All()) vr::VROverlay()->DestroyOverlay(o);
     for (auto &[dev, g] : g_guides)
@@ -2103,6 +2778,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateLasers();
     UpdateControls();
     UpdateGuides();
+    UpdateInstrumentAttention(step);
+    TickInstruments(step);
 }
 
 // Future pinch / finger tracking should call these (gaze selects; pinch confirms). Not wired yet.
@@ -2281,6 +2958,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                     case GazeKind::Resize: kind = "resize"; break;
                 case GazeKind::Anchor: kind = "anchor"; break;
                 case GazeKind::Slot: kind = "slot"; break;
+                case GazeKind::Instrument: kind = "instrument"; break;
                 default: break;
             }
             int px = 0, py = 0, bpx = 0, bpy = 0;
@@ -2410,6 +3088,114 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
                       g_gestureHand.c_str(), g_gestureAngle, LasersName(), g_gameRunning ? 1 : 0,
                       g_inGames == InGames::Hide ? "hide" : "visible");
+    } else if (std::strncmp(cmd, "instrument ", 11) == 0 || !std::strcmp(cmd, "instrument")) {
+        const char *rest = cmd + (std::strncmp(cmd, "instrument ", 11) == 0 ? 11 : 10);
+        char id[64] = {};
+        if (!std::strcmp(rest, "clear") || !std::strncmp(rest, "clear ", 6)) {
+            ClearInstruments();
+            std::snprintf(reply, size, "ok");
+        } else if (!std::strcmp(rest, "list")) {
+            int len = std::snprintf(reply, size, "ok %zu", g_instruments.size());
+            for (auto &inst : g_instruments)
+                if (len < size)
+                    len += std::snprintf(reply + len, size - len, " %s:%s:%d", inst.id.c_str(),
+                                         InstrumentTypeName(inst.type), inst.enabled ? 1 : 0);
+        } else if (std::sscanf(rest, "enable %63s", id) == 1) {
+            if (std::strcmp(id, "clock") != 0 && !FindInstrument(id))
+                return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            Instrument &inst = FindOrCreateClock();  // v1: clock only
+            EnableInstrument(inst, true);
+            if (IsIdentityMat(inst.pose)) RecenterInstrument(inst);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "disable %63s", id) == 1) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            EnableInstrument(*inst, false);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "recenter %63s", id) == 1) {
+            if (std::strcmp(id, "clock") != 0 && !FindInstrument(id))
+                return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            Instrument &inst = FindOrCreateClock();
+            EnableInstrument(inst, true);
+            RecenterInstrument(inst);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "width %63s %lf", id, &w) == 2) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            SetInstrumentWidth(*inst, w);
+            std::snprintf(reply, size, "ok");
+        } else if (int og = std::sscanf(rest, "opacity %63s %lf %lf", id, &w, &x); og >= 2) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            SetInstrumentOpacity(*inst, float(w), float(og >= 3 ? x : w));
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "attention %63s %15s", id, word) == 2) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            inst->attentionEnabled = std::strcmp(word, "off") != 0;
+            if (!inst->attentionEnabled) inst->attentionResolved = inst->activeOpacity;
+            ApplyInstrumentAlpha(*inst);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "place %63s %lf %lf %lf %lf %lf %lf", id, &x, &y, &z, &yaw, &pitch, &roll) == 7) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) {
+                if (std::strcmp(id, "clock") != 0)
+                    return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+                inst = &FindOrCreateClock();
+            }
+            EndInstrumentDrag(*inst);
+            SetInstrumentAbsolute(*inst, PanelPose(x, y, z, yaw, pitch, roll));
+            ShowInstrument(*inst, inst->enabled);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "unpin %63s", id) == 1) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            Mat p;
+            if (InstrumentPose(*inst, &p)) SetInstrumentAbsolute(*inst, p);
+            std::snprintf(reply, size, "ok");
+        } else if (const int got = std::sscanf(rest, "pin %63s %31s %f %f %f %f %f %f %f %f %f %f %f %f", id, hand,
+                                               &r[0], &r[1], &r[2], &r[3], &r[4], &r[5], &r[6], &r[7], &r[8], &r[9],
+                                               &r[10], &r[11]);
+                   got >= 2) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            const AnchorMode mode = ParseAnchorMode(hand);
+            Mat rel = Identity();
+            if (got >= 14) {
+                for (int k = 0; k < 12; ++k) rel.m[k / 4][k % 4] = r[k];
+            } else {
+                Mat p, hmd;
+                if (!InstrumentPose(*inst, &p) || !DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd))
+                    return (void)std::snprintf(reply, size, "error no pose");
+                rel = Mul(Inverse(ReferenceFrame(mode, hmd)), p);
+            }
+            if (mode == AnchorMode::World) {
+                Mat p;
+                if (InstrumentPose(*inst, &p)) SetInstrumentAbsolute(*inst, p);
+            } else {
+                SetInstrumentFollow(*inst, mode, rel);
+            }
+            ShowInstrument(*inst, inst->enabled);
+            std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "get %63s", id) == 1) {
+            Instrument *inst = FindInstrument(id);
+            Mat m;
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            if (!InstrumentPose(*inst, &m))
+                return (void)std::snprintf(reply, size, "error instrument %s has no pose", id);
+            int len = std::snprintf(
+                reply, size,
+                "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %.3f %.3f %d %s",
+                m.m[0][3], m.m[1][3], m.m[2][3], m.m[0][0], m.m[1][0], m.m[2][0], m.m[0][1], m.m[1][1], m.m[2][1],
+                m.m[0][2], m.m[1][2], m.m[2][2], inst->metres, inst->heightMetres(), 0.0, inst->activeOpacity,
+                inst->idleOpacity, inst->attentionEnabled ? 1 : 0, AnchorModeName(inst->anchor));
+            if (inst->anchor != AnchorMode::World)
+                for (int k = 0; k < 12 && len < size; ++k)
+                    len += std::snprintf(reply + len, size - len, " %.5f", inst->pinRel.m[k / 4][k % 4]);
+        } else {
+            std::snprintf(reply, size, "error instrument commands: list|get|enable|disable|place|width|pin|unpin|"
+                                       "opacity|attention|recenter|clear");
+        }
     } else {
         std::snprintf(reply, size, "error unknown command");
     }

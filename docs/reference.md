@@ -39,6 +39,8 @@ Every screen is an overlay named `frametop.screen.N` with under-chrome controls:
 - `.resize`, the tab on the bottom right corner, sets the width. Screens go down to 15 cm wide.
 - `.anchor` cycles world / head-soft / yaw-follow / position-follow; profile slot circles 1–6 sit on the left of the bar.
 
+**Spatial Instruments** live outside the virtual displays as ambient overlays (not KDE windows). Display Settings → Spatial Instruments configures them; the first type is **Clock** (`HH:MM`, 24-hour local time, transparent background). Instruments reuse screen-style anchors and gaze attention opacity. Aim a controller laser at the clock to reveal its move bar. Layout/profile JSON may include an `instruments` array; older files without that key still load.
+
 The controls are sized from both the screen's width and its distance from you, follow the surface of a curved screen, and stay invisible until a laser or the 3D mouse's cursor lands on one or comes within about 1.5 times a button's size of it. While invisible they're still there, fully transparent, so SteamVR's laser can find them. They're translucent until a laser is on them, like SteamVR's own window controls.
 
 To pin a screen to a wrist, carry it by its bar and sweep the laser across your other controller. A ring around that controller marks the target, and a dot shows where the laser passes. Crossing the ring arms the pin, and the ring and bar turn blue; crossing it again disarms it. When you let go while armed, the screen rides on that controller at the size, distance, and angle it had, so you can arm the pin first and then turn the screen the way you want. Grab a pinned screen's bar to adjust it; it goes back to the same wrist when you let go unless you disarm it. A pinned screen shows only while you're looking at its front, within the wrist angle, and fades out over the last 10°.
@@ -136,6 +138,8 @@ layout/ft-layout screen state --json     # per-screen anchor/opacity + slot info
 layout/ft-layout gaze state              # true eye tracking + current GazeTarget
 layout/ft-layout gaze debug on|off
 layout/ft-layout gaze fallback head|off  # explicit head fallback (debug only)
+layout/ft-layout instrument list|state [--json]
+layout/ft-layout instrument enable|disable|recenter clock
 layout/ft-layout toggle                  # hide or show all screens
 layout/ft-layout pin N|all left|right|head|head-rigid|yaw-follow|position-follow
 layout/ft-layout profile list [--json]
@@ -150,6 +154,8 @@ layout/ft-layout action NAME [--duration MS]   # profile.slot.N | screens.toggle
 layout/ft-layout action list [--json]
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
+
+Spatial Instruments (Clock) are stored in the active layout's `instruments` array and in named profiles. Missing `instruments` means none.
 
 The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json` (includes optional `slots` 1–6). Soft head follow lag is `FOLLOW_LAG_MS` in `~/.config/frametop.conf` (default 120). `/tmp/frametop-layout.log` has the run from the last desktop start.
 

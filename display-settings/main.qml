@@ -13,6 +13,7 @@ Kirigami.ApplicationWindow {
     // Pages as tabs across the top (a side drawer was easy to miss).
     readonly property var pages: backend.backend === "screens"
         ? [{ text: "Screens", icon: "video-display", page: screensPage },
+           { text: "Spatial Instruments", icon: "clock", page: instrumentsPage },
            { text: "Layout", icon: "view-grid", page: layoutPage },
            { text: "Visibility & wrist", icon: "view-visible", page: visibilityPage }]
         : [{ text: "Screens", icon: "video-display", page: screensPage },
@@ -29,7 +30,8 @@ Kirigami.ApplicationWindow {
                 onClicked: root.show(modelData.page)
             }
         }
-        Component.onCompleted: currentIndex = ({ layout: 1, visibility: 2 })[startPage] || 0
+        Component.onCompleted: currentIndex = ({ instruments: 1, layout: backend.backend === "screens" ? 2 : 1,
+                                                visibility: 3 })[startPage] || 0
     }
 
     function show(page) {
@@ -37,8 +39,9 @@ Kirigami.ApplicationWindow {
         pageStack.push(page)
     }
 
-    // FT_DISPLAY_PAGE=layout|visibility opens the app on that page.
-    pageStack.initialPage: ({ layout: layoutPage, visibility: visibilityPage })[startPage] || screensPage
+    // FT_DISPLAY_PAGE=layout|visibility|instruments opens the app on that page.
+    pageStack.initialPage: ({ layout: layoutPage, visibility: visibilityPage,
+                              instruments: instrumentsPage })[startPage] || screensPage
 
     Connections {
         target: backend
@@ -420,6 +423,90 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // ---------------------------------------------------------------- Spatial Instruments
+    Component {
+        id: instrumentsPage
+        Kirigami.ScrollablePage {
+            title: "Spatial Instruments"
+            property var clock: backend.clockInstrument
+
+            Kirigami.FormLayout {
+                wideMode: true
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    opacity: 0.75
+                    text: "Spatial Instruments are lightweight ambient information in VR space — "
+                          + "not KDE windows or virtual monitors. Clock is the first experimental instrument."
+                }
+
+                Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Clock" }
+
+                Controls.Switch {
+                    Kirigami.FormData.label: "Enabled:"
+                    checked: clock.enabled === true
+                    onToggled: backend.setClockEnabled(checked)
+                }
+                Controls.ComboBox {
+                    Kirigami.FormData.label: "Anchor:"
+                    model: [
+                        { text: "World", value: "world" },
+                        { text: "Position-follow", value: "position-follow" },
+                        { text: "Yaw-follow", value: "yaw-follow" },
+                        { text: "Head (soft)", value: "head" },
+                        { text: "Head (rigid)", value: "head-rigid" }
+                    ]
+                    textRole: "text"
+                    valueRole: "value"
+                    Component.onCompleted: currentIndex = Math.max(0, indexOfValue(clock.anchor || "world"))
+                    onActivated: backend.setClockAnchor(currentValue)
+                }
+                Controls.SpinBox {
+                    Kirigami.FormData.label: "Size (metres):"
+                    from: 8; to: 200; stepSize: 5
+                    value: Math.round((clock.metres !== undefined ? clock.metres : 0.35) * 100)
+                    textFromValue: (v) => (v / 100).toFixed(2)
+                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                    onValueModified: backend.setClockMetres(value / 100)
+                }
+                Controls.SpinBox {
+                    Kirigami.FormData.label: "Idle opacity:"
+                    from: 0; to: 100; stepSize: 5
+                    value: Math.round((clock.idleOpacity !== undefined ? clock.idleOpacity : 0.35) * 100)
+                    textFromValue: (v) => (v / 100).toFixed(2)
+                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                    onValueModified: backend.setClockIdleOpacity(value / 100)
+                }
+                Controls.SpinBox {
+                    Kirigami.FormData.label: "Active opacity:"
+                    from: 0; to: 100; stepSize: 5
+                    value: Math.round((clock.activeOpacity !== undefined ? clock.activeOpacity : 1.0) * 100)
+                    textFromValue: (v) => (v / 100).toFixed(2)
+                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                    onValueModified: backend.setClockActiveOpacity(value / 100)
+                }
+                Controls.Switch {
+                    Kirigami.FormData.label: "Gaze attention:"
+                    checked: clock.attentionEnabled !== false
+                    onToggled: backend.setClockAttention(checked)
+                }
+                Controls.Button {
+                    text: "Place in front of me"
+                    enabled: backend.desktopRunning && backend.busy === ""
+                    onClicked: backend.recenterClock()
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    opacity: 0.7
+                    text: "In VR, aim a controller laser at the clock to reveal its move bar; drag to reposition; "
+                          + "scroll to push/pull. Content is read-only (no desktop clicks)."
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- Layout
     Component {
         id: layoutPage
@@ -588,8 +675,8 @@ Kirigami.ApplicationWindow {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                         opacity: 0.7
-                        text: "Profiles store where the screens sit (pose, width in metres, curve, anchors, "
-                              + "active/idle opacity, optional gaze attention). "
+                        text: "Profiles store the whole spatial workspace: screens (pose, width, curve, anchors, "
+                              + "active/idle opacity, gaze attention) and Spatial Instruments (e.g. Clock). "
                               + "They do not change screen count, resolution, or scale. CLI: ft-layout profile apply NAME"
                     }
 
