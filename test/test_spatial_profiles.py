@@ -86,9 +86,12 @@ class SpatialHelpers(unittest.TestCase):
         self.assertEqual(ft_layout.normalize_action("profile.next"), "profile.next")
         self.assertEqual(ft_layout.normalize_action("layout_reset"), "layout.reset")
         self.assertEqual(ft_layout.normalize_action("screens_toggle"), "screens.toggle")
+        self.assertIsNone(ft_layout.normalize_action("alignment_toggle"))
+        self.assertIsNone(ft_layout.normalize_action("alignment.toggle"))
         self.assertIsNone(ft_layout.normalize_action("left"))
         self.assertIsNone(ft_layout.normalize_action(""))
         self.assertIn("profile.slot.1", ft_layout.SEMANTIC_ACTIONS)
+        self.assertNotIn("alignment.toggle", ft_layout.SEMANTIC_ACTIONS)
         self.assertEqual(len([a for a in ft_layout.SEMANTIC_ACTIONS if a.startswith("profile.slot.")]), 6)
 
 

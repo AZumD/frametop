@@ -97,7 +97,7 @@ DEFAULTS = {"auto": True, "mode": "preset",
             "screens": [], "panel_size": list(DEFAULT_PANEL)}
 # Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
 PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity",
-                       "active_opacity", "idle_opacity", "attention")
+                       "active_opacity", "idle_opacity", "attention", "follow_deadzone")
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 CONTROLLER_ANCHORS = ("left", "right")
@@ -110,6 +110,8 @@ DEFAULT_ATTENTION_IN_MS = 150.0
 DEFAULT_ATTENTION_OUT_MS = 250.0
 DEFAULT_ATTENTION_DWELL_MS = 80.0
 DEFAULT_ATTENTION_HOLD_MS = 150.0
+DEFAULT_FOLLOW_DEADZONE_DEG = 15.0
+DEFAULT_FOLLOW_DEADZONE_M = 0.15
 
 
 def log(*args, **kwargs):
@@ -254,11 +256,27 @@ def screen_attention(entry):
     }
 
 
+def screen_follow_deadzone(entry):
+    """Soft-follow glance dead zone (degrees + metres). Off unless enabled."""
+    d = entry.get("follow_deadzone")
+    if not isinstance(d, dict):
+        return {
+            "enabled": False,
+            "degrees": DEFAULT_FOLLOW_DEADZONE_DEG,
+            "metres": DEFAULT_FOLLOW_DEADZONE_M,
+        }
+    return {
+        "enabled": bool(d.get("enabled", False)),
+        "degrees": max(1.0, min(90.0, float(d.get("degrees", DEFAULT_FOLLOW_DEADZONE_DEG)))),
+        "metres": max(0.02, min(1.0, float(d.get("metres", DEFAULT_FOLLOW_DEADZONE_M)))),
+    }
+
+
 def spatial_screen(entry):
     """Profile payload for one screen (spatial only)."""
     out = {}
     for k in PROFILE_SCREEN_KEYS:
-        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity"):
+        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity", "follow_deadzone"):
             continue
         if k in entry:
             out[k] = entry[k]
@@ -273,6 +291,13 @@ def spatial_screen(entry):
     att = screen_attention(entry)
     if att["enabled"]:
         out["attention"] = att
+    dz = screen_follow_deadzone(entry)
+    if dz["enabled"]:
+        out["follow_deadzone"] = {
+            "enabled": True,
+            "degrees": round(dz["degrees"], 1),
+            "metres": round(dz["metres"], 3),
+        }
     return out
 
 
@@ -624,6 +649,17 @@ def apply_attention(sock, index, attention):
         log(f"screen {index} attention: {e}")
 
 
+def apply_follow_deadzone(sock, index, deadzone):
+    dz = screen_follow_deadzone({"follow_deadzone": deadzone} if isinstance(deadzone, dict) else {})
+    try:
+        if dz["enabled"]:
+            sock.ask(f"deadzone {index} on {dz['degrees']:.1f} {dz['metres']:.3f}")
+        else:
+            sock.ask(f"deadzone {index} off")
+    except RuntimeError as e:
+        log(f"screen {index} deadzone: {e}")
+
+
 def push_slot_state(sock=None):
     """Tell ft-screens which profile slots are filled and which is current (for chrome)."""
     if backend() != "screens":
@@ -678,6 +714,7 @@ def live_screen_targets(sock, layout, count, eye, heading):
             "opacity": screen_opacities(entry)[0],
             "idle_opacity": screen_opacities(entry)[1],
             "attention": screen_attention(entry),
+            "follow_deadzone": screen_follow_deadzone(entry),
             "pin": pin if pin_anchor(pin) and pin_anchor(pin) != "world"
                          and len((pin or {}).get("rel", [])) == 12 else None,
         })
@@ -722,6 +759,7 @@ def transition_screens(sock, starts, targets, duration_ms):
                 apply_pin(sock, i + 1, t["pin"])
             apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
+            apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
         return
     steps = max(2, int(duration * 30))  # ~30 Hz over the control socket
     t0 = time.time()
@@ -754,6 +792,7 @@ def transition_screens(sock, starts, targets, duration_ms):
         apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
         if "attention" in t:
             apply_attention(sock, i + 1, t["attention"])
+        apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
 
 
 def apply_screens(wait=0, duration_ms=0):
@@ -786,6 +825,7 @@ def apply_screens(wait=0, duration_ms=0):
                 apply_pin(sock, i + 1, t["pin"])
             apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
+            apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
     push_slot_state(sock)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
     return results
@@ -1030,6 +1070,10 @@ def merge_profile_into_layout(layout, profile):
             entry["attention"] = screen_attention(spatial)
         else:
             entry.pop("attention", None)
+        if "follow_deadzone" in spatial and isinstance(spatial["follow_deadzone"], dict):
+            entry["follow_deadzone"] = screen_follow_deadzone(spatial)
+        else:
+            entry.pop("follow_deadzone", None)
         screens[i] = entry
     layout["screens"] = screens
     layout["mode"] = "custom"
@@ -1496,8 +1540,8 @@ def main(argv):
                         return 1
                     return run_action(name, duration_ms=resolve_duration(argv))
 
-            # screens.toggle is instant and should not block behind a layout lock.
-            if normalize_action(name) == "screens.toggle":
+            # Instant actions should not block behind a layout lock.
+            if normalize_action(name) in ("screens.toggle",):
                 return run_action(name)
             return locked_action()
         elif cmd == "profile":

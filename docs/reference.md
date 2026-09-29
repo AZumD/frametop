@@ -30,12 +30,14 @@ Restarting the desktop closes its windows. Before the unit stops, `session/keep-
 
 Each KWin window is one screen. ft-screens sets its size with an `xdg_toplevel` configure and KWin resizes the output to match, live. Frames arrive as DMA-BUFs and go to SteamVR through OpenVR's `IVRIPCResourceManagerClient::ImportDmabuf`, with no copy and no size limit.
 
-Every screen is an overlay named `frametop.screen.N` with four controls:
+Every screen is an overlay named `frametop.screen.N` with under-chrome controls:
 
 - `.bar` moves the screen. Drag it with any laser or with the 3D mouse, whose right-drag tilts. Scrolling while you drag pushes the screen away or pulls it closer, along the line from your head.
 - `.curve` bends the screen into a cylinder around you, using your current distance as the radius, or makes it flat again.
 - `.roll` rolls the screen when you drag it sideways, like a knob. It snaps level within 2.5°, and scrolling on it turns 5° per notch.
+- Aurora/passthrough has no public OpenVR API for overlay apps, so there is no Frametop button for it. SteamVR's digital on-screen keyboard is not exposed in Frametop chrome for now.
 - `.resize`, the tab on the bottom right corner, sets the width. Screens go down to 15 cm wide.
+- `.anchor` cycles world / head-soft / yaw-follow / position-follow; profile slot circles 1–6 sit on the left of the bar.
 
 The controls are sized from both the screen's width and its distance from you, follow the surface of a curved screen, and stay invisible until a laser or the 3D mouse's cursor lands on one or comes within about 1.5 times a button's size of it. While invisible they're still there, fully transparent, so SteamVR's laser can find them. They're translucent until a laser is on them, like SteamVR's own window controls.
 
@@ -144,7 +146,7 @@ layout/ft-layout profile delete NAME
 layout/ft-layout profile slot N NAME | unslot N | slots [--json]
 layout/ft-layout profile apply-slot N [--duration MS]
 layout/ft-layout profile next|previous [--duration MS]
-layout/ft-layout action NAME [--duration MS]   # profile.slot.N | profile.next | layout.reset | …
+layout/ft-layout action NAME [--duration MS]   # profile.slot.N | screens.toggle | …
 layout/ft-layout action list [--json]
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```

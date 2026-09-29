@@ -273,6 +273,26 @@ Kirigami.ApplicationWindow {
                                     Component.onCompleted: currentIndex = Math.max(0, indexOfValue(card.modelData.anchor || "world"))
                                     onActivated: backend.setScreenAnchor(card.modelData.index, currentValue)
                                 }
+                                Controls.Switch {
+                                    id: deadzoneSwitch
+                                    Kirigami.FormData.label: "Follow dead zone:"
+                                    text: "Glance without the panel chasing"
+                                    checked: card.modelData.followDeadzone === true
+                                    onToggled: backend.setScreenFollowDeadzone(card.modelData.index, checked)
+                                }
+                                RowLayout {
+                                    visible: deadzoneSwitch.checked
+                                    Kirigami.FormData.label: "Dead zone:"
+                                    Controls.Slider {
+                                        id: deadzoneSlider
+                                        from: 5; to: 45; stepSize: 1
+                                        value: card.modelData.followDeadzoneDeg !== undefined
+                                               ? card.modelData.followDeadzoneDeg : 15
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                                        onMoved: backend.setScreenFollowDeadzoneDeg(card.modelData.index, value)
+                                    }
+                                    Controls.Label { text: Math.round(deadzoneSlider.value) + "°" }
+                                }
                                 Controls.ComboBox {
                                     Kirigami.FormData.label: "Scale:"
                                     model: backend.scales
@@ -935,7 +955,9 @@ Kirigami.ApplicationWindow {
                           + "pinned screen, grab its bar, move it, and let go (it stays pinned); sweep across the ring to "
                           + "take it off. Wrist-pinned screens show while you see their front within the angle above. "
                           + "Head (soft) follows the headset with a short lag; yaw-follow turns with you but stays upright; "
-                          + "position-follow walks with you without rotating. Use the anchor button under each screen to cycle "
+                          + "position-follow walks with you without rotating. Per-screen Follow dead zone lets you glance "
+                          + "at a corner without the panel chasing (past the angle it follows again). "
+                          + "Use the anchor button under each screen to cycle "
                           + "modes, or CLI: ft-layout pin 1 head. Save current arrangement / a named profile keeps anchors."
                 }
             }
