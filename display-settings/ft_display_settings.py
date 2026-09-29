@@ -196,6 +196,7 @@ class Backend(QObject):
                 entry = ft_layout.screen_entry(layout, i)
                 active, idle = ft_layout.screen_opacities(entry)
                 att = ft_layout.screen_attention(entry)
+                dz = ft_layout.screen_follow_deadzone(entry)
                 out.append({"index": i, "width": w, "height": h, "metres": ft_layout.screen_metres(layout, i),
                             "scale": round(s, 4), "primary": i == primary,
                             "curved": float(entry.get("curve", 0)) > 0,
@@ -206,6 +207,8 @@ class Backend(QObject):
                             "attentionInMs": att["in_ms"],
                             "attentionOutMs": att["out_ms"],
                             "anchor": ft_layout.pin_anchor(entry.get("pin")) or "world",
+                            "followDeadzone": dz["enabled"],
+                            "followDeadzoneDeg": dz["degrees"],
                             "effective": f"{round(w / s)} × {round(h / s)}"})
             return out
         for i in range(c["screens"]):
@@ -392,6 +395,37 @@ class Backend(QObject):
     def setScreenAttentionOutMs(self, i, ms):
         """Fade toward idle opacity when gaze leaves (milliseconds)."""
         self._set_attention_ms(i, "out_ms", ms)
+
+    def _push_follow_deadzone(self, i):
+        dz = ft_layout.screen_follow_deadzone(ft_layout.screen_entry(ft_layout.load_layout(), i))
+        if self._running and i < self._running_count:
+            if dz["enabled"]:
+                self._ask_screens(f"deadzone {i + 1} on {dz['degrees']:.1f} {dz['metres']:.3f}")
+            else:
+                self._ask_screens(f"deadzone {i + 1} off")
+
+    @Slot(int, bool)
+    def setScreenFollowDeadzone(self, i, enabled):
+        """Soft-follow glance dead zone: small head turns don't chase the panel."""
+        def edit(s):
+            dz = ft_layout.screen_follow_deadzone(s)
+            dz["enabled"] = bool(enabled)
+            if enabled:
+                s["follow_deadzone"] = dz
+            else:
+                s.pop("follow_deadzone", None)
+        self._edit_screen(i, edit)
+        self._push_follow_deadzone(i)
+
+    @Slot(int, float)
+    def setScreenFollowDeadzoneDeg(self, i, degrees):
+        def edit(s):
+            dz = ft_layout.screen_follow_deadzone(s)
+            dz["enabled"] = True
+            dz["degrees"] = max(1.0, min(90.0, float(degrees)))
+            s["follow_deadzone"] = dz
+        self._edit_screen(i, edit)
+        self._push_follow_deadzone(i)
 
     @Slot(int, str)
     def setScreenAnchor(self, i, mode):

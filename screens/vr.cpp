@@ -60,7 +60,6 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
-#include <vector>
 
 namespace {
 
@@ -337,6 +336,58 @@ void SmoothToward(Mat *cur, const Mat &target, double dt, double tauSec) {
                           cur->m[2][3] + a * (target.m[2][3] - cur->m[2][3]));
 }
 
+double QuatAngle(const Quat &a, const Quat &b) {
+    double dot = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+    if (dot < 0) dot = -dot;
+    return 2.0 * std::acos(std::clamp(dot, 0.0, 1.0));
+}
+
+double WrapPi(double a) {
+    return std::remainder(a, 2 * M_PI);
+}
+
+// Soft-follow dead zone: keep `lock` unless `cur` exceeds the zone, then push lock by the excess.
+void PushFollowLock(Mat *lock, const Mat &cur, AnchorMode mode, double zoneDeg, double zoneM) {
+    if (mode == AnchorMode::PositionFollow) {
+        const double d[3] = {cur.m[0][3] - lock->m[0][3], cur.m[1][3] - lock->m[1][3],
+                             cur.m[2][3] - lock->m[2][3]};
+        const double len = std::sqrt(Dot3(d, d));
+        if (len > zoneM && len > 1e-9) {
+            const double f = (len - zoneM) / len;
+            for (int k = 0; k < 3; ++k) lock->m[k][3] = float(lock->m[k][3] + d[k] * f);
+        }
+        return;
+    }
+    if (mode == AnchorMode::YawFollow) {
+        const double ly = std::atan2(lock->m[0][2], lock->m[2][2]);
+        const double cy = std::atan2(cur.m[0][2], cur.m[2][2]);
+        const double dy = WrapPi(cy - ly);
+        const double zone = zoneDeg * M_PI / 180.0;
+        double yaw = ly;
+        if (std::fabs(dy) > zone) yaw = ly + dy - std::copysign(zone, dy);
+        // Keep walking with the head; only yaw is gated.
+        *lock = YawOnlyHead(cur);
+        const double c = std::cos(yaw), s = std::sin(yaw);
+        lock->m[0][0] = float(c), lock->m[0][2] = float(s);
+        lock->m[2][0] = float(-s), lock->m[2][2] = float(c);
+        return;
+    }
+    // HeadSoft: gate full orientation; also allow a small position dead zone.
+    const Quat qLock = QuatFromMat(*lock), qCur = QuatFromMat(cur);
+    const double ang = QuatAngle(qLock, qCur);
+    const double zone = zoneDeg * M_PI / 180.0;
+    Quat q = qLock;
+    if (ang > zone && ang > 1e-8) q = Slerp(qLock, qCur, (ang - zone) / ang);
+    double pos[3] = {lock->m[0][3], lock->m[1][3], lock->m[2][3]};
+    const double d[3] = {cur.m[0][3] - pos[0], cur.m[1][3] - pos[1], cur.m[2][3] - pos[2]};
+    const double len = std::sqrt(Dot3(d, d));
+    if (len > zoneM && len > 1e-9) {
+        const double f = (len - zoneM) / len;
+        for (int k = 0; k < 3; ++k) pos[k] += d[k] * f;
+    }
+    *lock = MatFromQuatPos(q, pos[0], pos[1], pos[2]);
+}
+
 std::string LayoutToolPath() {
     char exe[PATH_MAX] = {};
     const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -453,6 +504,14 @@ struct Screen {
     vr::TrackedDeviceIndex_t pinned = kNone;  // rigid tracked-device pin only
     Mat pinRel = Identity();                  // reference/device -> screen
     Mat pose = Identity();                    // room pose (smoothed for soft follow)
+    // Soft-follow dead zone: small head motion keeps a locked reference so you can
+    // glance at a screen corner without the panel chasing. Past the threshold the
+    // lock is pushed (excess only), so intentional turns still follow.
+    bool followDeadzone = false;
+    double followDeadzoneDeg = 15;            // head / yaw-follow
+    double followDeadzoneM = 0.15;            // position-follow (+ head translation)
+    bool followLockValid = false;
+    Mat followLock = Identity();              // last soft-follow reference frame
     Drag drag = Drag::None;
     vr::TrackedDeviceIndex_t dragDevice = kNone;
     Mat dragRel = Identity();                 // device -> screen, while moving
@@ -875,6 +934,16 @@ void SetFollow(Screen &s, AnchorMode mode, const Mat &rel) {
         if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) hmd = Identity();
         s.pose = Mul(ReferenceFrame(mode, hmd), rel);
     }
+    // Seed dead-zone lock to the current reference so a fresh pin doesn't jump.
+    {
+        Mat hmd;
+        if (DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) {
+            s.followLock = ReferenceFrame(mode, hmd);
+            s.followLockValid = true;
+        } else {
+            s.followLockValid = false;
+        }
+    }
     vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &s.pose);
     PlaceChrome(s);
 }
@@ -930,7 +999,19 @@ void UpdateFollow() {
     const double tau = g_followLagMs / 1000.0;
     for (auto &[i, s] : g_screens) {
         if (s.drag != Drag::None || !IsSoftFollow(s.anchor)) continue;
-        const Mat target = Mul(ReferenceFrame(s.anchor, hmd), s.pinRel);
+        const Mat cur = ReferenceFrame(s.anchor, hmd);
+        Mat ref = cur;
+        if (s.followDeadzone) {
+            if (!s.followLockValid) {
+                s.followLock = cur;
+                s.followLockValid = true;
+            }
+            PushFollowLock(&s.followLock, cur, s.anchor, s.followDeadzoneDeg, s.followDeadzoneM);
+            ref = s.followLock;
+        } else {
+            s.followLockValid = false;
+        }
+        const Mat target = Mul(ref, s.pinRel);
         SmoothToward(&s.pose, target, dt, tau);
         vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &s.pose);
         PlaceChrome(s);
@@ -1288,8 +1369,8 @@ void UpdateAttention(double dt) {
                 g_gazeTarget && g_gazeTarget.screen == index &&
                 (g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
                  g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
-                 g_gazeTarget.kind == GazeKind::Resize || g_gazeTarget.kind == GazeKind::Anchor ||
-                 g_gazeTarget.kind == GazeKind::Slot);
+                 g_gazeTarget.kind == GazeKind::Resize ||
+                 g_gazeTarget.kind == GazeKind::Anchor || g_gazeTarget.kind == GazeKind::Slot);
             // Temporary invalid sample: ease toward idle, do not slam.
             const bool valid = g_eyeValid || (g_gazeFallbackHead && g_gazeTarget);
             if (!valid) {
@@ -1706,6 +1787,7 @@ const char *ModeName() {
     }
 }
 
+
 }  // namespace
 
 extern "C" {
@@ -2011,9 +2093,9 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             ft_event e{};
             e.type = FT_QUIT;
             handle(&e, data);
+        } else if (ev.eventType == vr::VREvent_TrackedDeviceDeactivated) {
+            EndDragsBy(ev.trackedDeviceIndex);
         }
-        // A carrying controller that goes away drops its screen.
-        if (ev.eventType == vr::VREvent_TrackedDeviceDeactivated) EndDragsBy(ev.trackedDeviceIndex);
     }
     ++g_tick;
     UpdateGame();
@@ -2036,6 +2118,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
 //   unpin <screen|all>
 //   opacity <screen> <active> [idle]
 //   attention <screen> on|off [inMs outMs dwellMs holdMs]
+//   deadzone <screen> on|off [degrees [metres]]   soft-follow glance dead zone
 //   gaze state|debug on|off|fallback head|fallback off
 //   get <screen>  -> "ok ... width height curve activeOpacity idleOpacity anchor [rel...]"
 //   screens       -> "ok <count> <index>:<pixels w>x<h>:<metres> ..."
@@ -2164,6 +2247,29 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         }
         ApplyAlpha(*s);
         std::snprintf(reply, size, "ok");
+    } else if (std::sscanf(cmd, "deadzone %d %15s", &n, word) >= 2) {
+        Screen *s = Find(n);
+        if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
+        if (!std::strcmp(word, "off")) {
+            s->followDeadzone = false;
+            s->followLockValid = false;
+        } else {
+            s->followDeadzone = true;
+            double deg = s->followDeadzoneDeg, metres = s->followDeadzoneM;
+            const int got = std::sscanf(cmd, "deadzone %*d %*s %lf %lf", &deg, &metres);
+            if (got >= 1) s->followDeadzoneDeg = std::clamp(deg, 1.0, 90.0);
+            if (got >= 2) s->followDeadzoneM = std::clamp(metres, 0.02, 1.0);
+            // Re-seed lock from current head so enabling doesn't yank the panel.
+            Mat hmd;
+            if (IsSoftFollow(s->anchor) && DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &hmd)) {
+                s->followLock = ReferenceFrame(s->anchor, hmd);
+                s->followLockValid = true;
+            } else {
+                s->followLockValid = false;
+            }
+        }
+        std::snprintf(reply, size, "ok %s %.1f %.3f", s->followDeadzone ? "on" : "off", s->followDeadzoneDeg,
+                      s->followDeadzoneM);
     } else if (std::strncmp(cmd, "gaze ", 5) == 0) {
         if (!std::strcmp(cmd + 5, "state")) {
             const char *kind = "none";
@@ -2172,7 +2278,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                 case GazeKind::Bar: kind = "bar"; break;
                 case GazeKind::Curve: kind = "curve"; break;
                 case GazeKind::Roll: kind = "roll"; break;
-                case GazeKind::Resize: kind = "resize"; break;
+                    case GazeKind::Resize: kind = "resize"; break;
                 case GazeKind::Anchor: kind = "anchor"; break;
                 case GazeKind::Slot: kind = "slot"; break;
                 default: break;
