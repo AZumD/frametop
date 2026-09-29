@@ -1,0 +1,33 @@
+{
+  "action_manifest_version": 0,
+  "actions": [
+    {
+      "name": "/actions/frametop/in/EyeGaze",
+      "type": "eyetracking",
+      "requirement": "optional"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/frametop",
+      "usage": "single"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "frame_hmd",
+      "binding_url": "bindings_frame_hmd.json"
+    },
+    {
+      "controller_type": "hmd",
+      "binding_url": "bindings_hmd.json"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_us",
+      "/actions/frametop": "Frametop",
+      "/actions/frametop/in/EyeGaze": "Eye Gaze"
+    }
+  ]
+}

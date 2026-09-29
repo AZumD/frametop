@@ -39,6 +39,7 @@
 // OpenVR has no overlay-relative transforms here (openvr v2.15.6), so the bar, button,
 // and handle are placed whenever their screen moves.
 #include "vr.h"
+#include "coords.h"
 
 #include <openvr.h>
 
@@ -200,11 +201,6 @@ bool IsSoftFollow(AnchorMode m) {
 }
 bool IsRigidDevice(AnchorMode m) {
     return m == AnchorMode::Left || m == AnchorMode::Right || m == AnchorMode::HeadRigid;
-}
-bool AttentionApplies(AnchorMode m) {
-    // Locked head-relative HUDs have a fixed angular relationship to the gaze; skip.
-    return m == AnchorMode::World || m == AnchorMode::YawFollow || m == AnchorMode::PositionFollow ||
-           m == AnchorMode::Left || m == AnchorMode::Right;
 }
 const char *AnchorModeName(AnchorMode m) {
     switch (m) {
@@ -381,6 +377,20 @@ enum class Mode { Always, Dashboard, Gesture, Toggle };
 enum class Lasers { Always, OutsideGames, Dashboard };
 enum class InGames { Visible, Hide };
 
+enum class GazeKind {
+    None, Screen, Bar, Curve, Roll, Resize, Anchor, Slot
+};
+
+struct GazeTarget {
+    GazeKind kind = GazeKind::None;
+    int screen = -1;   // 0-based index into g_screens map key
+    int slot = -1;     // 0-based profile slot when kind == Slot
+    double localX = 0, localY = 0;  // metres on screen plane (centre origin)
+    double u = 0, v = 0;            // 0..1 across the screen (top-left origin for pixels)
+    double distance = 1e9;
+    explicit operator bool() const { return kind != GazeKind::None; }
+};
+
 constexpr double kWristZone = 0.06;  // the laser passing this close to a controller is on its wrist
 constexpr double kWristLeave = 0.09; // ...and has left it beyond this (so it doesn't flicker)
 constexpr double kDotRange = 0.35;   // the guide dot shows while the laser is this close
@@ -389,6 +399,7 @@ constexpr double kFade = 10;         // degrees over which a pinned screen fades
 constexpr double kRollSnap = 2.5;    // degrees from level where rolling snaps level
 constexpr double kRollStep = 5;      // degrees per scroll notch on the roll button
 constexpr float kChromeIdle = 0.55f; // the controls' opacity without a laser on them
+constexpr float kChromeFloor = 0.4f; // chrome stays at least this visible when screen alpha is 0
 constexpr long kControlsLinger = 35; // ticks (~0.4 s) the controls stay after a laser leaves
 long g_tick = 0;                     // ft_vr_poll calls
 constexpr vr::TrackedDeviceIndex_t kNone = kNoneEarly;
@@ -398,25 +409,46 @@ int g_currentSlot = 0;
 bool g_slotFilled[kSlotCount] = {};
 Clock::time_point g_lastFollow = Clock::now();
 
+// --- eye gaze (OpenVR IVRInput eyetracking action) ---
+vr::VRActionSetHandle_t g_actionSet = vr::k_ulInvalidActionSetHandle;
+vr::VRActionHandle_t g_eyeAction = vr::k_ulInvalidActionHandle;
+bool g_eyeManifestOk = false;     // action manifest loaded
+bool g_eyeAvailable = false;      // hardware/runtime has delivered valid data at least once
+bool g_eyeValid = false;          // current sample is usable
+int g_eyeLastErr = 0;             // last EVRInputError from GetEyeTrackingData*
+int g_eyeFlags = 0;               // bit0=active bit1=valid bit2=tracked (last sample)
+bool g_gazeDebug = false;
+bool g_gazeFallbackHead = false;  // explicit debug fallback only — never silent
+double g_gazeOrigin[3] = {}, g_gazeDir[3] = {0, 0, -1};
+GazeTarget g_gazeTarget;
+Clock::time_point g_lastGaze = Clock::now();
+
 struct Screen {
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid, bar = vr::k_ulOverlayHandleInvalid,
                           handle = vr::k_ulOverlayHandleInvalid, curveButton = vr::k_ulOverlayHandleInvalid,
                           rollButton = vr::k_ulOverlayHandleInvalid,
                           anchorButton = vr::k_ulOverlayHandleInvalid;
     vr::VROverlayHandle_t slotButton[kSlotCount] = {};
-    int width = 0, height = 0;    // current buffer size (mouse scale)
+    int width = 0, height = 0;    // DMA-BUF / OpenVR mouse scale (buffer pixels)
+    int surfaceWidth = 0, surfaceHeight = 0;  // Wayland surface-local logical size
+    double outputScale = 1.0;     // KWin output scale (Display Settings); for pointer seat map
     double metres = 1;
     double curve = 0;             // cylinder radius in metres; 0 = flat
     const void *shown = nullptr;  // a frame arrived
     bool visible = false;         // shown in VR right now
-    float userOpacity = 1.f;
+    // Attention-aware opacity: final = attentionResolved * visibilityFade.
+    // Legacy single "opacity" maps to active=idle=X with attention off.
+    float activeOpacity = 1.f;
+    float idleOpacity = 1.f;
+    float attentionResolved = 1.f;  // smoothed idle↔active
     float visibilityFade = 1.f;
-    float attentionFade = 1.f;
     bool attentionEnabled = false;
-    double attentionAngle = 25;
-    double attentionBand = 15;
-    float attentionMin = 0.25f;
-    bool attentionOn = false;  // hysteresis latch for head-gaze attention
+    double attentionInMs = 150;     // fade toward active
+    double attentionOutMs = 250;    // fade toward idle
+    double attentionDwellMs = 80;   // gaze must stick before activating
+    double attentionHoldMs = 150;   // stay active briefly after gaze leaves
+    double attentionFocusMs = 0;    // time currently focused / unfocused accumulator
+    bool attentionFocused = false;
     AnchorMode anchor = AnchorMode::World;
     vr::TrackedDeviceIndex_t pinned = kNone;  // rigid tracked-device pin only
     Mat pinRel = Identity();                  // reference/device -> screen
@@ -430,6 +462,7 @@ struct Screen {
     bool hover[4] = {};                       // bar, curve, roll, resize
     bool hoverAnchor = false;
     bool hoverSlot[kSlotCount] = {};
+    bool gazeHover = false;                   // any gaze hit on this screen or its chrome
     bool lasers = true;                       // MakeOverlaysInteractiveIfVisible is set
     float controls = 0;                       // the controls' fade, 0 (hidden) .. 1
     bool controlsUp = false;                  // the controls' overlays are shown
@@ -441,7 +474,11 @@ struct Screen {
     double chrome = 0.3;          // the bar's width; the other controls follow it (ChromeSize)
     double grip = 0.04;           // the corner tab's and the round buttons' size
     double heightMetres() const { return width > 0 ? metres * height / width : metres * 9 / 16; }
-    float ComposedAlpha() const { return userOpacity * visibilityFade * attentionFade; }
+    float ComposedAlpha() const { return attentionResolved * visibilityFade; }
+    // chrome stays discoverable when the screen surface is fully transparent
+    float ChromeAlpha() const {
+        return std::max(ComposedAlpha(), controls > 0.02f ? kChromeFloor : 0.f);
+    }
     std::vector<vr::VROverlayHandle_t> Controls() const {
         std::vector<vr::VROverlayHandle_t> out = {bar, curveButton, rollButton, handle, anchorButton};
         for (int i = 0; i < kSlotCount; ++i) out.push_back(slotButton[i]);
@@ -760,10 +797,7 @@ Mat OnSurface(const Screen &s, double u, double v, double dz) {
 double BarY(const Screen &s) { return -(s.heightMetres() / 2 + s.chrome * 0.06 + s.chrome * 12 / 256); }
 Mat BarOffset(const Screen &s) { return OnSurface(s, 0, BarY(s), 0.003); }
 
-// Put the bar, the curve button, and the corner tab under the screen (same parent: the
-// room or the controller), sized for the screen and its distance, and on its surface.
-// Where each control sits relative to the screen: bar, curve, roll, resize, then
-// anchor cycle, then profile slots 1..6 to the left of the bar.
+// Bottom strip: bar / curve / roll / resize / anchor / slots.
 std::vector<Mat> ControlOffsets(const Screen &s) {
     const double h = s.heightMetres(), bar = s.chrome, button = s.grip, gap = bar * 0.06;
     std::vector<Mat> out;
@@ -771,11 +805,10 @@ std::vector<Mat> ControlOffsets(const Screen &s) {
     out.push_back(OnSurface(s, bar / 2 + gap + button / 2, BarY(s), 0.003));
     out.push_back(OnSurface(s, bar / 2 + gap * 2 + button * 1.5, BarY(s), 0.003));
     out.push_back(OnSurface(s, s.metres / 2 + s.grip / 2, -(h / 2 + s.grip / 2), 0.003));
-    // Anchor button just left of the bar.
     out.push_back(OnSurface(s, -(bar / 2 + gap + button / 2), BarY(s), 0.003));
-    // Slots further left: 1 nearest the bar … 6 farthest.
     for (int i = 0; i < kSlotCount; ++i) {
-        const double x = -(bar / 2 + gap * 2 + button * 1.5 + i * (button + gap));
+        // Left → right: slots 1..6 (i=0 furthest left).
+        const double x = -(bar / 2 + gap * 2 + button * 1.5 + (kSlotCount - 1 - i) * (button + gap));
         out.push_back(OnSurface(s, x, BarY(s), 0.003));
     }
     return out;
@@ -990,31 +1023,35 @@ bool ModeVisible() {
 // The screen at its alpha; each control dimmer (kChromeIdle) unless a laser is on it or
 // it's being dragged.
 void ApplyAlpha(const Screen &s) {
-    const float alpha = s.ComposedAlpha();
-    vr::VROverlay()->SetOverlayAlpha(s.overlay, alpha);
+    const float screenA = s.ComposedAlpha();
+    const float chromeA = s.ChromeAlpha();
+    vr::VROverlay()->SetOverlayAlpha(s.overlay, screenA);
     const auto controls = s.Controls();
     for (size_t k = 0; k < controls.size(); ++k) {
         bool active = false;
         float fill = 1.f;
-        if (k == 0) active = s.hover[0] || s.drag == Drag::Move;
-        else if (k == 1) active = s.hover[1];
-        else if (k == 2) active = s.hover[2] || s.drag == Drag::Roll;
-        else if (k == 3) active = s.hover[3] || s.drag == Drag::Resize;
-        else if (k == 4) active = s.hoverAnchor;
+        if (k == 0) active = s.hover[0] || s.drag == Drag::Move ||
+                             (s.gazeHover && (g_gazeTarget.kind == GazeKind::Bar || g_gazeTarget.kind == GazeKind::Screen));
+        else if (k == 1) active = s.hover[1] || (g_gazeTarget.kind == GazeKind::Curve && s.gazeHover);
+        else if (k == 2) active = s.hover[2] || s.drag == Drag::Roll ||
+                                  (g_gazeTarget.kind == GazeKind::Roll && s.gazeHover);
+        else if (k == 3) active = s.hover[3] || s.drag == Drag::Resize ||
+                                  (g_gazeTarget.kind == GazeKind::Resize && s.gazeHover);
+        else if (k == 4) active = s.hoverAnchor || (g_gazeTarget.kind == GazeKind::Anchor && s.gazeHover);
         else if (k >= 5 && k < 5 + kSlotCount) {
-            active = s.hoverSlot[k - 5];
+            active = s.hoverSlot[k - 5] ||
+                     (g_gazeTarget.kind == GazeKind::Slot && g_gazeTarget.slot == int(k - 5) && s.gazeHover);
             fill = g_slotFilled[k - 5] ? 1.f : 0.35f;
+            if (g_currentSlot == int(k - 5) + 1) fill = std::max(fill, 1.f);
         }
-        vr::VROverlay()->SetOverlayAlpha(controls[k], alpha * s.controls * (active ? 1.f : kChromeIdle) * fill);
+        vr::VROverlay()->SetOverlayAlpha(controls[k], chromeA * s.controls * (active ? 1.f : kChromeIdle) * fill);
     }
 }
 
 void SetVisible(Screen &s, bool visible, float visibilityFade) {
     s.visibilityFade = visibilityFade;
-    const float alpha = s.ComposedAlpha();
     if (visible) ApplyAlpha(s);
     if (visible == s.visible) {
-        // Still refresh alpha when factors change while shown.
         if (visible) ApplyAlpha(s);
         return;
     }
@@ -1027,6 +1064,275 @@ void SetVisible(Screen &s, bool visible, float visibilityFade) {
     vr::VROverlay()->HideOverlay(s.overlay);
     for (auto o : s.Controls()) vr::VROverlay()->HideOverlay(o);
     s.controls = 0, s.controlsUp = false;
+}
+
+// ---------------------------------------------------------------- eye gaze + hit testing
+
+bool InitEyeTracking() {
+    char exe[PATH_MAX] = {};
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return false;
+    exe[n] = 0;
+    std::string path(exe);
+    const auto slash = path.rfind('/');
+    if (slash == std::string::npos) return false;
+    path = path.substr(0, slash) + "/actions.json";
+    if (!vr::VRInput()) {
+        std::fprintf(stderr, "ft-screens: no IVRInput; eye tracking unavailable\n");
+        return false;
+    }
+    const auto err = vr::VRInput()->SetActionManifestPath(path.c_str());
+    if (err != vr::VRInputError_None && err != vr::VRInputError_MismatchedActionManifest) {
+        std::fprintf(stderr, "ft-screens: SetActionManifestPath(%s) failed (%d); eye tracking unavailable\n",
+                     path.c_str(), int(err));
+        return false;
+    }
+    if (vr::VRInput()->GetActionSetHandle("/actions/frametop", &g_actionSet) != vr::VRInputError_None ||
+        vr::VRInput()->GetActionHandle("/actions/frametop/in/EyeGaze", &g_eyeAction) != vr::VRInputError_None) {
+        std::fprintf(stderr, "ft-screens: eye gaze action handles failed\n");
+        return false;
+    }
+    g_eyeManifestOk = true;
+    std::printf("eye tracking: action manifest ready (%s)\n", path.c_str());
+    return true;
+}
+
+bool SampleEyeGaze(double origin[3], double dir[3]) {
+    g_eyeValid = false;
+    g_eyeFlags = 0;
+    if (!g_eyeManifestOk || !vr::VRInput()) return false;
+    vr::VRActiveActionSet_t as{};
+    as.ulActionSet = g_actionSet;
+    as.ulRestrictedToDevice = vr::k_ulInvalidInputValueHandle;
+    as.nPriority = 0;
+    vr::VRInput()->UpdateActionState(&as, sizeof(as), 1);
+    vr::VREyeTrackingData_t eye{};
+    auto err =
+        vr::VRInput()->GetEyeTrackingDataRelativeToNow(g_eyeAction, vr::TrackingUniverseStanding, 0.f, &eye, sizeof eye);
+    if (err != vr::VRInputError_None) {
+        // Some runtimes only fill next-frame data.
+        err = vr::VRInput()->GetEyeTrackingDataForNextFrame(g_eyeAction, vr::TrackingUniverseStanding, &eye, sizeof eye);
+    }
+    g_eyeLastErr = int(err);
+    if (err != vr::VRInputError_None) return false;
+    g_eyeFlags = (eye.bActive ? 1 : 0) | (eye.bValid ? 2 : 0) | (eye.bTracked ? 4 : 0);
+    if (!eye.bActive || !eye.bValid || !eye.bTracked) return false;
+    origin[0] = eye.vGazeOrigin.v[0];
+    origin[1] = eye.vGazeOrigin.v[1];
+    origin[2] = eye.vGazeOrigin.v[2];
+    const double dx = eye.vGazeTarget.v[0] - origin[0], dy = eye.vGazeTarget.v[1] - origin[1],
+                 dz = eye.vGazeTarget.v[2] - origin[2];
+    const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-5) return false;
+    dir[0] = dx / len;
+    dir[1] = dy / len;
+    dir[2] = dz / len;
+    g_eyeAvailable = true;
+    g_eyeValid = true;
+    return true;
+}
+
+bool SampleHeadFallbackGaze(double origin[3], double dir[3]) {
+    Mat head;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) return false;
+    origin[0] = head.m[0][3];
+    origin[1] = head.m[1][3];
+    origin[2] = head.m[2][3];
+    // Head -Z is forward in OpenVR standing space.
+    dir[0] = -head.m[0][2];
+    dir[1] = -head.m[1][2];
+    dir[2] = -head.m[2][2];
+    const double len = std::sqrt(Dot3(dir, dir)) + 1e-12;
+    dir[0] /= len;
+    dir[1] /= len;
+    dir[2] /= len;
+    return true;
+}
+
+// Ray vs axis-aligned chrome disc/bar in screen-local metres (centre origin).
+bool RayHitsLocalBox(double hx, double hy, double cx, double cy, double halfW, double halfH) {
+    return std::fabs(hx - cx) <= halfW && std::fabs(hy - cy) <= halfH;
+}
+
+// Defined later with the move/resize helpers; gaze hit-testing needs it here.
+bool RayOnPlane(const Mat &p, const Mat &d, double *x, double *y);
+
+GazeTarget PickGazeTarget(const double origin[3], const double dir[3]) {
+    GazeTarget best;
+    Mat ray = Identity();
+    ray.m[0][3] = float(origin[0]);
+    ray.m[1][3] = float(origin[1]);
+    ray.m[2][3] = float(origin[2]);
+    // Encode direction in -Z column like LaserPose (RayOnPlane uses -d.m[*][2]).
+    ray.m[0][2] = float(-dir[0]);
+    ray.m[1][2] = float(-dir[1]);
+    ray.m[2][2] = float(-dir[2]);
+
+    for (auto &[index, s] : g_screens) {
+        if (!s.shown) continue;
+        Mat p;
+        if (!ScreenPose(s, &p)) continue;
+        double hx, hy;
+        if (!RayOnPlane(p, ray, &hx, &hy)) continue;
+        const double h = s.heightMetres(), halfW = s.metres / 2, halfH = h / 2;
+        const double o[3] = {origin[0], origin[1], origin[2]};
+        const double hit[3] = {p.m[0][3] + float(hx) * p.m[0][0] + float(hy) * p.m[0][1],
+                               p.m[1][3] + float(hx) * p.m[1][0] + float(hy) * p.m[1][1],
+                               p.m[2][3] + float(hx) * p.m[2][0] + float(hy) * p.m[2][1]};
+        const double dvec[3] = {hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]};
+        const double dist = std::sqrt(Dot3(dvec, dvec));
+        if (dist >= best.distance) continue;
+
+        auto consider = [&](GazeKind kind, int slot, double /*ignore*/) {
+            if (dist >= best.distance) return;
+            best.kind = kind;
+            best.screen = index;
+            best.slot = slot;
+            best.localX = hx;
+            best.localY = hy;
+            best.u = halfW > 0 ? (hx + halfW) / s.metres : 0.5;
+            best.v = halfH > 0 ? (halfH - hy) / h : 0.5;  // top-left pixel origin
+            best.distance = dist;
+        };
+
+        const double bar = s.chrome, button = s.grip, gap = bar * 0.06;
+        const double by = BarY(s);
+
+        // Bottom chrome + slots.
+        if (RayHitsLocalBox(hx, hy, 0, by, bar / 2, bar * 12 / 256)) {
+            consider(GazeKind::Bar, -1, dist);
+            continue;
+        }
+        if (RayHitsLocalBox(hx, hy, bar / 2 + gap + button / 2, by, button / 2, button / 2)) {
+            consider(GazeKind::Curve, -1, dist);
+            continue;
+        }
+        if (RayHitsLocalBox(hx, hy, bar / 2 + gap * 2 + button * 1.5, by, button / 2, button / 2)) {
+            consider(GazeKind::Roll, -1, dist);
+            continue;
+        }
+        if (RayHitsLocalBox(hx, hy, halfW + s.grip / 2, -(halfH + s.grip / 2), s.grip / 2, s.grip / 2)) {
+            consider(GazeKind::Resize, -1, dist);
+            continue;
+        }
+        if (RayHitsLocalBox(hx, hy, -(bar / 2 + gap + button / 2), by, button / 2, button / 2)) {
+            consider(GazeKind::Anchor, -1, dist);
+            continue;
+        }
+        bool slotHit = false;
+        for (int i = 0; i < kSlotCount; ++i) {
+            const double sx = -(bar / 2 + gap * 2 + button * 1.5 + (kSlotCount - 1 - i) * (button + gap));
+            if (RayHitsLocalBox(hx, hy, sx, by, button / 2, button / 2)) {
+                consider(GazeKind::Slot, i, dist);
+                slotHit = true;
+                break;
+            }
+        }
+        if (slotHit) continue;
+        // Screen surface.
+        if (std::fabs(hx) <= halfW && std::fabs(hy) <= halfH) consider(GazeKind::Screen, -1, dist);
+    }
+    return best;
+}
+
+void UpdateGaze(double dt) {
+    (void)dt;
+    for (auto &[i, s] : g_screens) s.gazeHover = false;
+    double origin[3], dir[3];
+    bool got = SampleEyeGaze(origin, dir);
+    if (!got && g_gazeFallbackHead) got = SampleHeadFallbackGaze(origin, dir);
+    if (!got) {
+        g_gazeTarget = {};
+        return;
+    }
+    for (int k = 0; k < 3; ++k) g_gazeOrigin[k] = origin[k], g_gazeDir[k] = dir[k];
+    g_gazeTarget = PickGazeTarget(origin, dir);
+    if (g_gazeTarget) {
+        auto it = g_screens.find(g_gazeTarget.screen);
+        if (it != g_screens.end()) it->second.gazeHover = true;
+    }
+    if (g_gazeDebug && (g_tick % 45) == 0) {
+        const char *kind = "none";
+        switch (g_gazeTarget.kind) {
+            case GazeKind::Screen: kind = "screen"; break;
+            case GazeKind::Bar: kind = "bar"; break;
+            case GazeKind::Curve: kind = "curve"; break;
+            case GazeKind::Roll: kind = "roll"; break;
+            case GazeKind::Resize: kind = "resize"; break;
+            case GazeKind::Anchor: kind = "anchor"; break;
+            case GazeKind::Slot: kind = "slot"; break;
+            default: break;
+        }
+        std::printf("gaze: eye=%s valid=%s target=%s screen=%d u=%.3f v=%.3f dist=%.3f\n",
+                    g_eyeAvailable ? "yes" : "no", g_eyeValid ? "yes" : (g_gazeFallbackHead ? "fallback" : "no"),
+                    kind, g_gazeTarget.screen + 1, g_gazeTarget.u, g_gazeTarget.v, g_gazeTarget.distance);
+    }
+}
+
+void UpdateAttention(double dt) {
+    for (auto &[index, s] : g_screens) {
+        const float before = s.attentionResolved;
+        if (!s.attentionEnabled) {
+            s.attentionFocused = false;
+            s.attentionFocusMs = 0;
+            // No attention: show active opacity (legacy behaviour).
+            s.attentionResolved = s.activeOpacity;
+        } else if (!g_eyeAvailable && !g_gazeFallbackHead) {
+            // Eye tracking has never delivered a sample: do not park the screen at idle
+            // (that soft-locks settings UIs when idle is 0). Hold active until gaze works.
+            s.attentionFocused = false;
+            s.attentionFocusMs = 0;
+            s.attentionResolved = s.activeOpacity;
+        } else {
+            const bool hit =
+                g_gazeTarget && g_gazeTarget.screen == index &&
+                (g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
+                 g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
+                 g_gazeTarget.kind == GazeKind::Resize || g_gazeTarget.kind == GazeKind::Anchor ||
+                 g_gazeTarget.kind == GazeKind::Slot);
+            // Temporary invalid sample: ease toward idle, do not slam.
+            const bool valid = g_eyeValid || (g_gazeFallbackHead && g_gazeTarget);
+            if (!valid) {
+                const double tau = s.attentionOutMs / 1000.0;
+                const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
+                s.attentionResolved = float(s.attentionResolved + (s.idleOpacity - s.attentionResolved) * a);
+            } else {
+                if (hit) {
+                    s.attentionFocusMs += dt * 1000.0;
+                    if (!s.attentionFocused && s.attentionFocusMs >= s.attentionDwellMs) s.attentionFocused = true;
+                } else if (s.attentionFocused) {
+                    s.attentionFocusMs += dt * 1000.0;
+                    if (s.attentionFocusMs >= s.attentionHoldMs) {
+                        s.attentionFocused = false;
+                        s.attentionFocusMs = 0;
+                    }
+                } else {
+                    s.attentionFocusMs = 0;
+                }
+                if (hit && s.attentionFocused) s.attentionFocusMs = 0;  // reset hold while still gazing
+                const float target = s.attentionFocused ? s.activeOpacity : s.idleOpacity;
+                const double tauMs = s.attentionFocused ? s.attentionInMs : s.attentionOutMs;
+                const double tau = tauMs / 1000.0;
+                const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
+                s.attentionResolved = float(s.attentionResolved + (target - s.attentionResolved) * a);
+            }
+        }
+        if (std::fabs(s.attentionResolved - before) > 0.001f) {
+            ApplyAlpha(s);
+        }
+    }
+}
+
+void SetScreenOpacity(Screen &s, float active, float idle) {
+    s.activeOpacity = std::clamp(active, 0.f, 1.f);
+    s.idleOpacity = std::clamp(idle, 0.f, 1.f);
+    if (!s.attentionEnabled || (!g_eyeAvailable && !g_gazeFallbackHead))
+        s.attentionResolved = s.activeOpacity;
+    else
+        s.attentionResolved = std::clamp(s.attentionResolved, std::min(s.idleOpacity, s.activeOpacity),
+                                         std::max(s.idleOpacity, s.activeOpacity));
+    PlaceChrome(s);
+    ApplyAlpha(s);
 }
 
 void UpdateVisibility() {
@@ -1044,33 +1350,8 @@ void UpdateVisibility() {
             visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
             visible = visFade > 0.02f;
         }
-        // Head-gaze attention (HMD forward, not eye tracking). Skipped for head-soft/head-rigid
-        // because those screens stay locked in view once caught up — angle-to-panel is meaningless.
-        float att = 1.f;
-        if (visible && s.attentionEnabled && AttentionApplies(s.anchor) && s.drag == Drag::None && haveHead &&
-            ScreenPose(s, &p)) {
-            double f[3], to[3] = {p.m[0][3] - head.m[0][3], p.m[1][3] - head.m[1][3], p.m[2][3] - head.m[2][3]};
-            Column(head, 2, f);  // +Z points backward
-            const double len = std::sqrt(Dot3(to, to)) + 1e-9;
-            const double ang = std::acos(std::clamp(-Dot3(f, to) / len, -1.0, 1.0)) * 180 / M_PI;
-            // 3° hysteresis on the inner edge to limit flicker at the attention boundary.
-            constexpr double kHyst = 3.0;
-            const double inner = s.attentionOn ? s.attentionAngle + kHyst : s.attentionAngle;
-            const double outer = s.attentionAngle + s.attentionBand;
-            if (ang <= inner) {
-                att = 1.f;
-                s.attentionOn = true;
-            } else if (ang >= outer) {
-                att = s.attentionMin;
-                s.attentionOn = false;
-            } else {
-                const double u = (ang - inner) / std::max(1e-3, outer - inner);
-                att = float(1.0 - u * (1.0 - s.attentionMin));
-            }
-        } else if (!s.attentionEnabled || !AttentionApplies(s.anchor)) {
-            s.attentionOn = false;
-        }
-        s.attentionFade = att;
+        // Keep chrome interactable even when the surface is fully transparent.
+        if (!visible && s.shown && s.controls > 0.02f) visible = true, visFade = 0.f;
         SetVisible(s, visible, visFade);
     }
 }
@@ -1116,7 +1397,10 @@ void UpdateControls() {
                     const double t = Dot3(v, dir);
                     if (t <= 0) continue;
                     const double q[3] = {v[0] - dir[0] * t, v[1] - dir[1] * t, v[2] - dir[2] * t};
-                    if (Dot3(q, q) <= reach * reach) close = true;
+                    if (Dot3(q, q) <= reach * reach) {
+                        close = true;
+                        break;
+                    }
                 }
                 if (close) {
                     s.nearUntil = g_tick + kControlsLinger;
@@ -1126,6 +1410,7 @@ void UpdateControls() {
         }
         bool anyHover = s.hover[0] || s.hover[1] || s.hover[2] || s.hover[3] || s.hoverAnchor;
         for (int i = 0; i < kSlotCount; ++i) anyHover = anyHover || s.hoverSlot[i];
+        // Gaze drives attention fade only — chrome reveal stays laser / 3D-mouse.
         const bool inUse = s.drag != Drag::None || anyHover;
         const bool want = s.visible && (inUse || g_tick < s.nearUntil);
         // The controls stay shown while their screen is, just fully transparent when not
@@ -1436,6 +1721,8 @@ bool ft_vr_init(void) {
         std::fprintf(stderr, "openvr: no IVRIPCResourceManagerClient (SteamVR too old?)\n");
         return false;
     }
+    // Action manifest must be set before the first PollNextEvent / UpdateActionState.
+    InitEyeTracking();
     RefreshPoses();
     return true;
 }
@@ -1500,6 +1787,7 @@ void ft_vr_screen_create(int index, double metres, int count) {
         std::snprintf(name, sizeof name, "Screen %d: profile %d", index + 1, i + 1);
         s.slotButton[i] = MakeChrome(key, name, DigitTexture(64, i + 1, false), 64, 64);
     }
+    s.attentionResolved = s.activeOpacity;
     ApplyAlpha(s);
     // Until the layout places it: 2 m ahead of the head, in a row, screen 1 on the left.
     RefreshPoses();
@@ -1546,16 +1834,45 @@ bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *b)
     }
     if (b->width != s.width || b->height != s.height) {
         s.width = b->width, s.height = b->height;
+        // Mouse scale stays in *buffer* pixels; seat events map via ft_buffer_to_surface.
         vr::HmdVector2_t scale = {float(s.width), float(s.height)};
         vr::VROverlay()->SetOverlayMouseScale(s.overlay, &scale);
         PlaceChrome(s);  // the height changed
-        std::printf("screen %d: %dx%d\n", index + 1, s.width, s.height);
+        std::printf("screen %d: buffer %dx%d (surface %dx%d)\n", index + 1, s.width, s.height, s.surfaceWidth,
+                    s.surfaceHeight);
     }
     vr::SharedTextureHandle_t handle = it->second;
     vr::Texture_t tex = {&handle, vr::TextureType_SharedTextureHandle, vr::ColorSpace_Gamma};
     vr::VROverlay()->SetOverlayTexture(s.overlay, &tex);
     s.shown = key;  // UpdateVisibility shows it on the next tick
     return true;
+}
+
+void ft_vr_screen_set_surface_size(int index, int width, int height) {
+    auto it = g_screens.find(index);
+    if (it == g_screens.end()) return;
+    Screen &s = it->second;
+    if (width == s.surfaceWidth && height == s.surfaceHeight) return;
+    s.surfaceWidth = std::max(0, width);
+    s.surfaceHeight = std::max(0, height);
+    std::printf("screen %d: surface %dx%d (buffer %dx%d)\n", index + 1, s.surfaceWidth, s.surfaceHeight, s.width,
+                s.height);
+}
+
+void ft_vr_screen_set_output_scale(int index, double scale) {
+    auto it = g_screens.find(index);
+    if (it == g_screens.end()) return;
+    Screen &s = it->second;
+    const double sc = std::clamp(scale, 0.5, 4.0);
+    if (std::fabs(sc - s.outputScale) < 1e-4) return;
+    s.outputScale = sc;
+    std::printf("screen %d: output scale %.4f (buffer %dx%d surface %dx%d)\n", index + 1, s.outputScale, s.width,
+                s.height, s.surfaceWidth, s.surfaceHeight);
+}
+
+double ft_vr_screen_output_scale(int index) {
+    auto it = g_screens.find(index);
+    return it == g_screens.end() ? 1.0 : it->second.outputScale;
 }
 
 void ft_vr_forget(const void *key) {
@@ -1567,7 +1884,14 @@ void ft_vr_forget(const void *key) {
 
 void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     RefreshPoses();
+    static auto last = Clock::now();
+    const auto now = Clock::now();
+    const double dt = std::chrono::duration<double>(now - last).count();
+    last = now;
+    const double step = (dt > 0 && dt < 0.25) ? dt : 0.011;
     UpdateFollow();
+    UpdateGaze(step);
+    UpdateAttention(step);
     for (auto &[index, s] : g_screens) {
         vr::VREvent_t ev;
         // The screen itself: input for KWin.
@@ -1576,19 +1900,28 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             e.screen = index;
             switch (ev.eventType) {
                 case vr::VREvent_MouseMove:
-                    e.type = FT_MOTION;
-                    e.x = ev.data.mouse.x;
-                    e.y = s.height - ev.data.mouse.y;  // OpenVR's mouse origin is bottom left
-                    break;
                 case vr::VREvent_MouseButtonDown:
-                case vr::VREvent_MouseButtonUp:
-                    if (ev.eventType == vr::VREvent_MouseButtonUp) EndDragsBy(ev.trackedDeviceIndex);
-                    e.type = FT_BUTTON;
-                    e.button = LinuxButton(ev.data.mouse.button);
-                    e.pressed = ev.eventType == vr::VREvent_MouseButtonDown;
-                    e.x = ev.data.mouse.x;
-                    e.y = s.height - ev.data.mouse.y;
+                case vr::VREvent_MouseButtonUp: {
+                    // OpenVR reports buffer pixels (bottom-left); convert for the Wayland
+                    // seat (coords.h) — see ft_buffer_to_seat for KWin scale vs wl dpr.
+                    const double buf_x = ev.data.mouse.x;
+                    const double buf_y = s.height - ev.data.mouse.y;
+                    double sx = buf_x, sy = buf_y;
+                    const int surf_w = s.surfaceWidth > 0 ? s.surfaceWidth : s.width;
+                    const int surf_h = s.surfaceHeight > 0 ? s.surfaceHeight : s.height;
+                    ft_buffer_to_seat(buf_x, buf_y, s.width, s.height, surf_w, surf_h, s.outputScale, &sx, &sy);
+                    if (ev.eventType == vr::VREvent_MouseMove) {
+                        e.type = FT_MOTION;
+                    } else {
+                        if (ev.eventType == vr::VREvent_MouseButtonUp) EndDragsBy(ev.trackedDeviceIndex);
+                        e.type = FT_BUTTON;
+                        e.button = LinuxButton(ev.data.mouse.button);
+                        e.pressed = ev.eventType == vr::VREvent_MouseButtonDown;
+                    }
+                    e.x = sx;
+                    e.y = sy;
                     break;
+                }
                 case vr::VREvent_ScrollDiscrete:
                     e.type = FT_SCROLL;
                     e.dx = -ev.data.scroll.xdelta;
@@ -1690,6 +2023,9 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateGuides();
 }
 
+// Future pinch / finger tracking should call these (gaze selects; pinch confirms). Not wired yet.
+//   activateCurrentGazeTarget()  — chrome → semantic action; screen → desktop click at UV
+//   beginGazeDrag() / updateGazeDrag(delta) / endGazeDrag()
 // Control commands (datagrams on @ft_screens, replies to the sender):
 //   place <screen> <x> <y> <z> <yaw> <pitch> <roll>   centre (standing universe) and facing
 //   width <screen> <metres>
@@ -1698,8 +2034,10 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
 //   pin <screen|all> <left|right|head> [12 numbers]   pin to that anchor: as it is now,
 //                             or at the given device->screen transform (rows of a 3x4)
 //   unpin <screen|all>
-//   get <screen>  -> "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve anchor
-//                     [12 numbers: device->screen, when pinned]"
+//   opacity <screen> <active> [idle]
+//   attention <screen> on|off [inMs outMs dwellMs holdMs]
+//   gaze state|debug on|off|fallback head|fallback off
+//   get <screen>  -> "ok ... width height curve activeOpacity idleOpacity anchor [rel...]"
 //   screens       -> "ok <count> <index>:<pixels w>x<h>:<metres> ..."
 //   head          -> "ok x y z yaw"
 //   visibility always|dashboard|gesture|toggle
@@ -1794,29 +2132,95 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             RefreshSlotTextures(s);
         });
         std::snprintf(reply, size, found ? "ok" : "error no such screen");
-    } else if (std::sscanf(cmd, "opacity %d %lf", &n, &w) == 2) {
+    } else if (int opacityGot = std::sscanf(cmd, "opacity %d %lf %lf", &n, &w, &x); opacityGot >= 2) {
         Screen *s = Find(n);
         if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
-        s->userOpacity = float(std::clamp(w, 0.0, 1.0));
-        ApplyAlpha(*s);
-        std::snprintf(reply, size, "ok %.3f", s->userOpacity);
-    } else if (std::sscanf(cmd, "attention %d %15s %lf %lf %lf", &n, word, &x, &y, &z) >= 2) {
+        const float active = float(std::clamp(w, 0.0, 1.0));
+        const float idle = opacityGot >= 3 ? float(std::clamp(x, 0.0, 1.0)) : active;
+        SetScreenOpacity(*s, active, idle);
+        std::snprintf(reply, size, "ok %.3f %.3f", s->activeOpacity, s->idleOpacity);
+    } else if (std::sscanf(cmd, "scale %d %lf", &n, &w) == 2) {
+        Screen *s = Find(n);
+        if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
+        ft_vr_screen_set_output_scale(n - 1, w);
+        std::snprintf(reply, size, "ok %.4f", s->outputScale);
+    } else if (std::sscanf(cmd, "attention %d %15s", &n, word) >= 2) {
         Screen *s = Find(n);
         if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
         if (!std::strcmp(word, "off")) {
             s->attentionEnabled = false;
-            s->attentionFade = 1.f;
+            s->attentionFocused = false;
+            s->attentionResolved = s->activeOpacity;
         } else {
             s->attentionEnabled = true;
-            if (std::sscanf(cmd, "attention %*d %*s %lf %lf %lf", &x, &y, &z) >= 1)
-                s->attentionAngle = std::clamp(x, 5.0, 90.0);
-            if (std::sscanf(cmd, "attention %*d %*s %*lf %lf %lf", &y, &z) >= 1)
-                s->attentionBand = std::clamp(y, 1.0, 60.0);
-            if (std::sscanf(cmd, "attention %*d %*s %*lf %*lf %lf", &z) == 1)
-                s->attentionMin = float(std::clamp(z, 0.0, 1.0));
+            // attention N on [inMs [outMs [dwellMs [holdMs]]]]
+            double inMs = s->attentionInMs, outMs = s->attentionOutMs, dwell = s->attentionDwellMs,
+                   hold = s->attentionHoldMs;
+            const int got = std::sscanf(cmd, "attention %*d %*s %lf %lf %lf %lf", &inMs, &outMs, &dwell, &hold);
+            if (got >= 1) s->attentionInMs = std::clamp(inMs, 20.0, 2000.0);
+            if (got >= 2) s->attentionOutMs = std::clamp(outMs, 20.0, 2000.0);
+            if (got >= 3) s->attentionDwellMs = std::clamp(dwell, 0.0, 1000.0);
+            if (got >= 4) s->attentionHoldMs = std::clamp(hold, 0.0, 1000.0);
         }
-        UpdateVisibility();
+        ApplyAlpha(*s);
         std::snprintf(reply, size, "ok");
+    } else if (std::strncmp(cmd, "gaze ", 5) == 0) {
+        if (!std::strcmp(cmd + 5, "state")) {
+            const char *kind = "none";
+            switch (g_gazeTarget.kind) {
+                case GazeKind::Screen: kind = "screen"; break;
+                case GazeKind::Bar: kind = "bar"; break;
+                case GazeKind::Curve: kind = "curve"; break;
+                case GazeKind::Roll: kind = "roll"; break;
+                case GazeKind::Resize: kind = "resize"; break;
+                case GazeKind::Anchor: kind = "anchor"; break;
+                case GazeKind::Slot: kind = "slot"; break;
+                default: break;
+            }
+            int px = 0, py = 0, bpx = 0, bpy = 0;
+            int surf_w = 0, surf_h = 0, buf_w = 0, buf_h = 0;
+            if (g_gazeTarget) {
+                auto it = g_screens.find(g_gazeTarget.screen);
+                if (it != g_screens.end()) {
+                    const Screen &gs = it->second;
+                    buf_w = gs.width;
+                    buf_h = gs.height;
+                    surf_w = gs.surfaceWidth > 0 ? gs.surfaceWidth : gs.width;
+                    surf_h = gs.surfaceHeight > 0 ? gs.surfaceHeight : gs.height;
+                    if (g_gazeTarget.kind == GazeKind::Screen) {
+                        bpx = int(std::lround(g_gazeTarget.u * buf_w));
+                        bpy = int(std::lround(g_gazeTarget.v * buf_h));
+                        double sx = 0, sy = 0;
+                        ft_uv_to_seat(g_gazeTarget.u, g_gazeTarget.v, buf_w, buf_h, surf_w, surf_h, gs.outputScale,
+                                      &sx, &sy);
+                        px = int(std::lround(sx));
+                        py = int(std::lround(sy));
+                    }
+                }
+            }
+            std::snprintf(reply, size,
+                          "ok eye=%d valid=%d fallback=%d err=%d flags=%d origin=%.4f,%.4f,%.4f dir=%.4f,%.4f,%.4f "
+                          "target=%s screen=%d slot=%d u=%.4f v=%.4f pixel=%d,%d buffer_pixel=%d,%d "
+                          "surface=%dx%d buffer=%dx%d dist=%.4f",
+                          g_eyeAvailable ? 1 : 0, g_eyeValid ? 1 : 0, g_gazeFallbackHead ? 1 : 0, g_eyeLastErr,
+                          g_eyeFlags, g_gazeOrigin[0], g_gazeOrigin[1], g_gazeOrigin[2], g_gazeDir[0], g_gazeDir[1],
+                          g_gazeDir[2], kind, g_gazeTarget.screen + 1, g_gazeTarget.slot + 1, g_gazeTarget.u,
+                          g_gazeTarget.v, px, py, bpx, bpy, surf_w, surf_h, buf_w, buf_h, g_gazeTarget.distance);
+        } else if (!std::strcmp(cmd + 5, "debug on")) {
+            g_gazeDebug = true;
+            std::snprintf(reply, size, "ok debug on");
+        } else if (!std::strcmp(cmd + 5, "debug off")) {
+            g_gazeDebug = false;
+            std::snprintf(reply, size, "ok debug off");
+        } else if (!std::strcmp(cmd + 5, "fallback head")) {
+            g_gazeFallbackHead = true;
+            std::snprintf(reply, size, "ok fallback=head (debug only; not silent eye substitution)");
+        } else if (!std::strcmp(cmd + 5, "fallback off")) {
+            g_gazeFallbackHead = false;
+            std::snprintf(reply, size, "ok fallback=off");
+        } else {
+            std::snprintf(reply, size, "error gaze state|debug on|debug off|fallback head|fallback off");
+        }
     } else if (std::sscanf(cmd, "followlag %lf", &w) == 1) {
         g_followLagMs = std::clamp(w, 0.0, 1000.0);
         std::snprintf(reply, size, "ok %.0f", g_followLagMs);
@@ -1838,11 +2242,12 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         Mat m;
         if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
         if (!ScreenPose(*s, &m)) return (void)std::snprintf(reply, size, "error screen %d has no pose", n);
-        int len = std::snprintf(reply, size,
-                                "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %.3f %s",
-                                m.m[0][3], m.m[1][3], m.m[2][3], m.m[0][0], m.m[1][0], m.m[2][0], m.m[0][1], m.m[1][1],
-                                m.m[2][1], m.m[0][2], m.m[1][2], m.m[2][2], s->metres, s->heightMetres(), s->curve,
-                                s->userOpacity, AnchorModeName(s->anchor));
+        int len = std::snprintf(
+            reply, size,
+            "ok %.4f %.4f %.4f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.5f %.5f %.5f  %.4f %.4f %.3f %.3f %.3f %s",
+            m.m[0][3], m.m[1][3], m.m[2][3], m.m[0][0], m.m[1][0], m.m[2][0], m.m[0][1], m.m[1][1], m.m[2][1],
+            m.m[0][2], m.m[1][2], m.m[2][2], s->metres, s->heightMetres(), s->curve, s->activeOpacity,
+            s->idleOpacity, AnchorModeName(s->anchor));
         if (s->anchor != AnchorMode::World)
             for (int k = 0; k < 12 && len < size; ++k)
                 len += std::snprintf(reply + len, size - len, " %.5f", s->pinRel.m[k / 4][k % 4]);

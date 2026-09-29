@@ -200,15 +200,78 @@ Kirigami.ApplicationWindow {
                                     }
                                 }
                                 RowLayout {
-                                    Kirigami.FormData.label: "Opacity:"
+                                    Kirigami.FormData.label: "Active opacity:"
                                     Controls.Slider {
-                                        id: opacitySlider
-                                        from: 0.15; to: 1.0; stepSize: 0.05
-                                        value: card.modelData.opacity !== undefined ? card.modelData.opacity : 1.0
+                                        id: activeOpacitySlider
+                                        from: 0.0; to: 1.0; stepSize: 0.05
+                                        value: card.modelData.activeOpacity !== undefined
+                                               ? card.modelData.activeOpacity
+                                               : (card.modelData.opacity !== undefined ? card.modelData.opacity : 1.0)
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                                        onMoved: backend.setScreenOpacity(card.modelData.index, value)
+                                        onMoved: backend.setScreenOpacities(card.modelData.index, value, idleOpacitySlider.value)
                                     }
-                                    Controls.Label { text: Math.round(opacitySlider.value * 100) + "%" }
+                                    Controls.Label { text: Math.round(activeOpacitySlider.value * 100) + "%" }
+                                }
+                                RowLayout {
+                                    Kirigami.FormData.label: "Idle opacity:"
+                                    Controls.Slider {
+                                        id: idleOpacitySlider
+                                        from: 0.0; to: 1.0; stepSize: 0.05
+                                        value: card.modelData.idleOpacity !== undefined
+                                               ? card.modelData.idleOpacity
+                                               : (card.modelData.opacity !== undefined ? card.modelData.opacity : 1.0)
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                                        onMoved: backend.setScreenOpacities(card.modelData.index, activeOpacitySlider.value, value)
+                                    }
+                                    Controls.Label { text: Math.round(idleOpacitySlider.value * 100) + "%" }
+                                }
+                                Controls.Switch {
+                                    id: attentionSwitch
+                                    Kirigami.FormData.label: "Gaze attention:"
+                                    text: "Fade idle ↔ active from true eye gaze"
+                                    checked: card.modelData.attentionEnabled === true
+                                    onToggled: backend.setScreenAttention(card.modelData.index, checked)
+                                }
+                                RowLayout {
+                                    visible: attentionSwitch.checked
+                                    Kirigami.FormData.label: "Fade in:"
+                                    Controls.Slider {
+                                        id: fadeInSlider
+                                        from: 50; to: 1000; stepSize: 25
+                                        value: card.modelData.attentionInMs !== undefined
+                                               ? card.modelData.attentionInMs : 150
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                                        onMoved: backend.setScreenAttentionInMs(card.modelData.index, value)
+                                    }
+                                    Controls.Label { text: Math.round(fadeInSlider.value) + " ms" }
+                                }
+                                RowLayout {
+                                    visible: attentionSwitch.checked
+                                    Kirigami.FormData.label: "Fade out:"
+                                    Controls.Slider {
+                                        id: fadeOutSlider
+                                        from: 50; to: 1000; stepSize: 25
+                                        value: card.modelData.attentionOutMs !== undefined
+                                               ? card.modelData.attentionOutMs : 250
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                                        onMoved: backend.setScreenAttentionOutMs(card.modelData.index, value)
+                                    }
+                                    Controls.Label { text: Math.round(fadeOutSlider.value) + " ms" }
+                                }
+                                Controls.ComboBox {
+                                    Kirigami.FormData.label: "Anchor:"
+                                    model: [
+                                        { text: "World", value: "world" },
+                                        { text: "Head (soft)", value: "head" },
+                                        { text: "Yaw follow", value: "yaw-follow" },
+                                        { text: "Position follow", value: "position-follow" },
+                                        { text: "Left controller", value: "left" },
+                                        { text: "Right controller", value: "right" }
+                                    ]
+                                    textRole: "text"
+                                    valueRole: "value"
+                                    Component.onCompleted: currentIndex = Math.max(0, indexOfValue(card.modelData.anchor || "world"))
+                                    onActivated: backend.setScreenAnchor(card.modelData.index, currentValue)
                                 }
                                 Controls.ComboBox {
                                     Kirigami.FormData.label: "Scale:"
@@ -505,7 +568,8 @@ Kirigami.ApplicationWindow {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                         opacity: 0.7
-                        text: "Profiles store where the screens sit (pose, width in metres, curve, anchors, opacity). "
+                        text: "Profiles store where the screens sit (pose, width in metres, curve, anchors, "
+                              + "active/idle opacity, optional gaze attention). "
                               + "They do not change screen count, resolution, or scale. CLI: ft-layout profile apply NAME"
                     }
 

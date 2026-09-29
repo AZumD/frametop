@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "coords.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +24,8 @@ enum ft_event_type { FT_MOTION, FT_BUTTON, FT_SCROLL, FT_LEAVE, FT_QUIT };
 struct ft_event {
     enum ft_event_type type;
     int screen;
-    double x, y;      // FT_MOTION: buffer pixels from the top left
+    // FT_MOTION / FT_BUTTON: seat coords for nested KWin (see screens/coords.h).
+    double x, y;
     uint32_t button;  // FT_BUTTON: linux BTN_*
     bool pressed;
     double dx, dy;    // FT_SCROLL: notches (positive dy: scroll down)
@@ -40,6 +43,11 @@ void ft_vr_screen_destroy(int index);
 // Show a client buffer (identified by `key`) on the screen's panel. False if SteamVR
 // can't import it.
 bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *buf);
+// Committed Wayland surface-local size (wlr_surface.current). Independent of VR metres.
+void ft_vr_screen_set_surface_size(int index, int width, int height);
+// KWin output scale from Display Settings (pointer seat mapping when wl dpr ≠ scale).
+void ft_vr_screen_set_output_scale(int index, double scale);
+double ft_vr_screen_output_scale(int index);
 // A buffer is going away: drop its import.
 void ft_vr_forget(const void *key);
 // Poll panel input and SteamVR events.
