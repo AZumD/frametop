@@ -244,6 +244,76 @@ class ProfileStore(unittest.TestCase):
         ft_layout.save_profiles(loaded)
         self.assertNotIn("Desk", ft_layout.load_profiles()["profiles"])
 
+    def test_legacy_opacity_means_active_equals_idle_attention_off(self):
+        entry = {"opacity": 0.6, "pos": [0, 0, -2], "face": [0, 0], "roll": 0, "metres": 2.0}
+        active, idle = ft_layout.screen_opacities(entry)
+        self.assertAlmostEqual(active, 0.6)
+        self.assertAlmostEqual(idle, 0.6)
+        att = ft_layout.screen_attention(entry)
+        self.assertFalse(att["enabled"])
+        spatial = ft_layout.spatial_screen({**entry, "size": [1920, 1080], "scale": 1.0})
+        self.assertAlmostEqual(spatial["opacity"], 0.6)
+        self.assertAlmostEqual(spatial["active_opacity"], 0.6)
+        self.assertAlmostEqual(spatial["idle_opacity"], 0.6)
+        self.assertNotIn("attention", spatial)
+
+    def test_idle_active_opacity_serialization(self):
+        entry = {
+            "active_opacity": 1.0, "idle_opacity": 0.55, "pos": [0, 0, -2], "face": [0, 0],
+            "roll": 0, "metres": 2.0, "attention": {"enabled": True, "in_ms": 140, "out_ms": 260},
+        }
+        spatial = ft_layout.spatial_screen({**entry, "size": [1920, 1080], "scale": 1.0})
+        self.assertAlmostEqual(spatial["active_opacity"], 1.0)
+        self.assertAlmostEqual(spatial["idle_opacity"], 0.55)
+        self.assertTrue(spatial["attention"]["enabled"])
+        self.assertAlmostEqual(spatial["attention"]["in_ms"], 140.0)
+        layout = ft_layout.load_layout()
+        layout["screens"][0].update(entry)
+        snap = ft_layout.profile_from_layout(layout)
+        self.assertAlmostEqual(snap["screens"][0]["idle_opacity"], 0.55)
+        merged = ft_layout.merge_profile_into_layout(layout, snap)
+        self.assertAlmostEqual(merged["screens"][0]["idle_opacity"], 0.55)
+        self.assertTrue(merged["screens"][0]["attention"]["enabled"])
+
+    def test_alpha_composition_math(self):
+        # final = attentionResolved * visibility — never userOpacity * attentionFade
+        alpha, target = ft_layout.composed_attention_alpha(0.6, 1.0, True, 0.85, visibility=1.0)
+        self.assertAlmostEqual(alpha, 0.85)
+        self.assertAlmostEqual(target, 1.0)
+        alpha2, target2 = ft_layout.composed_attention_alpha(0.6, 1.0, False, 0.6, visibility=0.5)
+        self.assertAlmostEqual(alpha2, 0.3)
+        self.assertAlmostEqual(target2, 0.6)
+        # Gazed screen can brighten above idle toward active (not capped by idle*fade).
+        self.assertGreater(1.0, 0.6)
+
+    def test_attention_smoothing_math(self):
+        # Same exp smoothing as follow / attention fade in vr.cpp
+        a = exp_smooth_alpha(0.150, 0.150)
+        self.assertAlmostEqual(a, 1.0 - math.exp(-1.0), places=5)
+        # ~150 ms in / ~250 ms out
+        self.assertLess(exp_smooth_alpha(0.016, 0.150), 0.15)
+        self.assertLess(exp_smooth_alpha(0.016, 0.250), 0.10)
+
+    def test_attention_in_ms_from_layout(self):
+        att = ft_layout.screen_attention({"attention": {"enabled": True, "in_ms": 400, "out_ms": 600}})
+        self.assertTrue(att["enabled"])
+        self.assertAlmostEqual(att["in_ms"], 400.0)
+        self.assertAlmostEqual(att["out_ms"], 600.0)
+        off = ft_layout.screen_attention({})
+        self.assertFalse(off["enabled"])
+        self.assertAlmostEqual(off["in_ms"], ft_layout.DEFAULT_ATTENTION_IN_MS)
+        self.assertAlmostEqual(off["out_ms"], ft_layout.DEFAULT_ATTENTION_OUT_MS)
+
+    def test_parse_get_active_idle_opacity(self):
+        rel = " ".join(f"{i:.5f}" for i in range(12))
+        reply = ("ok 0.1 0.2 -1.5  1 0 0  0 1 0  0 0 1  2.4000 1.3500 0.000 1.000 0.600 head " + rel)
+        g = ft_layout.parse_get(reply)
+        self.assertAlmostEqual(g["opacity"], 1.0)
+        self.assertAlmostEqual(g["active_opacity"], 1.0)
+        self.assertAlmostEqual(g["idle_opacity"], 0.6)
+        self.assertEqual(g["anchor"], "head")
+        self.assertEqual(len(g["rel"]), 12)
+
     def test_parse_get_head_anchor_with_opacity(self):
         rel = " ".join(f"{i:.5f}" for i in range(12))
         reply = ("ok 0.1 0.2 -1.5  1 0 0  0 1 0  0 0 1  2.4000 1.3500 0.000 0.650 head " + rel)
@@ -251,6 +321,7 @@ class ProfileStore(unittest.TestCase):
         self.assertEqual(g["anchor"], "head")
         self.assertEqual(g["hand"], "head")
         self.assertAlmostEqual(g["opacity"], 0.65)
+        self.assertAlmostEqual(g["idle_opacity"], 0.65)
         self.assertEqual(len(g["rel"]), 12)
 
     def test_parse_get_legacy_without_opacity(self):

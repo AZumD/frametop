@@ -38,6 +38,7 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_seat.h>
@@ -142,6 +143,11 @@ static void screen_commit(struct wl_listener *l, void *data) {
     }
     if (!buffer) return;
     sc->frame_pending = true;
+    // Keep nested window preferred scale aligned with KWin output scale when known,
+    // so surface size tracks logical pixels instead of ceil(scale) integer dpr.
+    wlr_fractional_scale_v1_notify_scale(xdg->surface, ft_vr_screen_output_scale(sc->index));
+    // Surface-local size for pointer mapping (independent of VR metres / panel size).
+    ft_vr_screen_set_surface_size(sc->index, xdg->surface->current.width, xdg->surface->current.height);
     if (buffer == sc->held) return;
     struct wlr_dmabuf_attributes a;
     if (!wlr_buffer_get_dmabuf(buffer, &a)) {
@@ -196,6 +202,8 @@ static void new_toplevel(struct wl_listener *l, void *data) {
     const struct config *c = &s->config[index < s->n_config ? index : 0];
     wlr_log(WLR_INFO, "screen %d: KWin window, %dx%d, %.2f m wide", index + 1, c->width, c->height, c->metres);
     ft_vr_screen_create(index, c->metres, s->n_config > index + 1 ? s->n_config : index + 1);
+    // Prefer the layout's KWin output scale for this window (updated via `scale N F`).
+    wlr_fractional_scale_v1_notify_scale(toplevel->base->surface, ft_vr_screen_output_scale(index));
     sc->commit.notify = screen_commit;
     wl_signal_add(&toplevel->base->surface->events.commit, &sc->commit);
     sc->destroy.notify = screen_destroy;
@@ -225,6 +233,9 @@ static void new_decoration(struct wl_listener *l, void *data) {
 }
 
 // ---------------------------------------------------------------- input from the panels
+//
+// ft_event x/y are already Wayland surface-local (vr.cpp maps OpenVR buffer pixels through
+// ft_buffer_to_surface using the committed surface size). Do not scale them again here.
 
 static void handle_vr_event(const struct ft_event *e, void *data) {
     struct server *s = data;
@@ -440,6 +451,8 @@ int main(int argc, char **argv) {
     wlr_shm_create(s.display, 1, shm_formats, 2);
     if (!setup_dmabuf(&s)) return 1;
     wlr_data_device_manager_create(s.display);
+    // So KWin does not ceil(output_scale) into an integer wl buffer_scale on our windows.
+    wlr_fractional_scale_manager_v1_create(s.display, 1);
 
     s.xdg_shell = wlr_xdg_shell_create(s.display, 3);
     s.new_toplevel.notify = new_toplevel;

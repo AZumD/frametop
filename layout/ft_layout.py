@@ -47,10 +47,14 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout scale                    per-screen scale, positions, and primary to KWin
   ft-layout screen-args              ft-screens' --screen arguments for the session script
   ft-layout screen state --json      per-screen anchor/opacity + slot info
+  ft-layout gaze state               true eye-tracking status + current gaze target
+  ft-layout gaze debug on|off
+  ft-layout gaze fallback head|off   explicit head-direction fallback (debug only)
   ft-layout action NAME [--duration MS]   # semantic actions (chrome / input / Quickshell)
   ft-layout action list [--json]
   ft-layout toggle                   hide or show all screens (ft-screens)
   ft-layout pin all|N left|right|head|head-rigid|yaw-follow|position-follow
+  ft-layout opacity N ACTIVE [IDLE]  # live + layout; default idle=ACTIVE; also turns attention off
   ft-layout profile list [--json]
   ft-layout profile current [--json]
   ft-layout profile save NAME
@@ -60,7 +64,6 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout profile apply-slot N [--duration MS]
   ft-layout profile next|previous [--duration MS]
 """
-import fcntl
 import json
 import math
 import os
@@ -69,6 +72,11 @@ import socket
 import subprocess
 import sys
 import time
+
+try:
+    import fcntl
+except ImportError:  # Windows unit tests; Frame always has fcntl
+    fcntl = None
 
 LAYOUT_PATH = os.path.expanduser("~/.config/frametop-layout.json")
 PROFILES_PATH = os.path.expanduser("~/.config/frametop-layout-profiles.json")
@@ -88,7 +96,8 @@ DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
             "screens": [], "panel_size": list(DEFAULT_PANEL)}
 # Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
-PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity", "attention")
+PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity",
+                       "active_opacity", "idle_opacity", "attention")
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 CONTROLLER_ANCHORS = ("left", "right")
@@ -97,6 +106,10 @@ SLOT_COUNT = 6
 DEFAULT_PROFILE_DURATION_MS = 450
 DEFAULT_FOLLOW_LAG_MS = 120
 DEFAULT_OPACITY = 1.0
+DEFAULT_ATTENTION_IN_MS = 150.0
+DEFAULT_ATTENTION_OUT_MS = 250.0
+DEFAULT_ATTENTION_DWELL_MS = 80.0
+DEFAULT_ATTENTION_HOLD_MS = 150.0
 
 
 def log(*args, **kwargs):
@@ -192,22 +205,52 @@ def make_pin(anchor, rel):
 
 
 def screen_opacity(entry):
+    """Legacy single opacity (active). Prefer screen_opacities() for idle/active."""
     try:
+        if "active_opacity" in entry:
+            return max(0.0, min(1.0, float(entry["active_opacity"])))
         return max(0.0, min(1.0, float(entry.get("opacity", DEFAULT_OPACITY))))
     except (TypeError, ValueError):
         return DEFAULT_OPACITY
 
 
+def screen_opacities(entry):
+    """Return (active, idle). Legacy opacity=X means both active and idle = X, attention off."""
+    active = screen_opacity(entry)
+    try:
+        if "idle_opacity" in entry:
+            idle = max(0.0, min(1.0, float(entry["idle_opacity"])))
+        else:
+            idle = active
+    except (TypeError, ValueError):
+        idle = active
+    return active, idle
+
+
+def composed_attention_alpha(idle, active, focused, resolved, visibility=1.0):
+    """Model final overlay alpha: attentionResolved * visibility (unit-test helper)."""
+    target = active if focused else idle
+    # resolved is the smoothed value already; visibility is independent.
+    return max(0.0, min(1.0, float(resolved) * float(visibility))), float(target)
+
+
 def screen_attention(entry):
-    """Optional head-gaze attention fade settings (meaningless for locked head-follow HUDs)."""
+    """Optional true-eye-gaze attention fade (idle↔active). Legacy head-angle fields ignored."""
     a = entry.get("attention")
     if not isinstance(a, dict):
-        return {"enabled": False, "angle": 25.0, "band": 15.0, "min": 0.25}
+        return {
+            "enabled": False,
+            "in_ms": DEFAULT_ATTENTION_IN_MS,
+            "out_ms": DEFAULT_ATTENTION_OUT_MS,
+            "dwell_ms": DEFAULT_ATTENTION_DWELL_MS,
+            "hold_ms": DEFAULT_ATTENTION_HOLD_MS,
+        }
     return {
         "enabled": bool(a.get("enabled", False)),
-        "angle": float(a.get("angle", 25.0)),
-        "band": float(a.get("band", 15.0)),
-        "min": float(a.get("min", 0.25)),
+        "in_ms": float(a.get("in_ms", a.get("fade_in_ms", DEFAULT_ATTENTION_IN_MS))),
+        "out_ms": float(a.get("out_ms", a.get("fade_out_ms", DEFAULT_ATTENTION_OUT_MS))),
+        "dwell_ms": float(a.get("dwell_ms", DEFAULT_ATTENTION_DWELL_MS)),
+        "hold_ms": float(a.get("hold_ms", DEFAULT_ATTENTION_HOLD_MS)),
     }
 
 
@@ -215,13 +258,14 @@ def spatial_screen(entry):
     """Profile payload for one screen (spatial only)."""
     out = {}
     for k in PROFILE_SCREEN_KEYS:
-        if k in ("pin", "attention"):
-            continue
-        if k == "opacity":
-            out["opacity"] = round(screen_opacity(entry), 3)
+        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity"):
             continue
         if k in entry:
             out[k] = entry[k]
+    active, idle = screen_opacities(entry)
+    out["opacity"] = round(active, 3)  # legacy readers
+    out["active_opacity"] = round(active, 3)
+    out["idle_opacity"] = round(idle, 3)
     pin = entry.get("pin")
     anchor = pin_anchor(pin)
     if anchor and anchor != "world" and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
@@ -486,25 +530,37 @@ def send_visibility(sock, layout):
 
 
 def parse_get(reply):
-    """ft-screens' "get": pose, size, curve, opacity, anchor mode, and device->screen rel."""
+    """ft-screens' "get": pose, size, curve, active/idle opacity, anchor, device->screen rel.
+
+    Formats (after the 15 pose/size/curve floats):
+      iteration 3+: active idle anchor [rel...]
+      iteration 2:  opacity anchor [rel...]
+      older:        anchor [rel...]
+    """
     f = reply.split()[1:]
     g = list(map(float, f[:15]))
-    # Newer replies: ... curve opacity anchor [rel...]
-    # Older: ... curve anchor [rel...]
     opacity = DEFAULT_OPACITY
+    idle = DEFAULT_OPACITY
     anchor = "none"
     rel_start = 16
     if len(f) > 15:
-        # If field 15 looks like a float, it's opacity (new format).
         try:
             opacity = float(f[15])
-            anchor = f[16] if len(f) > 16 else "none"
-            rel_start = 17
+            idle = opacity
+            if len(f) > 16:
+                try:
+                    idle = float(f[16])
+                    anchor = f[17] if len(f) > 17 else "none"
+                    rel_start = 18
+                except ValueError:
+                    anchor = f[16]
+                    rel_start = 17
         except ValueError:
             anchor = f[15]
             rel_start = 16
     out = {"center": tuple(g[0:3]), "x": tuple(g[3:6]), "y": tuple(g[6:9]), "z": tuple(g[9:12]),
            "metres": g[12], "height": g[13], "curve": g[14], "opacity": opacity,
+           "active_opacity": opacity, "idle_opacity": idle,
            "anchor": normalize_anchor(anchor) or "world", "hand": anchor}
     if out["anchor"] != "world" and len(f) >= rel_start + 12:
         out["rel"] = [round(float(v), 5) for v in f[rel_start:rel_start + 12]]
@@ -547,9 +603,11 @@ def apply_pin(sock, index, pin):
         log(f"screen {index}: {e}")  # that device isn't tracked
 
 
-def apply_opacity(sock, index, opacity):
+def apply_opacity(sock, index, opacity, idle=None):
     try:
-        sock.ask(f"opacity {index} {float(opacity):.3f}")
+        active = float(opacity)
+        idle_v = active if idle is None else float(idle)
+        sock.ask(f"opacity {index} {active:.3f} {idle_v:.3f}")
     except RuntimeError as e:
         log(f"screen {index} opacity: {e}")
 
@@ -558,7 +616,8 @@ def apply_attention(sock, index, attention):
     att = screen_attention({"attention": attention} if isinstance(attention, dict) else {})
     try:
         if att["enabled"]:
-            sock.ask(f"attention {index} on {att['angle']:.1f} {att['band']:.1f} {att['min']:.3f}")
+            sock.ask(f"attention {index} on {att['in_ms']:.0f} {att['out_ms']:.0f} "
+                     f"{att['dwell_ms']:.0f} {att['hold_ms']:.0f}")
         else:
             sock.ask(f"attention {index} off")
     except RuntimeError as e:
@@ -581,7 +640,7 @@ def push_slot_state(sock=None):
     cmd = f"slots-state {current} {filled}"
     try:
         (sock or screens_socket()).ask(cmd)
-    except RuntimeError:
+    except (RuntimeError, OSError, AttributeError):
         pass
 
 
@@ -616,7 +675,8 @@ def live_screen_targets(sock, layout, count, eye, heading):
             "roll": t["roll"],
             "metres": screen_metres(layout, i),
             "curve": float(entry.get("curve", 0)),
-            "opacity": screen_opacity(entry),
+            "opacity": screen_opacities(entry)[0],
+            "idle_opacity": screen_opacities(entry)[1],
             "attention": screen_attention(entry),
             "pin": pin if pin_anchor(pin) and pin_anchor(pin) != "world"
                          and len((pin or {}).get("rel", [])) == 12 else None,
@@ -660,7 +720,7 @@ def transition_screens(sock, starts, targets, duration_ms):
             place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"])
             if t["pin"]:
                 apply_pin(sock, i + 1, t["pin"])
-            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
         return
     steps = max(2, int(duration * 30))  # ~30 Hz over the control socket
@@ -691,7 +751,7 @@ def transition_screens(sock, starts, targets, duration_ms):
     for i, t in enumerate(targets):
         if t["pin"]:
             apply_pin(sock, i + 1, t["pin"])
-        apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+        apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
         if "attention" in t:
             apply_attention(sock, i + 1, t["attention"])
 
@@ -724,7 +784,7 @@ def apply_screens(wait=0, duration_ms=0):
             results.append(place_screen(sock, i + 1, t["center"], t["face"], t["roll"], t["metres"], t["curve"]))
             if t["pin"]:
                 apply_pin(sock, i + 1, t["pin"])
-            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY))
+            apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
     push_slot_state(sock)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
@@ -743,7 +803,11 @@ def capture_screens():
         entry.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
         entry["metres"] = round(g["metres"], 4)  # resized by hand
         entry["curve"] = round(g["curve"], 3)
-        entry["opacity"] = round(float(g.get("opacity", DEFAULT_OPACITY)), 3)
+        active = float(g.get("active_opacity", g.get("opacity", DEFAULT_OPACITY)))
+        idle = float(g.get("idle_opacity", active))
+        entry["opacity"] = round(active, 3)
+        entry["active_opacity"] = round(active, 3)
+        entry["idle_opacity"] = round(idle, 3)
         entry.pop("pin", None)
         if g.get("anchor") and g["anchor"] != "world" and "rel" in g:
             entry["pin"] = make_pin(g["anchor"], g["rel"])
@@ -951,11 +1015,13 @@ def merge_profile_into_layout(layout, profile):
     for i in range(count):
         entry = dict(screens[i])
         spatial = src[i] or {}
-        for k in ("pos", "face", "roll", "metres", "curve", "opacity"):
+        for k in ("pos", "face", "roll", "metres", "curve", "opacity", "active_opacity", "idle_opacity"):
             if k in spatial:
                 entry[k] = spatial[k]
-        if "opacity" not in spatial:
-            entry.setdefault("opacity", DEFAULT_OPACITY)
+        active, idle = screen_opacities(spatial if spatial else entry)
+        entry["opacity"] = round(active, 3)
+        entry["active_opacity"] = round(active, 3)
+        entry["idle_opacity"] = round(idle, 3)
         entry.pop("pin", None)
         pin = spatial.get("pin")
         if pin_anchor(pin) and pin_anchor(pin) != "world" and len((pin or {}).get("rel", [])) == 12:
@@ -1149,10 +1215,13 @@ def screen_state_json():
     for i in range(screen_count(layout)):
         entry = screen_entry(layout, i)
         pin = entry.get("pin")
+        active, idle = screen_opacities(entry)
         row = {
             "index": i + 1,
             "anchor": pin_anchor(pin) or "world",
-            "opacity": screen_opacity(entry),
+            "opacity": active,
+            "active_opacity": active,
+            "idle_opacity": idle,
             "attention": screen_attention(entry),
             "metres": screen_metres(layout, i),
             "curve": float(entry.get("curve", 0)),
@@ -1160,14 +1229,37 @@ def screen_state_json():
         if live and i < len(live):
             row["live_anchor"] = live[i].get("anchor", "world")
             row["live_opacity"] = live[i].get("opacity", DEFAULT_OPACITY)
+            row["live_active_opacity"] = live[i].get("active_opacity", row["live_opacity"])
+            row["live_idle_opacity"] = live[i].get("idle_opacity", row["live_opacity"])
         screens.append(row)
+    gaze = None
+    if backend() == "screens":
+        try:
+            gaze = screens_socket().ask("gaze state")
+        except RuntimeError:
+            gaze = None
     print(json.dumps({
         "current_profile": store.get("current"),
         "current_slot": current_slot,
         "slots": slots,
         "follow_lag_ms": float(read_conf().get("FOLLOW_LAG_MS", DEFAULT_FOLLOW_LAG_MS)),
+        "gaze": gaze,
         "screens": screens,
     }, separators=(",", ":")))
+    return 0
+
+
+def gaze_cmd(argv):
+    """ft-layout gaze state|debug on|off|fallback head|fallback off — proxy to ft-screens."""
+    if len(argv) < 3:
+        print("usage: ft-layout gaze state|debug on|off|fallback head|fallback off", file=sys.stderr)
+        return 2
+    reply = screens_socket().ask("gaze " + " ".join(argv[2:]))
+    # Machine-readable on stdout for `state`; debug toggles go to log (stderr-ish via log).
+    if argv[2] == "state":
+        print(reply)
+    else:
+        log(reply)
     return 0
 
 
@@ -1331,6 +1423,17 @@ def apply_scales():
         if moves:
             subprocess.run(["kscreen-doctor", *moves], capture_output=True, env=env, timeout=20)
             args += moves
+    # Tell ft-screens each output scale so laser→seat mapping can correct wl dpr ≠ scale.
+    try:
+        sock = screens_socket()
+        for i in range(len(outs) or screen_count(layout)):
+            s = screen_scale(layout, i)
+            try:
+                sock.ask(f"scale {i + 1} {s:g}")
+            except RuntimeError:
+                pass
+    except RuntimeError:
+        pass
     return args
 
 
@@ -1349,8 +1452,33 @@ def main(argv):
             log(screens_socket().ask("toggle"))
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
+        elif cmd == "opacity" and len(argv) >= 4:
+            # Recovery / live tweak: ft-layout opacity N ACTIVE [IDLE]
+            index = int(argv[2])
+            active = float(argv[3])
+            idle = float(argv[4]) if len(argv) >= 5 else active
+            layout = load_layout()
+            entry = dict(screen_entry(layout, index - 1))
+            entry["opacity"] = round(active, 3)
+            entry["active_opacity"] = round(active, 3)
+            entry["idle_opacity"] = round(idle, 3)
+            # Soft-lock escape: clear attention so idle=0 cannot hide the screen again.
+            entry.pop("attention", None)
+            screens = list(layout.get("screens") or [])
+            while len(screens) < index:
+                screens.append({})
+            screens[index - 1] = entry
+            layout["screens"] = screens
+            save_layout(layout)
+            if backend() == "screens":
+                sock = screens_socket()
+                apply_opacity(sock, index, active, idle)
+                apply_attention(sock, index, {"enabled": False})
+            log(f"screen {index}: opacity active={active:.3f} idle={idle:.3f} (attention off)")
         elif cmd == "screen" and len(argv) >= 3 and argv[2] == "state":
             return screen_state_json()
+        elif cmd == "gaze":
+            return gaze_cmd(argv)
         elif cmd == "action":
             if len(argv) < 3:
                 print("usage: ft-layout action NAME|--list [--json] [--duration MS]", file=sys.stderr)

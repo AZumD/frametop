@@ -1,0 +1,18 @@
+{
+  "alias_info": {},
+  "bindings": {
+    "/actions/frametop": {
+      "eyetracking": [
+        {
+          "path": "/user/head/eyetracking",
+          "output": "/actions/frametop/in/EyeGaze"
+        }
+      ]
+    }
+  },
+  "controller_type": "frame_hmd",
+  "description": "Frametop default eye gaze on Steam Frame HMD",
+  "name": "Frametop Eye Gaze",
+  "options": {},
+  "simulated_actions": []
+}

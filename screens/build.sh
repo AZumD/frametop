@@ -16,4 +16,6 @@ g++ -std=c++17 -O2 -Wall -Wno-missing-field-initializers -Ibuild/include -c -o b
 g++ -o build/ft-screens build/compositor.o build/vr.o \
   $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) \
   -L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64
+cp -f actions.json build/actions.json
+cp -f bindings_frame_hmd.json bindings_hmd.json build/
 echo "built build/ft-screens"'

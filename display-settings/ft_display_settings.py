@@ -193,10 +193,19 @@ class Backend(QObject):
             for i in range(ft_layout.screen_count(layout)):
                 w, h = ft_layout.screen_pixels(layout, i)
                 s = ft_layout.screen_scale(layout, i)
+                entry = ft_layout.screen_entry(layout, i)
+                active, idle = ft_layout.screen_opacities(entry)
+                att = ft_layout.screen_attention(entry)
                 out.append({"index": i, "width": w, "height": h, "metres": ft_layout.screen_metres(layout, i),
                             "scale": round(s, 4), "primary": i == primary,
-                            "curved": float(ft_layout.screen_entry(layout, i).get("curve", 0)) > 0,
-                            "opacity": round(ft_layout.screen_opacity(ft_layout.screen_entry(layout, i)), 3),
+                            "curved": float(entry.get("curve", 0)) > 0,
+                            "opacity": round(active, 3),
+                            "activeOpacity": round(active, 3),
+                            "idleOpacity": round(idle, 3),
+                            "attentionEnabled": att["enabled"],
+                            "attentionInMs": att["in_ms"],
+                            "attentionOutMs": att["out_ms"],
+                            "anchor": ft_layout.pin_anchor(entry.get("pin")) or "world",
                             "effective": f"{round(w / s)} × {round(h / s)}"})
             return out
         for i in range(c["screens"]):
@@ -321,10 +330,85 @@ class Backend(QObject):
 
     @Slot(int, float)
     def setScreenOpacity(self, i, opacity):
-        opacity = max(0.15, min(1.0, float(opacity)))
-        self._edit_screen(i, lambda s: s.__setitem__("opacity", round(opacity, 3)))
+        """Legacy single-opacity setter: sets active=idle=opacity, leaves attention alone."""
+        opacity = max(0.0, min(1.0, float(opacity)))
+        def edit(s):
+            s["opacity"] = round(opacity, 3)
+            s["active_opacity"] = round(opacity, 3)
+            s["idle_opacity"] = round(opacity, 3)
+        self._edit_screen(i, edit)
         if self._running and i < self._running_count:
-            self._ask_screens(f"opacity {i + 1} {opacity:.3f}")
+            self._ask_screens(f"opacity {i + 1} {opacity:.3f} {opacity:.3f}")
+
+    @Slot(int, float, float)
+    def setScreenOpacities(self, i, active, idle):
+        active = max(0.0, min(1.0, float(active)))
+        idle = max(0.0, min(1.0, float(idle)))
+        def edit(s):
+            s["opacity"] = round(active, 3)
+            s["active_opacity"] = round(active, 3)
+            s["idle_opacity"] = round(idle, 3)
+        self._edit_screen(i, edit)
+        if self._running and i < self._running_count:
+            self._ask_screens(f"opacity {i + 1} {active:.3f} {idle:.3f}")
+
+    @Slot(int, bool)
+    def setScreenAttention(self, i, enabled):
+        def edit(s):
+            att = ft_layout.screen_attention(s)
+            att["enabled"] = bool(enabled)
+            if enabled:
+                s["attention"] = att
+            else:
+                s.pop("attention", None)
+        self._edit_screen(i, edit)
+        if self._running and i < self._running_count:
+            if enabled:
+                att = ft_layout.screen_attention(ft_layout.screen_entry(ft_layout.load_layout(), i))
+                self._ask_screens(f"attention {i + 1} on {att['in_ms']:.0f} {att['out_ms']:.0f} "
+                                  f"{att['dwell_ms']:.0f} {att['hold_ms']:.0f}")
+            else:
+                self._ask_screens(f"attention {i + 1} off")
+
+    def _set_attention_ms(self, i, key, ms):
+        ms = max(50.0, min(1000.0, float(ms)))
+        def edit(s):
+            att = ft_layout.screen_attention(s)
+            att["enabled"] = True
+            att[key] = ms
+            s["attention"] = att
+        self._edit_screen(i, edit)
+        if self._running and i < self._running_count:
+            att = ft_layout.screen_attention(ft_layout.screen_entry(ft_layout.load_layout(), i))
+            self._ask_screens(f"attention {i + 1} on {att['in_ms']:.0f} {att['out_ms']:.0f} "
+                              f"{att['dwell_ms']:.0f} {att['hold_ms']:.0f}")
+
+    @Slot(int, float)
+    def setScreenAttentionInMs(self, i, ms):
+        """Fade toward active opacity when gazed (milliseconds)."""
+        self._set_attention_ms(i, "in_ms", ms)
+
+    @Slot(int, float)
+    def setScreenAttentionOutMs(self, i, ms):
+        """Fade toward idle opacity when gaze leaves (milliseconds)."""
+        self._set_attention_ms(i, "out_ms", ms)
+
+    @Slot(int, str)
+    def setScreenAnchor(self, i, mode):
+        mode = ft_layout.normalize_anchor(mode) or "world"
+        def edit(s):
+            if mode == "world":
+                s.pop("pin", None)
+            # Live pin needs a current relative transform from ft-screens; ask it.
+        self._edit_screen(i, edit)
+        if self._running and i < self._running_count:
+            self._ask_screens(f"pin {i + 1} {mode}")
+            # Re-capture so layout pin matches live seed (no pop on next apply).
+            try:
+                ft_layout.capture_screens()
+            except RuntimeError:
+                pass
+            self.changed.emit()
 
     @Slot(int, bool)
     def setCurved(self, i, on):
