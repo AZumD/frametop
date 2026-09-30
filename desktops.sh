@@ -25,15 +25,10 @@ running="{ pgrep -f '$match' >/dev/null || pgrep -x ft-screens >/dev/null; }"
 case $action in
   start)
     # In its own systemd unit, so it outlives this shell (SSH, the settings app's restart).
+    # Host-side script avoids nested SSH quoting bugs that skipped the SteamVR health gate.
     "$root/scripts/sync.sh" >/dev/null
-    "$frame" --host "$running && { echo 'already running'; exit 0; }
-systemctl --user reset-failed frametop-desktop 2>/dev/null
-systemd-run --user --collect --quiet --unit frametop-desktop \
-  ${screens:+--setenv=FT_SCREENS=$screens} ${FT_WIDTH:+--setenv=FT_WIDTH=$FT_WIDTH} ${FT_HEIGHT:+--setenv=FT_HEIGHT=$FT_HEIGHT} \
-  ${FT_PHYS_WIDTH:+--setenv=FT_PHYS_WIDTH=$FT_PHYS_WIDTH} ${FT_BACKEND:+--setenv=FT_BACKEND=$FT_BACKEND} \
-  bash -c 'exec $session/frametop-session.sh > $log 2>&1'
-sleep 12; echo \"plasmashell processes: \$(pgrep -c plasmashell)\"
-$running && echo 'started' || { echo 'failed:'; tail -20 $log; exit 1; }" ;;
+    "$frame" --host "FT_SCREENS=${screens} FT_WIDTH=${FT_WIDTH-} FT_HEIGHT=${FT_HEIGHT-} FT_PHYS_WIDTH=${FT_PHYS_WIDTH-} FT_BACKEND=${FT_BACKEND-} \
+exec $FRAME_REPO/scripts/start-desktop-on-frame.sh" ;;
   install)
     "$root/scripts/sync.sh" >/dev/null
     "$frame" --host "set -e; mkdir -p ~/.local/share/applications
@@ -90,16 +85,32 @@ p=\$(pgrep -x vrserver | head -1); [ -n \"\$p\" ] && for e in \$(ls -l /proc/\$p
     # ft-screens: ending it ends KWin and the session. gamescope can take a while to exit
     # on SIGTERM. Wait, then force it. First, programs started in the desktop move out of
     # its unit (session/keep-apps.sh), so background work in them outlives the restart.
+    #
+    # SIGTERM ft-screens before stopping the systemd unit so compositor.c can run
+    # ft_vr_shutdown()/VR_Shutdown(). Stopping the unit (or SIGKILL) first leaves dangling
+    # overlays and has crashed XRService into an HmdNotFound / panels-off loop.
     "$frame" --host "$running || { echo 'not running'; exit 0; }
 $session/keep-apps.sh
-systemctl --user stop frametop-desktop 2>/dev/null; pkill -x ft-screens; pkill -f '$match'
+pkill -TERM -x ft-screens 2>/dev/null || true
+pkill -TERM -f '$match' 2>/dev/null || true
+for i in \$(seq 30); do
+  pgrep -x ft-screens >/dev/null || pgrep -f '$match' >/dev/null || break
+  sleep 0.2
+done
+systemctl --user stop frametop-desktop 2>/dev/null || true
+pkill -x ft-screens 2>/dev/null || true
+pkill -f '$match' 2>/dev/null || true
 for i in \$(seq 20); do $running || { echo stopped; exit 0; }; sleep 0.5; done
-pkill -KILL -x ft-screens
-pkill -KILL -f '$match'; sleep 1
+pkill -KILL -x ft-screens 2>/dev/null || true
+pkill -KILL -f '$match' 2>/dev/null || true
+sleep 1
 pkill -f '[m]ultidesk-session.sh --inner' 2>/dev/null; pkill -f '[k]rdpserver --plasma' 2>/dev/null
 pkill -f '[X]vnc :20 ' 2>/dev/null; pkill -f '[x]freerdp /v:.*:3390' 2>/dev/null
 $running && { echo 'still running'; exit 1; } || echo 'stopped (forced)'" ;;
-  restart) "$0" stop; sleep 3; exec "$0" start ${screens:+"$screens"} ;;
+  restart)
+    "$0" stop
+    sleep 3
+    exec "$0" start ${screens:+"$screens"} ;;
   shell-restart)
     # Restart ONLY plasmashell inside the nested session (taskbar/desktop recovery).
     # Does not touch KWin, ft-screens, SteamVR, or open app windows' compositor clients.

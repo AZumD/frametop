@@ -14,6 +14,7 @@ import unittest
 class Mode:
     ALWAYS = "always"
     DASHBOARD = "dashboard"
+    EXCEPT_DASHBOARD = "except_dashboard"
     GESTURE = "gesture"
     TOGGLE = "toggle"
 
@@ -47,6 +48,10 @@ def mode_visible(
         return manual
     if eff == Mode.DASHBOARD:
         return manual or dashboard_visible
+    if eff == Mode.EXCEPT_DASHBOARD:
+        if dashboard_visible:
+            return manual
+        return not manual
     if eff == Mode.GESTURE:
         return manual or gesture_looking
     return True
@@ -96,6 +101,11 @@ class EffectiveModeTests(unittest.TestCase):
         self.assertEqual(
             effective_mode(Mode.DASHBOARD, True, InGames.HIDE), Mode.DASHBOARD)
 
+    def test_except_dashboard_unchanged_during_game(self):
+        self.assertEqual(
+            effective_mode(Mode.EXCEPT_DASHBOARD, True, InGames.HIDE),
+            Mode.EXCEPT_DASHBOARD)
+
 
 class ModeVisibleSharedTests(unittest.TestCase):
     def test_always_shows_outside_game(self):
@@ -121,6 +131,18 @@ class ModeVisibleSharedTests(unittest.TestCase):
     def test_toggle_mode_needs_manual(self):
         self.assertFalse(mode_visible(Mode.TOGGLE))
         self.assertTrue(mode_visible(Mode.TOGGLE, manual=True))
+
+    def test_except_dashboard_hides_when_dashboard_open(self):
+        self.assertTrue(mode_visible(Mode.EXCEPT_DASHBOARD, dashboard_visible=False))
+        self.assertFalse(mode_visible(Mode.EXCEPT_DASHBOARD, dashboard_visible=True))
+
+    def test_except_dashboard_hotkey_shows_over_dashboard(self):
+        self.assertTrue(
+            mode_visible(Mode.EXCEPT_DASHBOARD, dashboard_visible=True, manual=True))
+
+    def test_except_dashboard_hotkey_hides_when_closed(self):
+        self.assertFalse(
+            mode_visible(Mode.EXCEPT_DASHBOARD, dashboard_visible=False, manual=True))
 
 
 class InstrumentVisibilityTests(unittest.TestCase):

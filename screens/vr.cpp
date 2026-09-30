@@ -25,8 +25,9 @@
 //     angle (fades over the last kFade degrees). Head-anchored screens follow the shared
 //     visibility rules and stay put relative to the headset.
 //   - visibility modes: always (the hide hotkey toggles), only with the SteamVR dashboard
-//     open, while you look at a chosen controller (the wrist gesture), or toggle only
-//     (hidden until the hotkey shows them).
+//     open, hidden whenever the dashboard is open (except_dashboard), while you look at a
+//     chosen controller (the wrist gesture), or toggle only (hidden until the hotkey shows
+//     them).
 //   - controllers on the screens: while visible, the screens can keep SteamVR's laser mouse
 //     on (VROverlayFlags_MakeOverlaysInteractiveIfVisible), so controllers use them with
 //     the dashboard closed. That also takes the controllers away from a VR game, so by
@@ -72,6 +73,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <vector>
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_ONLY_GIF
+#include "stb_image.h"
 
 namespace {
 
@@ -436,7 +443,7 @@ void SpawnLayoutAsync(std::initializer_list<const char *> args) {
 }
 
 enum class Drag { None, Move, Resize, Roll };
-enum class Mode { Always, Dashboard, Gesture, Toggle };
+enum class Mode { Always, Dashboard, ExceptDashboard, Gesture, Toggle };
 enum class Lasers { Always, OutsideGames, Dashboard };
 enum class InGames { Visible, Hide };
 
@@ -573,7 +580,12 @@ std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
 
 // --- Spatial Instruments (ambient VR info; not desktop surfaces) ---
-enum class InstrumentType { Clock, Battery, Storage, Sd, Date, Media };
+enum class InstrumentType { Clock, Battery, Storage, Sd, Date, Media, Image, Launcher };
+
+struct ImageFrame {
+    std::vector<uint8_t> rgba;
+    int delayMs = 100;
+};
 
 struct Instrument {
     std::string id;
@@ -624,7 +636,19 @@ struct Instrument {
     bool mediaCanPrev = false, mediaCanPause = false, mediaCanNext = false;
     double mediaScroll = 0;    // marquee pixel offset
     double mediaScrollAcc = 0; // sub-pixel accumulator for slow marquee
-    uint8_t colorR = 235, colorG = 240, colorB = 245;  // Clock/Date/Battery paint
+    std::string imagePath;
+    std::vector<ImageFrame> imageFrames;
+    int imageFrame = 0;
+    double imageFrameAccMs = 0;
+    int lastImageFrame = -1;
+    // Launcher: action + appearance (independent). Gaze never activates.
+    std::string launchKind;       // application | action | command | shell
+    std::string launchTarget;     // desktop id, semantic name, or shell text / unused for command
+    std::string launchCommandJson;  // JSON argv array when launchKind == command
+    std::string launchAppear;     // app | glyph | image | fallback
+    std::string launchGlyph;      // play, star, …
+    int lastLauncherKey = -1;
+    uint8_t colorR = 57, colorG = 255, colorB = 20;  // CRT green default (#39FF14)
     int texW = 384, texH = 128;
     std::vector<uint8_t> pixels;
     double heightMetres() const { return metres * double(texH) / double(texW); }
@@ -819,7 +843,9 @@ vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::v
     if (vr::VROverlay()->CreateOverlay(key, name, &o) != vr::VROverlayError_None) return o;
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
-    vr::VROverlay()->SetOverlaySortOrder(o, 10);
+    // Keep chrome just above its panel (sort 1). Sort 10 sat above SteamVR's own UI
+    // regardless of distance — Frametop must not win the foreground that way.
+    vr::VROverlay()->SetOverlaySortOrder(o, 1);
     return o;
 }
 
@@ -1213,6 +1239,13 @@ bool ModeVisible() {
         case Mode::Always: return !g_manual;
         case Mode::Toggle: return g_manual;
         case Mode::Dashboard: return g_manual || vr::VROverlay()->IsDashboardVisible();
+        case Mode::ExceptDashboard: {
+            // Hide whenever the dashboard is open; hotkey shows them anyway. With the
+            // dashboard closed, the hotkey hides them (same polarity as Always).
+            if (vr::VROverlay()->IsDashboardVisible())
+                return g_manual;
+            return !g_manual;
+        }
         case Mode::Gesture: {
             if (g_manual) return true;
             // Looking at the chosen controller: it's within the gesture angle of the gaze.
@@ -1546,6 +1579,9 @@ void UpdateAttention(double dt) {
             s.attentionFocusMs = 0;
             s.attentionResolved = s.activeOpacity;
         } else {
+            // Note: while the SteamVR dashboard is open we still run normal idle/active
+            // attention. Holding active there kept Frametop opaque over Steam's own UI.
+            // UpdateVisibility also yields (hides) panels the user is not looking at.
             const bool hit =
                 g_gazeTarget && g_gazeTarget.screen == index &&
                 (g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
@@ -1599,6 +1635,8 @@ void UpdateAttention(double dt) {
 void SetScreenOpacity(Screen &s, float active, float idle) {
     s.activeOpacity = std::clamp(active, 0.f, 1.f);
     s.idleOpacity = std::clamp(idle, 0.f, 1.f);
+    // Looking must never be dimmer than looking away (swapped sliders caused "look → vanish").
+    if (s.idleOpacity > s.activeOpacity) std::swap(s.idleOpacity, s.activeOpacity);
     if (!s.attentionEnabled || (!g_eyeAvailable && !g_gazeFallbackHead))
         s.attentionResolved = s.activeOpacity;
     else
@@ -1609,11 +1647,67 @@ void SetScreenOpacity(Screen &s, float active, float idle) {
 }
 
 
+// OpenVR draws "other application" overlays after scene overlays; within a category,
+// higher SetOverlaySortOrder wins, and equal sort uses distance. Frametop is Basic /
+// other-app, and Steam's dashboard UI often loses true depth to us — a farther Frametop
+// screen still paints over nearer Steam/stream UI. While the dashboard is open and we
+// have eye gaze, hide panels the user is not looking at (or grabbing) so Steam can own
+// the foreground. Without eye tracking we only drop chrome sort order (see MakeChrome).
+bool DashboardYieldActive() {
+    return vr::VROverlay()->IsDashboardVisible() && (g_eyeAvailable || g_gazeFallbackHead);
+}
+
+bool GazeOnScreen(int index) {
+    if (!g_gazeTarget || g_gazeTarget.screen != index) return false;
+    return g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
+           g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
+           g_gazeTarget.kind == GazeKind::Resize || g_gazeTarget.kind == GazeKind::Anchor ||
+           g_gazeTarget.kind == GazeKind::Slot;
+}
+
+bool GazeOnInstrument(int ii) {
+    return g_gazeTarget && g_gazeTarget.instrument == ii && g_gazeTarget.kind == GazeKind::Instrument;
+}
+
+bool ScreenKeepsThroughDashboard(int index, const Screen &s) {
+    if (s.drag != Drag::None) return true;
+    if (GazeOnScreen(index) || s.attentionFocused) return true;
+    if (s.nearUntil > g_tick) return true;
+    for (bool h : s.hover)
+        if (h) return true;
+    if (s.hoverAnchor) return true;
+    for (bool h : s.hoverSlot)
+        if (h) return true;
+    return false;
+}
+
+bool InstrumentKeepsThroughDashboard(size_t ii, const Instrument &inst) {
+    if (inst.drag != Drag::None) return true;
+    if (GazeOnInstrument(int(ii)) || inst.attentionFocused) return true;
+    if (inst.hoverBar) return true;
+    return false;
+}
+
+void ApplyOverlaySort(vr::VROverlayHandle_t o, uint32_t order, bool dash) {
+    if (o == vr::k_ulOverlayHandleInvalid) return;
+    // Dashboard open: force 0 so we do not sit above Steam UI via elevated chrome sort.
+    vr::VROverlay()->SetOverlaySortOrder(o, dash ? 0u : order);
+}
+
 void UpdateVisibility() {
     const bool shared = ModeVisible();
+    const bool dash = vr::VROverlay()->IsDashboardVisible();
+    // With eye gaze: while SteamVR's dashboard (or streamed Steam UI sitting in that
+    // layer) is open, hide Frametop panels the user is not looking at / grabbing.
+    // OpenVR composites our Basic overlays after scene/dashboard content without true
+    // cross-app depth, so a more distant Frametop screen still paints over nearer Steam UI.
+    const bool yield = DashboardYieldActive();
     Mat head;
     const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
     for (auto &[i, s] : g_screens) {
+        ApplyOverlaySort(s.overlay, 0, dash);
+        for (auto o : s.Controls()) ApplyOverlaySort(o, dash ? 0 : 1, dash);
+
         bool visible = s.shown && (shared || s.drag != Drag::None);
         float visFade = 1;
         Mat p;
@@ -1626,6 +1720,10 @@ void UpdateVisibility() {
         }
         // Keep chrome interactable even when the surface is fully transparent.
         if (!visible && s.shown && s.controls > 0.02f) visible = true, visFade = 0.f;
+        if (yield && visible && !ScreenKeepsThroughDashboard(i, s)) {
+            visible = false;
+            visFade = 0.f;
+        }
         SetVisible(s, visible, visFade);
     }
 }
@@ -1642,7 +1740,8 @@ void UpdateLasers() {
     }
     // Media transport + instrument move bars use the same controller-laser policy.
     for (auto &inst : g_instruments) {
-        if (inst.overlay != vr::k_ulOverlayHandleInvalid && inst.type == InstrumentType::Media)
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid &&
+            (inst.type == InstrumentType::Media || inst.type == InstrumentType::Launcher))
             vr::VROverlay()->SetOverlayFlag(inst.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
                                             want);
         if (inst.bar != vr::k_ulOverlayHandleInvalid)
@@ -2011,6 +2110,7 @@ const char *LasersName() {
 const char *ModeName() {
     switch (g_mode) {
         case Mode::Dashboard: return "dashboard";
+        case Mode::ExceptDashboard: return "except_dashboard";
         case Mode::Gesture: return "gesture";
         case Mode::Toggle: return "toggle";
         default: return "always";
@@ -2027,9 +2127,32 @@ Instrument *FindInstrument(const char *id) {
     return nullptr;
 }
 
+bool IsImageInstrumentId(const char *id) {
+    if (!id) return false;
+    if (!std::strcmp(id, "image")) return true;
+    if (std::strncmp(id, "image-", 6) != 0) return false;
+    const char *n = id + 6;
+    if (!*n) return false;
+    for (const char *p = n; *p; ++p)
+        if (*p < '0' || *p > '9') return false;
+    return std::atoi(n) >= 2;
+}
+
+bool IsLauncherInstrumentId(const char *id) {
+    if (!id) return false;
+    if (!std::strcmp(id, "launcher")) return true;
+    if (std::strncmp(id, "launcher-", 9) != 0) return false;
+    const char *n = id + 9;
+    if (!*n) return false;
+    for (const char *p = n; *p; ++p)
+        if (*p < '0' || *p > '9') return false;
+    return std::atoi(n) >= 2;
+}
+
 bool KnownInstrumentId(const char *id) {
     return id && (!std::strcmp(id, "clock") || !std::strcmp(id, "battery") || !std::strcmp(id, "storage") ||
-                  !std::strcmp(id, "sd") || !std::strcmp(id, "date") || !std::strcmp(id, "media"));
+                  !std::strcmp(id, "sd") || !std::strcmp(id, "date") || !std::strcmp(id, "media") ||
+                  IsImageInstrumentId(id) || IsLauncherInstrumentId(id));
 }
 
 InstrumentType InstrumentTypeForId(const char *id) {
@@ -2038,6 +2161,8 @@ InstrumentType InstrumentTypeForId(const char *id) {
     if (id && !std::strcmp(id, "sd")) return InstrumentType::Sd;
     if (id && !std::strcmp(id, "date")) return InstrumentType::Date;
     if (id && !std::strcmp(id, "media")) return InstrumentType::Media;
+    if (IsImageInstrumentId(id)) return InstrumentType::Image;
+    if (IsLauncherInstrumentId(id)) return InstrumentType::Launcher;
     return InstrumentType::Clock;
 }
 
@@ -2062,6 +2187,18 @@ Instrument &FindOrCreateInstrument(const char *id) {
         inst.texW = 480;
         inst.texH = 140;
         inst.metres = 0.42;
+    } else if (inst.type == InstrumentType::Image) {
+        inst.texW = 384;
+        inst.texH = 384;
+        inst.metres = 0.50;
+    } else if (inst.type == InstrumentType::Launcher) {
+        inst.texW = 256;
+        inst.texH = 256;
+        inst.metres = 0.28;
+        inst.idleOpacity = 0.55f;
+        inst.launchKind = "application";
+        inst.launchAppear = "fallback";
+        inst.launchGlyph = "star";
     }
     g_instruments.push_back(inst);
     return g_instruments.back();
@@ -2919,9 +3056,13 @@ void MediaSend(const char *cmd) {
     g_mediaNextPoll = Clock::time_point{};  // force refresh
 }
 
-void DrawMediaIcon(std::vector<uint8_t> &px, int w, int h, int cx, int cy, int kind, bool on) {
+void DrawMediaIcon(std::vector<uint8_t> &px, int w, int h, int cx, int cy, int kind, bool on,
+                   uint8_t cr, uint8_t cg, uint8_t cb) {
     // kind: 0=prev, 1=play, 2=pause, 3=next. Simple geometric glyphs.
-    const uint8_t r = on ? 230 : 90, g = on ? 235 : 95, b = on ? 245 : 105, a = on ? 230 : 100;
+    const uint8_t r = on ? cr : uint8_t(cr * 90 / 255);
+    const uint8_t g = on ? cg : uint8_t(cg * 90 / 255);
+    const uint8_t b = on ? cb : uint8_t(cb * 90 / 255);
+    const uint8_t a = on ? 230 : 100;
     const int s = 14;
     if (kind == 0) {  // |<
         FillInstrumentRect(px, w, h, cx - s, cy - s / 2, cx - s + 3, cy + s / 2, r, g, b, a);
@@ -2948,11 +3089,10 @@ void RefreshMediaTexture(Instrument &inst, bool force) {
     const int textW = GlyphWordWidth(cell, int(inst.mediaText.size()));
     const int viewW = inst.texW - 24;
     const bool scroll = textW > viewW && !inst.mediaText.empty();
-    // Slow marquee: ~12 px/s playing, ~6 px/s paused. Only re-upload when the
-    // integer pixel offset changes — constant SetOverlayRaw every frame flickered.
+    // Slow marquee: advance ~6–12 px/s, but only re-upload every 2 px to cut SetOverlayRaw churn.
     if (scroll) {
         inst.mediaScrollAcc += (inst.mediaStatus == 3 ? 0.12 : 0.06);
-        if (inst.mediaScrollAcc >= 1.0) {
+        if (inst.mediaScrollAcc >= 2.0) {
             const int step = int(inst.mediaScrollAcc);
             inst.mediaScrollAcc -= step;
             inst.mediaScroll += step;
@@ -2965,6 +3105,7 @@ void RefreshMediaTexture(Instrument &inst, bool force) {
     const int scrollPx = int(inst.mediaScroll);
     const int key = int(inst.mediaStatus) * 1000003 + int(inst.mediaCanPrev) * 17 + int(inst.mediaCanNext) * 31 +
                     int(inst.mediaCanPause) * 13 + int(inst.mediaText.size()) * 101 +
+                    int(inst.colorR) * 65536 + int(inst.colorG) * 256 + int(inst.colorB) +
                     (inst.mediaText.empty() ? 0 : int(unsigned(inst.mediaText[0])) * 13 +
                      (inst.mediaText.size() > 1 ? int(unsigned(inst.mediaText.back())) : 0));
     if (!force && key == inst.lastMediaKey && scrollPx == inst.lastMediaScrollPx && !inst.pixels.empty()) return;
@@ -2974,28 +3115,36 @@ void RefreshMediaTexture(Instrument &inst, bool force) {
     const int w = inst.texW, h = inst.texH;
     inst.pixels.assign(size_t(w) * h * 4, 0);
     const int letterOy = 18;
+    const uint8_t tr = inst.colorR, tg = inst.colorG, tb = inst.colorB;
     if (inst.mediaText.empty()) {
-        DrawGlyphWord(inst.pixels, w, h, 24, letterOy, cell, "NO MEDIA", 120, 125, 135, 180);
+        DrawGlyphWord(inst.pixels, w, h, 24, letterOy, cell, "NO MEDIA",
+                      uint8_t(tr * 120 / 255), uint8_t(tg * 125 / 255), uint8_t(tb * 135 / 255), 180);
     } else if (!scroll) {
-        DrawGlyphWord(inst.pixels, w, h, (w - textW) / 2, letterOy, cell, inst.mediaText.c_str(), 220, 225, 235, 230);
+        DrawGlyphWord(inst.pixels, w, h, (w - textW) / 2, letterOy, cell, inst.mediaText.c_str(), tr, tg, tb, 230);
     } else {
         const int ox = 12 - scrollPx;
-        DrawGlyphWord(inst.pixels, w, h, ox, letterOy, cell, inst.mediaText.c_str(), 220, 225, 235, 230);
+        DrawGlyphWord(inst.pixels, w, h, ox, letterOy, cell, inst.mediaText.c_str(), tr, tg, tb, 230);
     }
+    // Glyphs only — no filled transport bar. The opaque strip flickered under marquee
+    // SetOverlayRaw uploads the same way SoftOutline did.
     const int by = h - 48;
-    FillInstrumentRect(inst.pixels, w, h, 8, by - 4, w - 9, h - 8, 40, 44, 52, 160);
     const int third = w / 3;
     const bool playing = inst.mediaStatus == 3;
-    DrawMediaIcon(inst.pixels, w, h, third / 2, by + 18, 0, inst.mediaCanPrev);
-    DrawMediaIcon(inst.pixels, w, h, third + third / 2, by + 18, playing ? 2 : 1, inst.mediaCanPause || playing);
-    DrawMediaIcon(inst.pixels, w, h, 2 * third + third / 2, by + 18, 3, inst.mediaCanNext);
-    SoftOutlineInstrument(inst.pixels, w, h);
-    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+    DrawMediaIcon(inst.pixels, w, h, third / 2, by + 18, 0, inst.mediaCanPrev, tr, tg, tb);
+    DrawMediaIcon(inst.pixels, w, h, third + third / 2, by + 18, playing ? 2 : 1, inst.mediaCanPause || playing, tr,
+                   tg, tb);
+    DrawMediaIcon(inst.pixels, w, h, 2 * third + third / 2, by + 18, 3, inst.mediaCanNext, tr, tg, tb);
+    // SoftOutline every marquee frame caused visible flicker — skip for Media.
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid) {
+        vr::HmdVector2_t scale = {(float)w, (float)h};
+        vr::VROverlay()->SetOverlayMouseScale(inst.overlay, &scale);
         vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+    }
 }
 
 int MediaHitButton(const Instrument &inst, double mx, double my) {
-    // Returns 0=prev 1=playpause 2=next, or -1. mx/my in texture pixels, origin top-left.
+    // Returns 0=prev 1=playpause 2=next, or -1.
+    // OpenVR mouse is bottom-left (same as screens); draw code uses top-left.
     if (inst.type != InstrumentType::Media) return -1;
     const double w = inst.texW, h = inst.texH;
     double x = mx, y = my;
@@ -3003,7 +3152,8 @@ int MediaHitButton(const Instrument &inst, double mx, double my) {
         x = mx * w;
         y = my * h;
     }
-    if (y < h * 0.55) return -1;  // marquee zone — ignore
+    y = h - y;  // bottom-left → top-left
+    if (y < h - 48.0) return -1;  // marquee / upper panel
     const int third = inst.texW / 3;
     if (x < third) return 0;
     if (x < 2 * third) return 1;
@@ -3027,6 +3177,450 @@ void PollMediaOverlay(Instrument &inst) {
     }
 }
 
+// --- Launcher (spatial app / action / command shortcut via @frametop_launch) ---
+
+bool AskFrametopLaunch(const char *cmd, char *reply, size_t replyN) {
+    if (!cmd || !reply || replyN < 8) return false;
+    reply[0] = 0;
+    const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+    sockaddr_un local{};
+    local.sun_family = AF_UNIX;
+    if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof(sa_family_t)) != 0) {
+        close(fd);
+        return false;
+    }
+    timeval tv{};
+    tv.tv_sec = 0;
+    tv.tv_usec = 800000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    sockaddr_un dest{};
+    dest.sun_family = AF_UNIX;
+    dest.sun_path[0] = '\0';
+    const char kName[] = "frametop_launch";
+    std::memcpy(dest.sun_path + 1, kName, sizeof kName - 1);
+    const socklen_t destLen = socklen_t(offsetof(sockaddr_un, sun_path) + 1 + sizeof kName - 1);
+    const ssize_t sent = sendto(fd, cmd, std::strlen(cmd), 0, reinterpret_cast<sockaddr *>(&dest), destLen);
+    if (sent < 0) {
+        close(fd);
+        return false;
+    }
+    const ssize_t n = recvfrom(fd, reply, replyN - 1, 0, nullptr, nullptr);
+    close(fd);
+    if (n <= 0) return false;
+    reply[n] = 0;
+    return true;
+}
+
+void DrawLauncherGlyph(std::vector<uint8_t> &px, int w, int h, const std::string &glyph, uint8_t r, uint8_t g,
+                       uint8_t b, uint8_t a) {
+    const int cx = w / 2, cy = h / 2;
+    const int s = std::min(w, h) / 5;
+    auto disc = [&](int x, int y, int rad) {
+        for (int yy = -rad; yy <= rad; ++yy)
+            for (int xx = -rad; xx <= rad; ++xx)
+                if (xx * xx + yy * yy <= rad * rad) PutInstrumentPixel(px, w, h, x + xx, y + yy, r, g, b, a);
+    };
+    const std::string gname = glyph.empty() ? "star" : glyph;
+    if (gname == "play") {
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx - s / 2 + i, cy - (s - i) / 2, cx - s / 2 + i + 3, cy + (s - i) / 2, r, g,
+                               b, a);
+    } else if (gname == "stop") {
+        FillInstrumentRect(px, w, h, cx - s / 2, cy - s / 2, cx + s / 2, cy + s / 2, r, g, b, a);
+    } else if (gname == "home") {
+        FillInstrumentRect(px, w, h, cx - s / 2, cy - s / 6, cx + s / 2, cy + s / 2, r, g, b, a);
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx - s + i, cy - i / 2, cx + s - i, cy - i / 2 + 3, r, g, b, a);
+    } else if (gname == "gear") {
+        disc(cx, cy, s / 2);
+        for (int k = 0; k < 6; ++k) {
+            const double ang = k * 3.14159265 / 3.0;
+            const int x = cx + int(std::cos(ang) * s * 0.75);
+            const int y = cy + int(std::sin(ang) * s * 0.75);
+            disc(x, y, s / 5);
+        }
+    } else if (gname == "moon") {
+        disc(cx, cy, s / 2 + 2);
+        for (int yy = -s; yy <= s; ++yy)
+            for (int xx = -s; xx <= s; ++xx)
+                if (xx * xx + yy * yy <= (s / 2) * (s / 2))
+                    PutInstrumentPixel(px, w, h, cx + xx + s / 4, cy + yy - s / 8, 0, 0, 0, 0);
+    } else if (gname == "music") {
+        FillInstrumentRect(px, w, h, cx - 2, cy - s / 2, cx + 2, cy + s / 3, r, g, b, a);
+        disc(cx - s / 3, cy + s / 3, s / 4);
+        disc(cx + s / 4, cy + s / 5, s / 5);
+    } else if (gname == "terminal") {
+        FillInstrumentRect(px, w, h, cx - s, cy - s / 2, cx + s, cy + s / 2, r, g, b, uint8_t(a * 40 / 255));
+        for (int i = 0; i < s / 2; ++i)
+            FillInstrumentRect(px, w, h, cx - s / 2 + i, cy - s / 4 + i / 2, cx - s / 2 + i + 2, cy - s / 4 + i / 2 + 2,
+                               r, g, b, a);
+        FillInstrumentRect(px, w, h, cx - s / 6, cy + s / 4, cx + s / 2, cy + s / 4 + 3, r, g, b, a);
+    } else if (gname == "arrow") {
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx - s / 2 + i, cy - 2, cx - s / 2 + i + 2, cy + 2, r, g, b, a);
+        for (int i = 0; i < s / 2; ++i)
+            FillInstrumentRect(px, w, h, cx + s / 2 - i, cy - s / 2 + i, cx + s / 2 - i + 3, cy + s / 2 - i, r, g, b, a);
+    } else if (gname == "power") {
+        disc(cx, cy, s / 2);
+        FillInstrumentRect(px, w, h, cx - 2, cy - s / 2 - 2, cx + 2, cy, r, g, b, a);
+    } else {  // star (default) / fallback
+        for (int k = 0; k < 5; ++k) {
+            const double ang = -3.14159265 / 2 + k * 2.0 * 3.14159265 / 5.0;
+            const int x = cx + int(std::cos(ang) * s * 0.7);
+            const int y = cy + int(std::sin(ang) * s * 0.7);
+            FillInstrumentRect(px, w, h, std::min(cx, x), std::min(cy, y), std::max(cx, x) + 2, std::max(cy, y) + 2, r,
+                               g, b, a);
+        }
+        disc(cx, cy, s / 4);
+    }
+}
+
+void RefreshLauncherTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Launcher) return;
+    const bool useImage = (inst.launchAppear == "app" || inst.launchAppear == "image") && !inst.imageFrames.empty();
+    const int key = int(inst.launchAppear.size()) * 17 + int(inst.launchGlyph.size()) * 31 +
+                    int(inst.imageFrames.size()) * 101 + (useImage ? 1 : 0) + int(inst.gazeHover) * 7 +
+                    int(inst.attentionFocused) * 13;
+    if (!force && key == inst.lastLauncherKey && !inst.pixels.empty()) return;
+    inst.lastLauncherKey = key;
+
+    if (useImage) {
+        const int fi = std::clamp(inst.imageFrame, 0, int(inst.imageFrames.size()) - 1);
+        const ImageFrame &frame = inst.imageFrames[size_t(fi)];
+        if (frame.rgba.size() == size_t(inst.texW) * size_t(inst.texH) * 4) {
+            inst.pixels = frame.rgba;
+        } else {
+            inst.pixels = frame.rgba;
+            const size_t n = frame.rgba.size() / 4;
+            int side = int(std::sqrt(double(n)));
+            while (side > 1 && size_t(side) * size_t(side) != n) --side;
+            if (size_t(side) * size_t(side) == n) {
+                inst.texW = side;
+                inst.texH = side;
+            }
+        }
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid) {
+            vr::HmdVector2_t scale = {(float)inst.texW, (float)inst.texH};
+            vr::VROverlay()->SetOverlayMouseScale(inst.overlay, &scale);
+            vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(inst.texW), uint32_t(inst.texH),
+                                           4);
+        }
+        return;
+    }
+
+    inst.texW = 256;
+    inst.texH = 256;
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    const uint8_t tr = inst.colorR, tg = inst.colorG, tb = inst.colorB;
+    const uint8_t a = inst.attentionFocused || inst.gazeHover ? 240 : 200;
+    const std::string glyph =
+        (inst.launchAppear == "glyph" && !inst.launchGlyph.empty()) ? inst.launchGlyph : std::string("star");
+    DrawLauncherGlyph(inst.pixels, w, h, glyph, tr, tg, tb, a);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid) {
+        vr::HmdVector2_t scale = {(float)w, (float)h};
+        vr::VROverlay()->SetOverlayMouseScale(inst.overlay, &scale);
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+    }
+}
+
+void ActivateLauncher(Instrument &inst) {
+    if (inst.type != InstrumentType::Launcher) return;
+    char reply[512];
+    std::string cmd;
+    if (inst.launchKind == "action") {
+        if (inst.launchTarget.empty() || inst.launchTarget == "-") {
+            std::fprintf(stderr, "instrument launcher %s: no semantic action\n", inst.id.c_str());
+            return;
+        }
+        cmd = "action " + inst.launchTarget;
+    } else if (inst.launchKind == "shell") {
+        if (inst.launchTarget.empty()) {
+            std::fprintf(stderr, "instrument launcher %s: empty shell\n", inst.id.c_str());
+            return;
+        }
+        cmd = "shell " + inst.launchTarget;
+    } else if (inst.launchKind == "command") {
+        if (inst.launchCommandJson.empty()) {
+            std::fprintf(stderr, "instrument launcher %s: empty command\n", inst.id.c_str());
+            return;
+        }
+        cmd = "command " + inst.launchCommandJson;
+    } else {
+        if (inst.launchTarget.empty() || inst.launchTarget == "-") {
+            std::fprintf(stderr, "instrument launcher %s: no desktop id\n", inst.id.c_str());
+            return;
+        }
+        cmd = "desktop " + inst.launchTarget;
+    }
+    if (!AskFrametopLaunch(cmd.c_str(), reply, sizeof reply)) {
+        std::fprintf(stderr, "instrument launcher %s: @frametop_launch not reachable\n", inst.id.c_str());
+        return;
+    }
+    if (std::strncmp(reply, "ok", 2) != 0)
+        std::fprintf(stderr, "instrument launcher %s: %s\n", inst.id.c_str(), reply);
+}
+
+void PollLauncherOverlay(Instrument &inst) {
+    if (inst.type != InstrumentType::Launcher || inst.overlay == vr::k_ulOverlayHandleInvalid) return;
+    vr::VREvent_t ev;
+    while (vr::VROverlay()->PollNextOverlayEvent(inst.overlay, &ev, sizeof ev)) {
+        if (ev.eventType != vr::VREvent_MouseButtonDown || ev.data.mouse.button != vr::VRMouseButton_Left) continue;
+        ActivateLauncher(inst);
+    }
+}
+
+// --- Image instrument (PNG/JPEG stills + animated GIF; RGBA alpha preserved) ---
+
+static constexpr int kImageMaxEdge = 768;       // keep overlays light; big GIFs OOM'd ft-screens
+static constexpr int kImageMaxFrames = 48;
+static constexpr size_t kImageMaxDecodedBytes = 48ull * 1024ull * 1024ull;  // full-res decode cap
+
+void ScaleRgbaNearest(const uint8_t *src, int sw, int sh, uint8_t *dst, int dw, int dh) {
+    for (int y = 0; y < dh; ++y) {
+        const int sy = y * sh / dh;
+        for (int x = 0; x < dw; ++x) {
+            const int sx = x * sw / dw;
+            const uint8_t *s = src + (size_t(sy) * sw + sx) * 4;
+            uint8_t *d = dst + (size_t(y) * dw + x) * 4;
+            d[0] = s[0];
+            d[1] = s[1];
+            d[2] = s[2];
+            d[3] = s[3];
+        }
+    }
+}
+
+void ImageTargetSize(int sw, int sh, int *dw, int *dh) {
+    int w = std::max(1, sw), h = std::max(1, sh);
+    const int edge = std::max(w, h);
+    if (edge > kImageMaxEdge) {
+        w = std::max(1, (w * kImageMaxEdge + edge / 2) / edge);
+        h = std::max(1, (h * kImageMaxEdge + edge / 2) / edge);
+    }
+    *dw = w;
+    *dh = h;
+}
+
+void ClearImageFrames(Instrument &inst) {
+    inst.imageFrames.clear();
+    inst.imageFrame = 0;
+    inst.imageFrameAccMs = 0;
+    inst.lastImageFrame = -1;
+}
+
+void DrawImagePlaceholder(Instrument &inst) {
+    inst.texW = 384;
+    inst.texH = 384;
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    // Soft translucent plate so an empty Image still has a grab target.
+    for (int y = 16; y < h - 16; ++y)
+        for (int x = 16; x < w - 16; ++x)
+            PutInstrumentPixel(inst.pixels, w, h, x, y, 40, 44, 52, 90);
+    const int cell = 18;
+    const int tw = GlyphWordWidth(cell, 5);
+    DrawGlyphWord(inst.pixels, w, h, (w - tw) / 2, (h - cell * 7) / 2, cell, "IMAGE", 200, 205, 215, 220);
+}
+
+bool PushScaledFrame(Instrument &inst, const uint8_t *src, int sw, int sh, int delayMs) {
+    int dw = 0, dh = 0;
+    ImageTargetSize(sw, sh, &dw, &dh);
+    ImageFrame frame;
+    // Floor ~10 fps — faster GIFs just burn SetOverlayRaw and flicker like Media did.
+    frame.delayMs = std::max(50, delayMs > 0 ? delayMs : 100);
+    frame.rgba.assign(size_t(dw) * dh * 4, 0);
+    if (dw == sw && dh == sh)
+        std::memcpy(frame.rgba.data(), src, size_t(dw) * dh * 4);
+    else
+        ScaleRgbaNearest(src, sw, sh, frame.rgba.data(), dw, dh);
+    if (inst.imageFrames.empty()) {
+        inst.texW = dw;
+        inst.texH = dh;
+    } else if (dw != inst.texW || dh != inst.texH) {
+        std::vector<uint8_t> fitted(size_t(inst.texW) * inst.texH * 4, 0);
+        ScaleRgbaNearest(frame.rgba.data(), dw, dh, fitted.data(), inst.texW, inst.texH);
+        frame.rgba.swap(fitted);
+    }
+    inst.imageFrames.push_back(std::move(frame));
+    return true;
+}
+
+bool LoadInstrumentImageFile(Instrument &inst, const char *path) {
+    if (!path || !*path) return false;
+    FILE *f = std::fopen(path, "rb");
+    if (!f) {
+        std::fprintf(stderr, "instrument image: cannot open %s\n", path);
+        return false;
+    }
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        std::fclose(f);
+        return false;
+    }
+    const long sz = std::ftell(f);
+    if (sz <= 0 || sz > 16 * 1024 * 1024) {
+        std::fclose(f);
+        std::fprintf(stderr, "instrument image: bad size %ld for %s\n", sz, path);
+        return false;
+    }
+    if (std::fseek(f, 0, SEEK_SET) != 0) {
+        std::fclose(f);
+        return false;
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    if (std::fread(buf.data(), 1, static_cast<size_t>(sz), f) != static_cast<size_t>(sz)) {
+        std::fclose(f);
+        std::fprintf(stderr, "instrument image: short read %s\n", path);
+        return false;
+    }
+    std::fclose(f);
+
+    // Keep prior frames until the new decode succeeds — a failed replace must not blank VR.
+    std::vector<ImageFrame> prevFrames = std::move(inst.imageFrames);
+    const int prevW = inst.texW, prevH = inst.texH;
+    ClearImageFrames(inst);
+    inst.imagePath = path;
+
+    const bool looksGif = (sz >= 6 && buf[0] == 'G' && buf[1] == 'I' && buf[2] == 'F') ||
+                          (std::strstr(path, ".gif") != nullptr || std::strstr(path, ".GIF") != nullptr);
+    if (looksGif) {
+        int *delays = nullptr;
+        int w = 0, h = 0, frames = 0, comp = 0;
+        stbi_uc *data = stbi_load_gif_from_memory(buf.data(), int(sz), &delays, &w, &h, &frames, &comp, 4);
+        if (data && frames > 0 && w > 0 && h > 0) {
+            const size_t decoded = size_t(frames) * size_t(w) * size_t(h) * 4ull;
+            if (decoded > kImageMaxDecodedBytes) {
+                std::fprintf(stderr,
+                             "instrument image: GIF too large (%dx%d x %d frames, %llu MB); refusing %s\n", w, h,
+                             frames, (unsigned long long)(decoded / (1024ull * 1024ull)), path);
+                stbi_image_free(data);
+                if (delays) STBI_FREE(delays);
+                inst.imageFrames = std::move(prevFrames);
+                inst.texW = prevW;
+                inst.texH = prevH;
+                return false;
+            }
+            const int n = std::min(frames, kImageMaxFrames);
+            const size_t frameBytes = size_t(w) * h * 4;
+            for (int i = 0; i < n; ++i) {
+                const int delay = delays ? delays[i] : 100;
+                PushScaledFrame(inst, data + frameBytes * size_t(i), w, h, delay);
+            }
+            stbi_image_free(data);
+            if (delays) STBI_FREE(delays);
+            if (!inst.imageFrames.empty()) return true;
+        }
+        if (data) stbi_image_free(data);
+        if (delays) STBI_FREE(delays);
+    }
+
+    int w = 0, h = 0, comp = 0;
+    stbi_uc *data = stbi_load_from_memory(buf.data(), int(sz), &w, &h, &comp, 4);
+    if (!data || w <= 0 || h <= 0) {
+        std::fprintf(stderr, "instrument image: decode failed %s (%s)\n", path, stbi_failure_reason());
+        if (data) stbi_image_free(data);
+        inst.imageFrames = std::move(prevFrames);
+        inst.texW = prevW;
+        inst.texH = prevH;
+        return false;
+    }
+    const size_t decoded = size_t(w) * size_t(h) * 4ull;
+    if (decoded > kImageMaxDecodedBytes) {
+        std::fprintf(stderr, "instrument image: still too large (%dx%d); refusing %s\n", w, h, path);
+        stbi_image_free(data);
+        inst.imageFrames = std::move(prevFrames);
+        inst.texW = prevW;
+        inst.texH = prevH;
+        return false;
+    }
+    PushScaledFrame(inst, data, w, h, 0);
+    stbi_image_free(data);
+    if (inst.imageFrames.empty()) {
+        inst.imageFrames = std::move(prevFrames);
+        inst.texW = prevW;
+        inst.texH = prevH;
+        return false;
+    }
+    return true;
+}
+
+void UploadImageOverlay(Instrument &inst, bool chrome) {
+    if (inst.overlay == vr::k_ulOverlayHandleInvalid) return;
+    const size_t need = size_t(inst.texW) * size_t(inst.texH) * 4ull;
+    if (inst.pixels.size() != need || inst.texW <= 0 || inst.texH <= 0) {
+        std::fprintf(stderr, "instrument image: refusing SetOverlayRaw size mismatch %zu vs %dx%d\n",
+                     inst.pixels.size(), inst.texW, inst.texH);
+        return;
+    }
+    vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(inst.texW),
+                                   uint32_t(inst.texH), 4);
+    if (chrome) {
+        vr::VROverlay()->SetOverlayWidthInMeters(inst.overlay, float(inst.metres));
+        PlaceInstrumentChrome(inst);
+    }
+}
+
+void RefreshImageTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Image) return;
+    if (inst.imageFrames.empty()) {
+        if (!force && !inst.pixels.empty() && inst.lastImageFrame == -2) return;
+        DrawImagePlaceholder(inst);
+        inst.lastImageFrame = -2;
+        UploadImageOverlay(inst, true);
+        return;
+    }
+    if (inst.imageFrame < 0 || inst.imageFrame >= int(inst.imageFrames.size())) inst.imageFrame = 0;
+    if (!force && inst.imageFrame == inst.lastImageFrame && !inst.pixels.empty()) return;
+    const ImageFrame &frame = inst.imageFrames[size_t(inst.imageFrame)];
+    const size_t need = size_t(inst.texW) * size_t(inst.texH) * 4ull;
+    if (frame.rgba.size() != need) {
+        std::fprintf(stderr, "instrument image: frame size mismatch; skipping upload\n");
+        return;
+    }
+    // Avoid copying the whole frame vector every tick — swap pointers via assign only when needed.
+    inst.pixels = frame.rgba;
+    const bool sizeChanged = inst.lastImageFrame < 0;
+    inst.lastImageFrame = inst.imageFrame;
+    // Chrome only when size/pose-relevant state may have changed — every-frame PlaceInstrumentChrome
+    // flickered the same way Media's SoftOutline did.
+    UploadImageOverlay(inst, sizeChanged || force);
+}
+
+void TickImageAnimation(Instrument &inst, double dt) {
+    if (inst.type != InstrumentType::Image || inst.imageFrames.size() < 2) return;
+    inst.imageFrameAccMs += dt * 1000.0;
+    if (inst.imageFrame < 0 || inst.imageFrame >= int(inst.imageFrames.size())) inst.imageFrame = 0;
+    const int delay = std::max(50, inst.imageFrames[size_t(inst.imageFrame)].delayMs);
+    if (inst.imageFrameAccMs < delay) return;
+    // Advance one frame per tick max — the old catch-up loop uploaded up to 8 frames/tick.
+    inst.imageFrameAccMs = std::fmod(inst.imageFrameAccMs, double(delay));
+    inst.imageFrame = (inst.imageFrame + 1) % int(inst.imageFrames.size());
+    RefreshImageTexture(inst, false);
+}
+
+bool SetInstrumentImagePath(Instrument &inst, const char *path) {
+    if (inst.type != InstrumentType::Image && inst.type != InstrumentType::Launcher) return false;
+    if (!LoadInstrumentImageFile(inst, path)) {
+        // Keep whatever was on screen; show placeholder only if we have nothing.
+        // Do not mutate launchAppear — a failed load must not permanently force "fallback"
+        // (that would ignore a later successful file push while appear stayed wrong).
+        if (inst.type == InstrumentType::Image && inst.imageFrames.empty()) RefreshImageTexture(inst, true);
+        if (inst.type == InstrumentType::Launcher && inst.imageFrames.empty()) RefreshLauncherTexture(inst, true);
+        return false;
+    }
+    inst.imagePath = path ? path : "";
+    if (inst.type == InstrumentType::Launcher) {
+        inst.lastLauncherKey = -1;
+        RefreshLauncherTexture(inst, true);
+        PlaceInstrumentChrome(inst);
+        return true;
+    }
+    RefreshImageTexture(inst, true);
+    PlaceInstrumentChrome(inst);
+    return true;
+}
+
 void RefreshInstrumentContent(Instrument &inst, bool force) {
     switch (inst.type) {
         case InstrumentType::Clock: RefreshClockTexture(inst, force); break;
@@ -3035,6 +3629,8 @@ void RefreshInstrumentContent(Instrument &inst, bool force) {
         case InstrumentType::Sd: RefreshStorageTexture(inst, force); break;
         case InstrumentType::Date: RefreshDateTexture(inst, force); break;
         case InstrumentType::Media: RefreshMediaTexture(inst, force); break;
+        case InstrumentType::Image: RefreshImageTexture(inst, force); break;
+        case InstrumentType::Launcher: RefreshLauncherTexture(inst, force); break;
     }
 }
 
@@ -3064,10 +3660,13 @@ void EnsureInstrumentOverlays(Instrument &inst) {
         return;
     }
     vr::VROverlay()->SetOverlayWidthInMeters(inst.overlay, float(inst.metres));
-    if (inst.type == InstrumentType::Media) {
-        // Media transport buttons need laser clicks on the content overlay.
+    vr::VROverlay()->SetOverlaySortOrder(inst.overlay, 0);
+    if (inst.type == InstrumentType::Media || inst.type == InstrumentType::Launcher) {
+        // Media transport / Launcher icon need laser clicks on the content overlay.
         vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_Mouse);
         vr::VROverlay()->SetOverlayFlag(inst.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+        vr::HmdVector2_t scale = {(float)inst.texW, (float)inst.texH};
+        vr::VROverlay()->SetOverlayMouseScale(inst.overlay, &scale);
     } else {
         vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_None);
     }
@@ -3099,6 +3698,13 @@ void ShowInstrument(Instrument &inst, bool on) {
     if (!inst.visible) {
         vr::VROverlay()->ShowOverlay(inst.overlay);
         inst.visible = true;
+    }
+    // Keep the move bar shown (transparent until proximity) so lasers can hit it — same
+    // policy as screen chrome. Hiding it until proximity made discovery nearly impossible.
+    if (inst.bar != vr::k_ulOverlayHandleInvalid && !inst.controlsUp) {
+        vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_Mouse);
+        vr::VROverlay()->ShowOverlay(inst.bar);
+        inst.controlsUp = true;
     }
     ApplyInstrumentAlpha(inst);
 }
@@ -3236,12 +3842,19 @@ void UpdateInstrumentControls() {
         if (!inst.enabled || !inst.visible) continue;
         Mat p;
         if (InstrumentPose(inst, &p)) {
-            const Mat bar = Mul(p, InstrumentBarOffset(inst));
             const double chrome = std::max(0.04, inst.metres * 0.18);
-            const double reach = std::max(chrome * 0.5, 0.03);
+            const double hw = inst.metres * 0.5, hh = inst.heightMetres() * 0.5;
+            // Reach covers the face + bar (screen chrome uses ~grip*1.5); old reach ~3 cm
+            // only sampled the bar and was nearly unusable.
+            const double reach = std::max({inst.metres * 0.14, chrome * 0.85, 0.07});
             std::vector<Mat> spots;
+            const Mat bar = Mul(p, InstrumentBarOffset(inst));
             for (double f : {-0.5, -0.25, 0.0, 0.25, 0.5})
                 spots.push_back(Mul(bar, Translation(f * chrome, 0, 0)));
+            // Face samples so aiming at the instrument itself reveals the move bar.
+            for (double fx : {-0.45, 0.0, 0.45})
+                for (double fy : {-0.35, 0.0, 0.35})
+                    spots.push_back(Mul(p, Translation(fx * hw * 2, fy * hh * 2, 0)));
             for (const Mat &d : lasers) {
                 const double o[3] = {d.m[0][3], d.m[1][3], d.m[2][3]}, dir[3] = {-d.m[0][2], -d.m[1][2], -d.m[2][2]};
                 bool close = false;
@@ -3263,22 +3876,15 @@ void UpdateInstrumentControls() {
         }
         const bool inUse = inst.drag != Drag::None || inst.hoverBar;
         const bool want = inst.visible && (inUse || g_tick < inst.nearUntil);
+        // Bar stays shown while visible (transparent); only fade controls brightness.
+        if (inst.bar != vr::k_ulOverlayHandleInvalid && !inst.controlsUp) {
+            vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_Mouse);
+            vr::VROverlay()->ShowOverlay(inst.bar);
+            inst.controlsUp = true;
+        }
         const float before = inst.controls;
         inst.controls = std::clamp(inst.controls + (want ? 0.2f : -0.1f), 0.f, 1.f);
-        const bool show = inst.visible && (want || inst.controls > 0.02f);
-        if (inst.bar != vr::k_ulOverlayHandleInvalid && show != inst.controlsUp) {
-            if (show) {
-                vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_Mouse);
-                vr::VROverlay()->ShowOverlay(inst.bar);
-            } else {
-                vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_None);
-                vr::VROverlay()->HideOverlay(inst.bar);
-            }
-            inst.controlsUp = show;
-            ApplyInstrumentAlpha(inst);
-        } else if (inst.controls != before) {
-            ApplyInstrumentAlpha(inst);
-        }
+        if (inst.controls != before) ApplyInstrumentAlpha(inst);
     }
 }
 
@@ -3316,6 +3922,7 @@ void SetInstrumentWidth(Instrument &inst, double metres) {
 void SetInstrumentOpacity(Instrument &inst, float active, float idle) {
     inst.activeOpacity = std::clamp(active, 0.f, 1.f);
     inst.idleOpacity = std::clamp(idle, 0.f, 1.f);
+    if (inst.idleOpacity > inst.activeOpacity) std::swap(inst.idleOpacity, inst.activeOpacity);
     if (!inst.attentionEnabled || (!g_eyeAvailable && !g_gazeFallbackHead))
         inst.attentionResolved = inst.activeOpacity;
     else
@@ -3351,6 +3958,7 @@ void SetInstrumentColor(Instrument &inst, uint8_t r, uint8_t g, uint8_t b) {
     inst.lastMinute = -1;
     inst.lastDateKey = -1;
     inst.lastBatterySeg = -1;
+    inst.lastMediaKey = -1;
     RefreshInstrumentContent(inst, true);
 }
 
@@ -3392,6 +4000,8 @@ const char *InstrumentTypeName(InstrumentType t) {
         case InstrumentType::Sd: return "sd";
         case InstrumentType::Date: return "date";
         case InstrumentType::Media: return "media";
+        case InstrumentType::Image: return "image";
+        case InstrumentType::Launcher: return "launcher";
     }
     return "clock";
 }
@@ -3402,6 +4012,8 @@ void TickInstruments(double dt) {
         if (!inst.enabled) continue;
         RefreshInstrumentContent(inst, false);
         if (inst.type == InstrumentType::Media) PollMediaOverlay(inst);
+        if (inst.type == InstrumentType::Launcher) PollLauncherOverlay(inst);
+        if (inst.type == InstrumentType::Image) TickImageAnimation(inst, dt);
     }
     UpdateInstrumentFollow(dt);
     UpdateInstrumentControls();
@@ -3413,9 +4025,14 @@ void TickInstruments(double dt) {
 // keep a mid-drag instrument up so a grab is not cancelled by a mode change.
 void UpdateInstrumentVisibility() {
     const bool shared = ModeVisible();
+    const bool dash = vr::VROverlay()->IsDashboardVisible();
+    const bool yield = DashboardYieldActive();
     Mat head;
     const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
-    for (auto &inst : g_instruments) {
+    for (size_t ii = 0; ii < g_instruments.size(); ++ii) {
+        Instrument &inst = g_instruments[ii];
+        ApplyOverlaySort(inst.overlay, 0, dash);
+        ApplyOverlaySort(inst.bar, dash ? 0 : 1, dash);
         if (!inst.enabled) {
             ShowInstrument(inst, false);
             continue;
@@ -3430,6 +4047,10 @@ void UpdateInstrumentVisibility() {
             visible = visFade > 0.02f;
         }
         if (!visible && inst.controls > 0.02f) visible = true, visFade = 0.f;
+        if (yield && visible && !InstrumentKeepsThroughDashboard(ii, inst)) {
+            visible = false;
+            visFade = 0.f;
+        }
         inst.visibilityFade = visFade;
         ShowInstrument(inst, visible);
     }
@@ -3459,12 +4080,26 @@ bool ft_vr_init(void) {
 }
 
 void ft_vr_shutdown(void) {
-    ClearInstruments();
-    for (auto &[i, s] : g_screens)
-        for (auto o : s.All()) vr::VROverlay()->DestroyOverlay(o);
-    for (auto &[dev, g] : g_guides)
-        for (auto o : {g.ring.overlay, g.dot.overlay}) vr::VROverlay()->DestroyOverlay(o);
-    for (auto &[k, h] : g_imports) vr::VRIPCResourceManager()->UnrefResource(h);
+    // Best-effort teardown: after a dying SteamVR, overlay calls may fail; still attempt
+    // VR_Shutdown so we do not strand the runtime when SIGTERM reaches us in time.
+    try {
+        ClearInstruments();
+        for (auto &[i, s] : g_screens)
+            for (auto o : s.All()) {
+                if (o != vr::k_ulOverlayHandleInvalid)
+                    vr::VROverlay()->DestroyOverlay(o);
+            }
+        for (auto &[dev, g] : g_guides)
+            for (auto o : {g.ring.overlay, g.dot.overlay}) {
+                if (o != vr::k_ulOverlayHandleInvalid)
+                    vr::VROverlay()->DestroyOverlay(o);
+            }
+        if (auto *ipc = vr::VRIPCResourceManager()) {
+            for (auto &[k, h] : g_imports) ipc->UnrefResource(h);
+        }
+    } catch (...) {
+        std::fprintf(stderr, "ft_vr_shutdown: overlay cleanup failed; still shutting down OpenVR\n");
+    }
     g_guides.clear();
     g_screens.clear();
     g_imports.clear();
@@ -3491,6 +4126,7 @@ void ft_vr_screen_create(int index, double metres, int count) {
     }
     vr::VROverlay()->SetOverlayWidthInMeters(s.overlay, float(metres));
     vr::VROverlay()->SetOverlayInputMethod(s.overlay, vr::VROverlayInputMethod_Mouse);
+    vr::VROverlay()->SetOverlaySortOrder(s.overlay, 0);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_IgnoreTextureAlpha, true);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
@@ -3794,7 +4430,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
     RefreshPoses();
     int n;
     double x, y, z, yaw, pitch, roll, w;
-    char word[16], hand[32], filled[64];
+    char word[32], hand[32], filled[64];
     float r[12];
     auto each = [&](const char *which, auto fn) -> bool {  // "all" or a screen number
         if (std::strcmp(which, "all") == 0) {
@@ -4027,13 +4663,15 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             return (void)std::snprintf(reply, size, "error no head pose (headset off?)");
         std::snprintf(reply, size, "ok %.4f %.4f %.4f %.2f", m.m[0][3], m.m[1][3], m.m[2][3],
                       std::atan2(m.m[0][2], m.m[2][2]) * 180 / M_PI);
-    } else if (std::sscanf(cmd, "visibility %15s", word) == 1) {
+    } else if (std::sscanf(cmd, "visibility %31s", word) == 1) {
         const std::string m = word;
         if (m == "always") g_mode = Mode::Always;
         else if (m == "dashboard") g_mode = Mode::Dashboard;
+        else if (m == "except_dashboard") g_mode = Mode::ExceptDashboard;
         else if (m == "gesture") g_mode = Mode::Gesture;
         else if (m == "toggle") g_mode = Mode::Toggle;
-        else return (void)std::snprintf(reply, size, "error modes: always dashboard gesture toggle");
+        else return (void)std::snprintf(reply, size,
+            "error modes: always dashboard except_dashboard gesture toggle");
         g_manual = false;
         std::snprintf(reply, size, "ok %s", ModeName());
     } else if (std::sscanf(cmd, "wrist %lf", &w) == 1) {
@@ -4044,10 +4682,15 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         g_gestureAngle = std::clamp(w, 5.0, 90.0);
         std::snprintf(reply, size, "ok");
     } else if (!std::strncmp(cmd, "hide", 4) || !std::strncmp(cmd, "show", 4) || !std::strncmp(cmd, "toggle", 6)) {
-        const bool always = EffectiveMode() == Mode::Always;
-        const bool shownNow = always ? !g_manual : g_manual;
+        const Mode eff = EffectiveMode();
+        const bool dashOpen = vr::VROverlay()->IsDashboardVisible();
+        // Always: manual means hidden. Dashboard/gesture/toggle: manual means force-shown.
+        // ExceptDashboard: Always polarity with dashboard closed; force-show while open.
+        const bool manualMeansHidden =
+            eff == Mode::Always || (eff == Mode::ExceptDashboard && !dashOpen);
+        const bool shownNow = manualMeansHidden ? !g_manual : g_manual;
         const bool want = cmd[0] == 's' ? true : cmd[0] == 'h' ? false : !shownNow;
-        g_manual = always ? !want : want;
+        g_manual = manualMeansHidden ? !want : want;
         UpdateVisibility();
         std::snprintf(reply, size, "ok %s", want ? "shown" : "hidden");
     } else if (std::sscanf(cmd, "ingames %15s", word) == 1) {
@@ -4181,9 +4824,78 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             if (inst->anchor != AnchorMode::World)
                 for (int k = 0; k < 12 && len < size; ++k)
                     len += std::snprintf(reply + len, size - len, " %.5f", inst->pinRel.m[k / 4][k % 4]);
+        } else if (!std::strncmp(rest, "file ", 5)) {
+            char path[512] = {};
+            if (std::sscanf(rest + 5, "%63s %511[^\n]", id, path) != 2)
+                return (void)std::snprintf(reply, size, "error instrument file wants id path");
+            if (!IsImageInstrumentId(id) && !IsLauncherInstrumentId(id))
+                return (void)std::snprintf(reply, size, "error instrument file is only for image/launcher ids");
+            Instrument &inst = FindOrCreateInstrument(id);
+            if (!SetInstrumentImagePath(inst, path))
+                return (void)std::snprintf(reply, size, "error failed to load image");
+            // File used to load pixels without enabling — UI said on, VR stayed blank.
+            EnableInstrument(inst, true);
+            if (IsIdentityMat(inst.pose) && inst.pinned == kNone) RecenterInstrument(inst);
+            std::snprintf(reply, size, "ok");
+        } else if (!std::strncmp(rest, "launcher ", 9)) {
+            char kind[32] = {}, arg1[512] = {};
+            const char *p = rest + 9;
+            if (std::sscanf(p, "%63s %31s %511[^\n]", id, kind, arg1) < 2)
+                return (void)std::snprintf(reply, size, "error instrument launcher wants id kind …");
+            if (!IsLauncherInstrumentId(id))
+                return (void)std::snprintf(reply, size, "error not a launcher id");
+            Instrument &inst = FindOrCreateInstrument(id);
+            if (!std::strcmp(kind, "application")) {
+                inst.launchKind = "application";
+                inst.launchTarget = arg1[0] ? arg1 : "-";
+                inst.launchCommandJson.clear();
+            } else if (!std::strcmp(kind, "action")) {
+                inst.launchKind = "action";
+                inst.launchTarget = arg1[0] ? arg1 : "-";
+                inst.launchCommandJson.clear();
+            } else if (!std::strcmp(kind, "shell")) {
+                inst.launchKind = "shell";
+                std::string raw = arg1;
+                if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"') {
+                    std::string out;
+                    for (size_t i = 1; i + 1 < raw.size(); ++i) {
+                        if (raw[i] == '\\' && i + 1 < raw.size()) {
+                            const char n = raw[++i];
+                            if (n == 'n') out.push_back('\n');
+                            else if (n == 't') out.push_back('\t');
+                            else if (n == '"' || n == '\\') out.push_back(n);
+                            else out.push_back(n);
+                        } else
+                            out.push_back(raw[i]);
+                    }
+                    inst.launchTarget = out;
+                } else {
+                    inst.launchTarget = raw;
+                }
+                inst.launchCommandJson.clear();
+            } else if (!std::strcmp(kind, "command")) {
+                inst.launchKind = "command";
+                inst.launchCommandJson = arg1[0] ? arg1 : "[]";
+                inst.launchTarget.clear();
+            } else if (!std::strcmp(kind, "appear")) {
+                char mode[32] = {}, glyph[64] = {};
+                if (std::sscanf(arg1, "%31s %63s", mode, glyph) < 1)
+                    return (void)std::snprintf(reply, size, "error appear wants mode");
+                inst.launchAppear = mode;
+                if (glyph[0]) inst.launchGlyph = glyph;
+                if (inst.launchAppear != "app" && inst.launchAppear != "glyph" && inst.launchAppear != "image" &&
+                    inst.launchAppear != "fallback")
+                    inst.launchAppear = "fallback";
+                inst.lastLauncherKey = -1;
+                RefreshLauncherTexture(inst, true);
+            } else {
+                return (void)std::snprintf(reply, size,
+                                           "error launcher kind want application|action|shell|command|appear");
+            }
+            std::snprintf(reply, size, "ok");
         } else {
             std::snprintf(reply, size, "error instrument commands: list|get|enable|disable|place|width|pin|unpin|"
-                                       "opacity|color|attention|recenter|clear");
+                                       "opacity|color|attention|recenter|file|launcher|clear");
         }
     } else {
         std::snprintf(reply, size, "error unknown command");

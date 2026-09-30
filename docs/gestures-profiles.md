@@ -6,9 +6,9 @@ Profile switching must stay on one path:
 
 - VR chrome slot circles → `ft-layout action profile.slot.N`
 - Hide/show screens → `screens.toggle`
-- Spatial Instruments → Display Settings tab; Clock, Date, Battery, Device storage, SD, Media (`ft-layout instrument …`)
+- Spatial Instruments → Display Settings tab; Clock, Date, Battery, Device storage, SD, Media, Image×N, Launcher×N (`ft-layout instrument …`)
 - SteamVR digital keyboard → removed for now (chrome "K" / ShowKeyboard path withdrawn)
-- Aurora / passthrough → not exposed (no public OpenVR API for overlay apps)
+- Aurora / passthrough → not exposed as Frametop chrome (no public OpenVR API for overlay apps). Compositor skybox: Display Settings → Background
 - Input Settings button maps → same aliases (`profile_slot_N`, `profile_next`, …)
 - Display Settings / Quickshell → canonical dotted names
 

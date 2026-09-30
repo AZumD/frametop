@@ -12,6 +12,12 @@ openvr=v2.15.6
 [ -f build/include/openvr-$openvr ] || { curl -fsSL "https://raw.githubusercontent.com/ValveSoftware/openvr/$openvr/headers/openvr.h" -o build/include/openvr.h && touch build/include/openvr-$openvr; }
 gcc -std=c11 -O2 -Wall -Wno-unused-parameter -c -o build/compositor.o compositor.c \
   $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon libdrm pixman-1)
+# stb_image: PNG/JPEG/GIF (+ animated GIF) for the Image spatial instrument (pinned).
+stb=fede005abaf93d9d7f3a679d1999b2db341b360f
+[ -f build/include/stb_image-$stb ] || {
+  curl -fsSL "https://raw.githubusercontent.com/nothings/stb/$stb/stb_image.h" -o build/include/stb_image.h
+  touch "build/include/stb_image-$stb"
+}
 g++ -std=c++17 -O2 -Wall -Wno-missing-field-initializers -Ibuild/include -c -o build/vr.o vr.cpp
 g++ -o build/ft-screens build/compositor.o build/vr.o \
   $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) \

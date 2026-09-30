@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""frame-background — set Steam Frame / SteamVR compositor skybox backgrounds.
+
+Uses the stock SteamVR settings keys (no binary patches, no /opt edits):
+
+  steamvr.environmentMode   0 = Image (latlong/equirect skybox), 1 = Aurora
+  steamvr.background        absolute path to equirectangular PNG (2:1)
+
+Examples:
+  frame-background status
+  frame-background set ~/Pictures/foo.jpg
+  frame-background set ~/Pictures/sky.hdr
+  frame-background aurora
+  frame-background image          # Image mode, keep current background path
+  frame-background set /opt/steamvr/resources/backgrounds/night_mountains.png
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Prefer sibling helper when running from the repo; fall back to /tmp or PATH.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+try:
+    import openvr_settings as ovs
+except ImportError:
+    ovs = None  # type: ignore
+
+USER_BG_DIR = Path.home() / ".config/openvr/config/frametop-backgrounds"
+VRSETTINGS = Path.home() / ".config/openvr/config/steamvr.vrsettings"
+STOCK = {
+    "aurora": None,  # procedural; no texture path required
+    "aurorasky": "/opt/steamvr/resources/backgrounds/aurorasky.png",
+    "night_mountains": "/opt/steamvr/resources/backgrounds/night_mountains.png",
+}
+
+
+def _need_ovs():
+    if ovs is None:
+        raise SystemExit("openvr_settings.py not found next to frame-background")
+    return ovs
+
+
+def _convert_to_png(src: Path, dest: Path) -> Path:
+    """Ensure SteamVR gets an 8-bit PNG. Uses ffmpeg when the source is not already PNG.
+
+    Radiance .hdr (and .exr) are tonemapped to SDR; SteamVR's skybox loader expects
+    ordinary PNG, not HDR containers.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.suffix.lower() == ".png":
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        return dest
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("ffmpeg required to convert non-PNG images")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(src),
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+    ]
+    # HDR formats need tonemap + 8-bit; plain LDR just force rgb24 for SteamVR.
+    if src.suffix.lower() in (".hdr", ".exr", ".hdri"):
+        cmd += ["-vf", "tonemap=hable", "-pix_fmt", "rgb24"]
+    else:
+        cmd += ["-pix_fmt", "rgb24"]
+    cmd.append(str(dest))
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 or not dest.is_file():
+        raise SystemExit(f"ffmpeg convert failed:\n{r.stderr[-500:]}")
+    return dest
+
+
+def _file_dims(path: Path) -> tuple[int, int] | None:
+    """Read PNG IHDR width/height without external deps."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    import struct
+
+    w, h = struct.unpack(">II", data[16:24])
+    return int(w), int(h)
+
+
+def _status_dict() -> dict:
+    api = _need_ovs()
+    vr = api.OpenVR()
+    try:
+        bg = vr.get_string("steamvr", "background")
+        mode = vr.get_int("steamvr", "environmentMode")
+        dome = vr.get_bool("steamvr", "backgroundUseDomeProjection")
+        cam_h = vr.get_float("steamvr", "backgroundCameraHeight")
+        radius = vr.get_float("steamvr", "backgroundDomeRadius")
+    finally:
+        vr.close()
+    mode_name = {0: "image", 1: "aurora"}.get(mode, f"unknown({mode})")
+    exists = bool(bg) and Path(bg).is_file()
+    dims = _file_dims(Path(bg)) if exists else None
+    preset = "custom"
+    if mode == 1:
+        preset = "aurora"
+    elif bg:
+        name = Path(bg).name.lower()
+        if name == "night_mountains.png":
+            preset = "night_mountains"
+        elif name == "aurorasky.png":
+            preset = "aurorasky"
+    return {
+        "environmentMode": mode,
+        "mode": mode_name,
+        "preset": preset,
+        "background": bg or "",
+        "exists": exists,
+        "width": dims[0] if dims else 0,
+        "height": dims[1] if dims else 0,
+        "backgroundUseDomeProjection": bool(dome),
+        "backgroundCameraHeight": float(cam_h),
+        "backgroundDomeRadius": float(radius),
+        "vrsettings": str(VRSETTINGS),
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    st = _status_dict()
+    if getattr(args, "json", False):
+        import json
+
+        print(json.dumps(st, indent=2))
+        return 0
+    print(f"environmentMode: {st['environmentMode']} ({st['mode']})")
+    print(f"background: {st['background'] or '(empty)'}")
+    if st["background"]:
+        print(f"  exists: {st['exists']}")
+        if st["width"] and st["height"]:
+            ratio = st["width"] / st["height"]
+            print(
+                f"  size: {st['width']}x{st['height']} "
+                f"(ratio {ratio:.3f}; equirect is ~2.0)"
+            )
+    print(f"backgroundUseDomeProjection: {st['backgroundUseDomeProjection']}")
+    print(f"backgroundCameraHeight: {st['backgroundCameraHeight']}")
+    print(f"backgroundDomeRadius: {st['backgroundDomeRadius']}")
+    print(f"vrsettings: {st['vrsettings']}")
+    return 0
+
+
+def cmd_aurora(_: argparse.Namespace) -> int:
+    api = _need_ovs()
+    vr = api.OpenVR()
+    try:
+        vr.set_int("steamvr", "environmentMode", 1)
+    finally:
+        vr.close()
+    print("ok environmentMode=1 (Aurora procedural)")
+    return 0
+
+
+def cmd_image(_: argparse.Namespace) -> int:
+    api = _need_ovs()
+    vr = api.OpenVR()
+    try:
+        vr.set_int("steamvr", "environmentMode", 0)
+        bg = vr.get_string("steamvr", "background")
+    finally:
+        vr.close()
+    print(f"ok environmentMode=0 (Image); background={bg or '(empty)'}")
+    return 0
+
+
+def cmd_set(args: argparse.Namespace) -> int:
+    raw = args.path
+    # stock aliases
+    if raw in STOCK and STOCK[raw] is None:
+        return cmd_aurora(args)
+    if raw in STOCK:
+        src = Path(STOCK[raw])
+    else:
+        src = Path(os.path.expanduser(raw)).resolve()
+    if not src.is_file():
+        raise SystemExit(f"not a file: {src}")
+
+    USER_BG_DIR.mkdir(parents=True, exist_ok=True)
+    dest = USER_BG_DIR / (src.stem + ".png")
+    # Keep stock paths as-is (no copy out of /opt)
+    if str(src).startswith("/opt/steamvr/resources/backgrounds/") and src.suffix.lower() == ".png":
+        dest = src
+    else:
+        dest = _convert_to_png(src, dest)
+
+    dims = _file_dims(dest)
+    if dims:
+        w, h = dims
+        if h and abs((w / h) - 2.0) > 0.15:
+            print(
+                f"warning: {w}x{h} is not ~2:1 equirect; SteamVR may stretch it",
+                file=sys.stderr,
+            )
+
+    api = _need_ovs()
+    vr = api.OpenVR()
+    try:
+        # Compositor sometimes ignores a bare path write. Clearing, then
+        # Aurora→Image after setting the path, forces a skybox reload.
+        vr.set_int("steamvr", "environmentMode", 1)
+        time.sleep(0.3)
+        vr.set_string("steamvr", "background", "")
+        time.sleep(0.2)
+        vr.set_string("steamvr", "background", str(dest))
+        vr.set_int("steamvr", "environmentMode", 0)
+        time.sleep(0.5)
+        if args.dome is not None:
+            vr.set_bool("steamvr", "backgroundUseDomeProjection", bool(args.dome))
+        if args.camera_height is not None:
+            vr.set_float("steamvr", "backgroundCameraHeight", float(args.camera_height))
+        if args.dome_radius is not None:
+            vr.set_float("steamvr", "backgroundDomeRadius", float(args.dome_radius))
+        bg = vr.get_string("steamvr", "background")
+        mode = vr.get_int("steamvr", "environmentMode")
+    finally:
+        vr.close()
+    print(f"ok environmentMode={mode} background={bg}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="frame-background",
+        description="Set SteamVR compositor 360° backgrounds on Steam Frame",
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_status = sub.add_parser("status", help="show live background settings")
+    p_status.add_argument(
+        "--json", action="store_true", help="print machine-readable JSON"
+    )
+    p_status.set_defaults(func=cmd_status)
+
+    p_aurora = sub.add_parser("aurora", help="switch to procedural Aurora")
+    p_aurora.set_defaults(func=cmd_aurora)
+
+    p_image = sub.add_parser("image", help="switch to Image mode (keep path)")
+    p_image.set_defaults(func=cmd_image)
+
+    p_set = sub.add_parser("set", help="set equirect image and Image mode")
+    p_set.add_argument(
+        "path",
+        help="image path, or stock name: aurorasky | night_mountains | aurora",
+    )
+    p_set.add_argument(
+        "--dome",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help="backgroundUseDomeProjection (0/1)",
+    )
+    p_set.add_argument("--camera-height", type=float, default=None)
+    p_set.add_argument("--dome-radius", type=float, default=None)
+    p_set.set_defaults(func=cmd_set)
+
+    args = ap.parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

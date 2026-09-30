@@ -156,13 +156,18 @@ touch "$runtime/session-active"
 # Watchdog starts first, waits for the real nested plasmashell, then snapshots its /proc
 # environ (wayland-0 under …/frametop) for respawns — never the pre-Plasma outer display.
 # ft-mpris bridges session MPRIS players to @frametop_mpris for the Media instrument.
+# ft-launch bridges Launcher instrument activations to nested Plasma (@frametop_launch).
 # Drop any leftover bridge from a prior session (abstract socket is exclusive).
 pkill -f '[p]ython3 .*/ft-mpris.py' 2>/dev/null || true
+pkill -f '[p]ython3 .*/ft-launch.py' 2>/dev/null || true
 dbus-run-session -- bash -c '
   set -eu
   here=$1
   python3 "$here/ft-mpris.py" > /tmp/frametop-mpris.log 2>&1 &
   mpris=$!
+  # argv0 ft-launch (≤15 chars) so keep-apps / pgrep -x can find it.
+  bash -c "exec -a ft-launch python3 \"$here/ft-launch.py\"" > /tmp/frametop-launch.log 2>&1 &
+  launch=$!
   bash "$here/ft-shell-watch.sh" &
   watch=$!
   set +e
@@ -170,8 +175,10 @@ dbus-run-session -- bash -c '
   status=$?
   set -e
   kill "$mpris" 2>/dev/null || true
+  kill "$launch" 2>/dev/null || true
   kill "$watch" 2>/dev/null || true
   wait "$mpris" 2>/dev/null || true
+  wait "$launch" 2>/dev/null || true
   wait "$watch" 2>/dev/null || true
   exit "$status"
 ' bash "$here"

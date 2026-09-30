@@ -35,6 +35,8 @@ has 'OPTIONAL' "$root/pointer/driver/install.sh"
 has 'vrpathreg' "$root/scripts/recover-vr.sh"
 has 'frametop-pointer.service' "$root/scripts/recover-vr.sh"
 has 'frametop-input-relay.service' "$root/scripts/recover-vr.sh"
+has 'steamvr-pending.path' "$root/scripts/recover-vr.sh"
+has 'removed empty' "$root/scripts/recover-vr.sh"
 
 has 'AnchorDevice' "$root/screens/vr.cpp"
 has 'k_unTrackedDeviceIndex_Hmd' "$root/screens/vr.cpp"

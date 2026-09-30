@@ -1,4 +1,5 @@
-"""Tests for Spatial Instruments layout/profile plumbing (Clock + Battery + Storage + SD + Date + Media).
+"""Tests for Spatial Instruments layout/profile plumbing
+(Clock, Date, Battery, Storage, SD, Media, Image; Launcher has test_launcher_instrument.py).
 
 Run:
   python3 test/test_spatial_instruments.py
@@ -6,14 +7,31 @@ Run:
 from __future__ import annotations
 
 import os
+import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "layout"))
 import ft_layout  # noqa: E402
+
+
+def _minimal_png(path, rgba=(0, 128, 255, 128)):
+    """Write a 1×1 RGBA PNG (for install_instrument_image tests)."""
+    r, g, b, a = rgba
+    raw = bytes([0, r, g, b, a])  # filter None + pixel
+    compressed = zlib.compress(raw)
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)  # 8-bit RGBA
+    data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", compressed) + chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 class SpatialInstrumentsLayout(unittest.TestCase):
@@ -467,6 +485,165 @@ class DateInstrumentFormat(unittest.TestCase):
         self.assertEqual(day, "SAT")
         self.assertEqual(dom, 1)
         self.assertEqual(mon, "JAN")
+
+
+class ImageInstrument(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.layout_path = os.path.join(self.tmp.name, "frametop-layout.json")
+        self.profiles_path = os.path.join(self.tmp.name, "frametop-layout-profiles.json")
+        self.instruments_dir = os.path.join(self.tmp.name, "frametop-instruments")
+        self._old_layout = ft_layout.LAYOUT_PATH
+        self._old_profiles = ft_layout.PROFILES_PATH
+        self._old_conf = ft_layout.CONF_PATH
+        self._old_idir = ft_layout.INSTRUMENTS_DIR
+        ft_layout.LAYOUT_PATH = self.layout_path
+        ft_layout.PROFILES_PATH = self.profiles_path
+        ft_layout.CONF_PATH = os.path.join(self.tmp.name, "frametop.conf")
+        ft_layout.INSTRUMENTS_DIR = self.instruments_dir
+        with open(ft_layout.CONF_PATH, "w") as f:
+            f.write("BACKEND=screens\n")
+        ft_layout.save_layout({
+            "auto": True,
+            "mode": "custom",
+            "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
+            "screens": [
+                {"size": [1920, 1080], "metres": 2.4, "scale": 1.0, "curve": 0,
+                 "pos": [0, 0, -2], "face": [0, 0], "roll": 0, "opacity": 1.0},
+            ],
+        })
+
+    def tearDown(self):
+        ft_layout.LAYOUT_PATH = self._old_layout
+        ft_layout.PROFILES_PATH = self._old_profiles
+        ft_layout.CONF_PATH = self._old_conf
+        ft_layout.INSTRUMENTS_DIR = self._old_idir
+        self.tmp.cleanup()
+
+    def test_known_type_and_defaults(self):
+        self.assertIn("image", ft_layout.KNOWN_INSTRUMENT_TYPES)
+        img = ft_layout.default_image_instrument()
+        self.assertEqual(img["type"], "image")
+        self.assertEqual(img["metres"], ft_layout.DEFAULT_IMAGE_METRES)
+        self.assertEqual(img["path"], "")
+        self.assertFalse(img["enabled"])
+
+    def test_normalize_keeps_path(self):
+        raw = {
+            **ft_layout.default_image_instrument(),
+            "enabled": True,
+            "path": "/tmp/frametop-instruments/image.png",
+            "metres": 0.6,
+        }
+        inst = ft_layout.normalize_instrument(raw)
+        self.assertIsNotNone(inst)
+        self.assertEqual(inst["path"], "/tmp/frametop-instruments/image.png")
+        self.assertEqual(inst["metres"], 0.6)
+        self.assertNotIn("color", inst)
+
+    def test_install_copies_png(self):
+        src = os.path.join(self.tmp.name, "photo.png")
+        _minimal_png(src)
+        dest = ft_layout.install_instrument_image(src)
+        self.assertTrue(os.path.isfile(dest))
+        self.assertEqual(os.path.basename(dest), "image.png")
+        self.assertTrue(dest.startswith(self.instruments_dir))
+        with open(dest, "rb") as f:
+            self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+
+    def test_install_second_image_keeps_first(self):
+        src = os.path.join(self.tmp.name, "a.png")
+        _minimal_png(src, (255, 0, 0, 255))
+        first = ft_layout.install_instrument_image(src, "image")
+        src2 = os.path.join(self.tmp.name, "b.png")
+        _minimal_png(src2, (0, 255, 0, 128))
+        second = ft_layout.install_instrument_image(src2, "image-2")
+        self.assertTrue(os.path.isfile(first))
+        self.assertTrue(os.path.isfile(second))
+        self.assertEqual(os.path.basename(second), "image-2.png")
+        self.assertNotEqual(first, second)
+
+    def test_next_image_id_and_multi(self):
+        layout = ft_layout.load_layout()
+        self.assertEqual(ft_layout.next_image_instrument_id(layout), "image")
+        layout = ft_layout.upsert_instrument(layout, ft_layout.default_image_instrument("image"))
+        self.assertEqual(ft_layout.next_image_instrument_id(layout), "image-2")
+        layout = ft_layout.upsert_instrument(layout, {
+            **ft_layout.default_image_instrument("image-2"),
+            "enabled": True,
+            "path": "/tmp/x.gif",
+        })
+        ids = [i["id"] for i in ft_layout.instruments_from_layout(layout) if i["type"] == "image"]
+        self.assertEqual(ids, ["image", "image-2"])
+        self.assertTrue(ft_layout.is_image_instrument_id("image-2"))
+        self.assertFalse(ft_layout.is_image_instrument_id("image2"))
+        self.assertEqual(ft_layout.instrument_type_for_id("image-2"), "image")
+
+    def test_media_keeps_color(self):
+        media = ft_layout.normalize_instrument({
+            **ft_layout.default_media_instrument(),
+            "color": "#FFB000",
+            "enabled": True,
+        })
+        self.assertEqual(media["color"], "#FFB000")
+        self.assertEqual(ft_layout.DEFAULT_INSTRUMENT_COLOR, "#39FF14")
+
+    def test_install_rejects_unknown(self):
+        src = os.path.join(self.tmp.name, "note.txt")
+        with open(src, "w") as f:
+            f.write("nope")
+        with self.assertRaises(ValueError):
+            ft_layout.install_instrument_image(src)
+
+    def test_install_same_path_noop(self):
+        src = os.path.join(self.tmp.name, "photo.png")
+        _minimal_png(src)
+        dest = ft_layout.install_instrument_image(src, "image")
+        again = ft_layout.install_instrument_image(dest, "image")
+        self.assertEqual(dest, again)
+        self.assertTrue(os.path.isfile(dest))
+
+    def test_spatial_payload_includes_path(self):
+        entry = {
+            **ft_layout.default_image_instrument(),
+            "enabled": True,
+            "path": os.path.join(self.instruments_dir, "image.gif"),
+            "pos": [0, 0.1, -1],
+            "face": [0, 0],
+            "roll": 0,
+        }
+        payload = ft_layout.spatial_instrument(entry)
+        self.assertEqual(payload["type"], "image")
+        self.assertEqual(payload["path"], entry["path"])
+
+    def test_roundtrip_layout(self):
+        layout = ft_layout.load_layout()
+        img = ft_layout.default_image_instrument()
+        img.update({
+            "enabled": True,
+            "path": os.path.join(self.instruments_dir, "image.png"),
+            "metres": 0.55,
+            "pos": [0.2, 0.1, -1.2],
+            "face": [0, 0],
+            "roll": 0,
+        })
+        layout = ft_layout.upsert_instrument(layout, img)
+        ft_layout.save_layout(layout)
+        again = ft_layout.instrument_entry(ft_layout.load_layout(), "image")
+        self.assertTrue(again["enabled"])
+        self.assertEqual(again["path"], img["path"])
+        self.assertAlmostEqual(again["metres"], 0.55)
+
+    def test_media_texture_has_no_transport_bar(self):
+        # Media glyphs float without the opaque strip that flickered under marquee uploads.
+        src = (ROOT / "screens" / "vr.cpp").read_text(encoding="utf-8", errors="replace")
+        start = src.find("void RefreshMediaTexture")
+        end = src.find("int MediaHitButton")
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+        body = src[start:end]
+        self.assertIn("DrawMediaIcon", body)
+        self.assertNotIn("FillInstrumentRect(inst.pixels, w, h, 8, by - 4", body)
 
 
 if __name__ == "__main__":

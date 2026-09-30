@@ -35,24 +35,25 @@ Every screen is an overlay named `frametop.screen.N` with under-chrome controls:
 - `.bar` moves the screen. Drag it with any laser or with the 3D mouse, whose right-drag tilts. Scrolling while you drag pushes the screen away or pulls it closer, along the line from your head.
 - `.curve` bends the screen into a cylinder around you, using your current distance as the radius, or makes it flat again.
 - `.roll` rolls the screen when you drag it sideways, like a knob. It snaps level within 2.5°, and scrolling on it turns 5° per notch.
-- Aurora/passthrough has no public OpenVR API for overlay apps, so there is no Frametop button for it. SteamVR's digital on-screen keyboard is not exposed in Frametop chrome for now.
+- SteamVR Aurora / Room View (passthrough) has no public OpenVR toggle for overlay apps, so there is no Frametop chrome button for them. Custom 360° compositor backgrounds are a separate SteamVR setting (`steamvr.background` / `steamvr.environmentMode`); use `scripts/frame-background` on the Frame. SteamVR's digital on-screen keyboard is not exposed in Frametop chrome for now.
 - `.resize`, the tab on the bottom right corner, sets the width. Screens go down to 15 cm wide.
 - `.anchor` cycles world / head-soft / yaw-follow / position-follow; profile slot circles 1–6 sit on the left of the bar.
 
-**Spatial Instruments** live outside the virtual displays as ambient overlays (not KDE windows). Display Settings → Spatial Instruments configures them. Types: **Clock** (`HH:MM`), **Date** (`TUE 29 SEP`), **Battery** (five-segment headset charge), **Device storage** (summed internal mounts), **SD card** (`mmcblk*`), and **Media** (MPRIS now-playing + prev/play-pause/next via `@frametop_mpris`). Clock, Date, and Battery support a configurable `#RRGGBB` colour. Instruments reuse screen-style anchors, gaze attention opacity, and the same shared visibility rules as the displays (including hiding during a VR game when Always + “hide during games” is in effect, unless the dashboard or hide hotkey brings them back). Aim a controller laser at an instrument to reveal its move bar; Media also accepts laser clicks on its transport buttons. Layout/profile JSON may include an `instruments` array; older files without that key still load.
+**Spatial Instruments** live outside the virtual displays as ambient overlays (not KDE windows). Display Settings → Spatial Instruments configures them. Types: **Clock** (`HH:MM`), **Date** (`TUE 29 SEP`), **Battery** (five-segment headset charge), **Device storage** (summed internal mounts), **SD card** (`mmcblk*`), **Media** (MPRIS now-playing + prev/play-pause/next via `@frametop_mpris`), **Image** (floating PNG/JPEG/GIF with alpha; multiple as `image`, `image-2`, …), and **Launcher** (floating spatial shortcut; multiple as `launcher`, `launcher-2`, … — Application / Frametop action / custom command; app icon by default; gaze highlights only; laser-click activates via `@frametop_launch` inside the nested Plasma session). Clock, Date, Battery, and Media support CRT/phosphor `#RRGGBB` colours (default CRT green `#39FF14`). Instruments reuse screen-style anchors, gaze attention opacity, and the same shared visibility rules as the displays. Aim a controller laser at an instrument (or its always-present move bar) to brighten chrome; Media transport and Launcher icons take content clicks (move bar stays for reposition). Layout/profile JSON may include an `instruments` array; Image/Launcher custom art uses `path` under `~/.config/frametop-instruments/`. Applying a profile **replaces** the instruments list. Older files without instruments still load.
 
 The controls are sized from both the screen's width and its distance from you, follow the surface of a curved screen, and stay invisible until a laser or the 3D mouse's cursor lands on one or comes within about 1.5 times a button's size of it. While invisible they're still there, fully transparent, so SteamVR's laser can find them. They're translucent until a laser is on them, like SteamVR's own window controls.
 
 To pin a screen to a wrist, carry it by its bar and sweep the laser across your other controller. A ring around that controller marks the target, and a dot shows where the laser passes. Crossing the ring arms the pin, and the ring and bar turn blue; crossing it again disarms it. When you let go while armed, the screen rides on that controller at the size, distance, and angle it had, so you can arm the pin first and then turn the screen the way you want. Grab a pinned screen's bar to adjust it; it goes back to the same wrist when you let go unless you disarm it. A pinned screen shows only while you're looking at its front, within the wrist angle, and fades out over the last 10°.
 
-The Visibility & wrist tab of Frametop Display Settings decides when the screens show:
+The Visibility tab of Frametop Display Settings decides when the screens show:
 
 - Always. Meta+Shift+H, the Hide/Show Screens menu entry, or a mapped mouse button hides them.
 - Only while the SteamVR dashboard is open.
+- Hide whenever the SteamVR dashboard opens (`except_dashboard`): screens stay up normally, then hide so Steam UI has the view; Meta+Shift+H shows them anyway while the dashboard is open.
 - While you look at a chosen controller (the wrist gesture).
 - Only after you show them with the hotkey.
 
-In the last three modes the hotkey shows the screens anyway. Two more settings on the same tab cover VR games, which ft-screens detects as SteamVR scene apps:
+In dashboard / except_dashboard / gesture / toggle modes the hotkey can force-show (or, for except_dashboard with the dashboard closed, force-hide like Always). Two more settings on the same tab cover VR games, which ft-screens detects as SteamVR scene apps:
 
 - During VR games, the Always mode hides the screens and Spatial Instruments unless the dashboard is open (the default), or leaves them up.
 - Controllers on the screens. Visible screens can keep SteamVR's laser mouse on, so controllers work them with the dashboard closed, but that also takes the controllers away from a game. By default this is off while a VR game runs, and the 3D mouse or the dashboard works the screens. The other choices are always on, or only with the dashboard open, which also suits flatscreen games since they aren't scene apps.
@@ -67,7 +68,7 @@ ft-screens listens for datagrams on the abstract socket `@ft_screens` and replie
 place N x y z yaw pitch roll     width N metres          curve N radius|on|off
 pin N|all left|right [matrix]    unpin N|all             size N w h
 get N    screens    head    state    key code value    scale N s
-visibility always|dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
+visibility always|dashboard|except_dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
 hide | show | toggle    controllers always|outside_games|dashboard    ingames hide|visible
 ```
 
@@ -106,6 +107,7 @@ pointer/helper/build.sh && pointer/helper/run.sh install
 pointer/helper/run.sh status | log | restart
 pointer/driver/install.sh probe     # devices, hand roles, who owns the dashboard pointer
 scripts/recover-vr.sh --yes        # if SteamVR black-screens after enabling the pointer
+                                   # also clears an empty steamvr-pending.path (realpath: '')
 ```
 
 The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `POINTER_IDLE`, `POINTER_WAKE_COUNTS`, `POINTER_CONTROLLER_PICKUP`, `POINTER_DISTANCE`, `POINTER_CURSOR_DEG`, `POINTER_ORIGIN_FRACTION`, `POINTER_ORIGIN_MARGIN`, `POINTER_SCENE_RADIUS`, `POINTER_EDGE_REACH`, `POINTER_LASER_WIDTH`, the head follow settings `POINTER_FOLLOW`, `POINTER_LEASH_DEG`, `POINTER_LEASH_DELAY`, `POINTER_LEASH_RETURN`, and `POINTER_FOLLOW_REACH`, and the gaze mode settings `POINTER_GAZE`, `POINTER_GAZE_RETAKE`, `POINTER_GAZE_NUDGE_MAX`, `POINTER_GAZE_HOLD`, and `POINTER_GAZE_SHOW`. The example config explains each. Frametop Input Settings changes them live; after editing the file by hand, restart the relay or the helper.
@@ -131,10 +133,11 @@ The desktop's own screen arrangement follows where the screens are around you, w
 
 Frametop Display Settings has tabs for:
 
-- Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), active/idle opacity (0–100%), optional true-eye gaze attention with fade-in and fade-out speeds (head-soft follow freezes while gaze-focused so reading does not slide the panel — yaw/position follow keep moving), its scale, whether it's curved, anchor/follow mode, and whether it has the taskbar. Resolution, width, curve, and opacity apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
-- Spatial Instruments: Clock, Date, Battery, Device storage, SD card, and Media ambient overlays (screens backend).
+- Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), active/idle opacity (0–100%; looking is never dimmer than idle), optional true-eye gaze attention with fade-in and fade-out speeds (while the SteamVR dashboard is open and eye gaze works, Frametop hides panels you are not looking at so Steam/stream UI can sit in front; head-soft follow freezes while gaze-focused so reading does not slide the panel — yaw/position follow keep moving), its scale, whether it's curved, anchor/follow mode, and whether it has the taskbar. Resolution, width, curve, and opacity apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
 - Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. Named spatial profiles (same screen count; pose, metres, curve, anchors, active/idle opacity, attention) can be saved, applied (default 450 ms transition), and assigned to slots 1–6 for the VR chrome buttons. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
-- Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, soft head / yaw-follow / position-follow, or unpin them.
+- Visibility: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, soft head / yaw-follow / position-follow, or unpin them.
+- Background: SteamVR’s passive skybox (Aurora procedural, stock Night Mountains / Aurora Sky, or a custom equirectangular image). Uses `scripts/frame-background` on the host; see [FRAME-BACKGROUND.md](README/FRAME-BACKGROUND.md). Open with `FT_DISPLAY_PAGE=background`.
+- Spatial Instruments: grid of cards whose previews match ft-screens’ real draw path (seven-segment clock, pixel+segment date, five battery blocks, storage/SD bars, media transport). Enable on the card; **Configure…** opens a settings dialog. **Add Image** / **Add Launcher** at the top.
 
 `layout/ft-layout` does the arranging. It's a Python script that uses only the standard library and runs on the host:
 
@@ -148,7 +151,16 @@ layout/ft-layout gaze state              # eye tracking + GazeTarget (attention 
 layout/ft-layout gaze debug on|off
 layout/ft-layout gaze fallback head|off  # explicit head fallback (debug only)
 layout/ft-layout instrument list|state [--json]
-layout/ft-layout instrument enable|disable|recenter clock|battery|storage|sd|date|media
+layout/ft-layout instrument enable|disable|recenter clock|battery|…|image-N|launcher-N
+layout/ft-layout instrument file image|image-N|launcher|launcher-N PATH
+layout/ft-layout instrument add image|launcher
+layout/ft-layout instrument remove image-N|launcher-N
+layout/ft-layout instrument desktop launcher-N DESKTOP_ID
+layout/ft-layout instrument semantic launcher-N ACTION
+layout/ft-layout instrument command launcher-N [--shell] …
+layout/ft-layout instrument appearance launcher-N app|glyph|image|fallback …
+layout/ft-layout instrument activate launcher-N
+layout/ft-layout apps list [--json] [--search Q]
 layout/ft-layout toggle                  # hide or show all screens
 layout/ft-layout pin N|all left|right|head|head-rigid|yaw-follow|position-follow
 layout/ft-layout profile list [--json]
@@ -164,7 +176,7 @@ layout/ft-layout action list [--json]
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
 
-Spatial Instruments (Clock, Date, Battery, Device storage, SD card, Media) are stored in the active layout's `instruments` array and in named profiles. Missing `instruments` means none. Unknown `type` values are skipped safely. Media needs `session/ft-mpris.py` running in the nested session (`@frametop_mpris`).
+Spatial Instruments (Clock, Date, Battery, Device storage, SD card, Media, Image, Launcher) are stored in the active layout's `instruments` array and in named profiles. Missing `instruments` means none (profile apply clears them). Unknown `type` values are skipped safely. Media needs `session/ft-mpris.py` (`@frametop_mpris`). Launcher needs `session/ft-launch.py` (`@frametop_launch`); each activation loads `plasmashell.env` so apps open on the existing nested displays (SVG app icons are rasterized into `~/.config/frametop-instruments/`). Image/Launcher custom art copies under the same instruments dir (`ft-layout instrument file …` / `appearance … image`).
 
 The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json` (includes optional `slots` 1–6). Soft head follow lag is `FOLLOW_LAG_MS` in `~/.config/frametop.conf` (default 120). `/tmp/frametop-layout.log` has the run from the last desktop start.
 
@@ -179,6 +191,16 @@ It listens on port 5900 on the Frame's Tailscale address only, not the LAN, so i
 No VNC server can capture KWin on SteamOS directly: `krfb` needs `xdg-desktop-portal-kde`, which SteamOS doesn't ship, and `wayvnc` only works with wlroots compositors. So `session/remote-desktop.sh` captures the desktop with KDE's `krdpserver --plasma` on `127.0.0.1:3390`, and `session/vnc-bridge.sh` runs TigerVNC's `Xvnc` on display `:20` with a full-screen FreeRDP client inside it and serves that. Both run in the `dev` container, and the extra hop adds a little latency.
 
 With remote access on, the nested KWin runs with `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`, so any app in the Frametop desktop could capture its screen or inject input. This applies only to that desktop, not the stock one. Port 3389 is SteamOS's own `xrdp`, which starts a separate X11 session rather than showing the VR desktop.
+
+## SteamVR compositor background (Frame)
+
+The passive sky behind the dashboard is SteamVR’s own compositor environment, not SteamVR Home and not Frametop.
+
+- **Aurora** (`environmentMode=1`): procedural shaders under `/opt/steamvr/resources/shaders/.../distort_geom_aurora_*`, with knobs `auroraPalette`, `auroraSpeed`, `auroraHeight`, `auroraLightShafts`, etc.
+- **Image** (`environmentMode=0`): latlong/equirect PNG path in `steamvr.background`. Stock assets live in `/opt/steamvr/resources/backgrounds/` (`aurorasky.png` 4096×2048, `night_mountains.png` 8192×4096). The compositor logs `Loading background skybox texture async '…'` and reloads live when the setting changes.
+- User settings: `~/.config/openvr/config/steamvr.vrsettings`. Optional dome projection: `backgroundUseDomeProjection`, `backgroundCameraHeight`, `backgroundDomeRadius`.
+
+Steam Frame’s dashboard UI still has Environment Style Image/Aurora, but hides solid-color background presets (`VRHTML.IsSteamFrame()`). Custom paths work through settings. Helper: `scripts/frame-background` (see `docs/README/FRAME-BACKGROUND.md`).
 
 ## Limits
 

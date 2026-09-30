@@ -1,4 +1,4 @@
-# Rebuild Screens On Frame
+# REBUILD-SCREENS-ON-FRAME
 
 Rebuilds `ft-screens` on the Steam Frame inside the `dev` distrobox.
 

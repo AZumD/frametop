@@ -9,24 +9,33 @@ the dev container:
     when the desktop starts again. (gamescope backend: one shared resolution, at most
     1920x1080 worth of pixels, rotation for portrait.)
   - Visibility (ft-screens): when the screens show (always, only with the SteamVR
-    dashboard open, while you look at a controller, or only when toggled), the wrist
-    angle within which a pinned screen shows, and pin or unpin all screens.
+    dashboard open, hide whenever the dashboard opens, while you look at a controller,
+    or only when toggled), the wrist angle within which a pinned screen shows, and pin
+    or unpin all screens.
+  - Spatial Instruments (ft-screens): grid of ambient overlays (Clock, Date, Battery,
+    storage, Media, Image, Launcher) with example previews; Configure opens a sheet.
   - Layout: a preset (curved or flat, rows, distance, gap, height) or the arrangement
     captured from where the screens are now, with a preview; arrange now; save the
     current arrangement; arrange automatically when the desktop starts.
+  - Background: SteamVR compositor skybox (Aurora / stock equirect / custom 360° image)
+    via scripts/frame-background on the host.
+Tab order: Screens → Layout → Visibility → Background → Spatial Instruments.
 Settings go to ~/.config/frametop.conf and ~/.config/frametop-layout.json. Anything
-that touches SteamVR runs layout/ft-layout on the host.
+that touches SteamVR runs layout/ft-layout (or frame-background) on the host.
 Launch with display-settings/ft-display-settings (host wrapper).
 """
 import os
+import json
 import shutil
 import socket
+import subprocess
 import sys
 
 from PySide6.QtCore import Property, QObject, QProcess, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LAYOUT_DIR = os.path.join(HERE, "..", "layout")
@@ -34,6 +43,10 @@ sys.path.insert(0, LAYOUT_DIR)
 import ft_layout  # noqa: E402  (pure Python: the same geometry ft-layout uses)
 
 FT_LAYOUT = os.path.join(LAYOUT_DIR, "ft-layout")
+FRAME_BACKGROUND = os.path.join(HERE, "..", "scripts", "frame-background")
+BACKGROUND_DIR = os.path.join(
+    os.path.expanduser("~"), ".config", "openvr", "config", "frametop-backgrounds"
+)
 DESKTOPS = os.path.join(HERE, "..", "desktops.sh")
 CONF_PATH = ft_layout.CONF_PATH
 FT_SCREENS = "\0ft_screens"
@@ -48,6 +61,11 @@ SCREEN_RESOLUTIONS = [(1920, 1080, ""), (2560, 1440, ""), (3840, 2160, "4K"), (2
                       (2160, 3840, "portrait 4K")]
 SCALES = [0.75, 1.0, 1.25, 4 / 3, 1.5, 1.75, 2.0]
 ROTATIONS = [("normal", "Landscape"), ("left", "Portrait"), ("right", "Portrait (flipped)")]
+BACKGROUND_PRESETS = [
+    {"id": "aurora", "text": "Aurora (procedural)"},
+    {"id": "night_mountains", "text": "Night Mountains"},
+    {"id": "aurorasky", "text": "Aurora Sky (still image)"},
+]
 
 
 def write_conf_value(key, value):
@@ -80,6 +98,67 @@ def host_command(*cmd):
     return ["env", f"DBUS_SESSION_BUS_ADDRESS={bus}", "distrobox-host-exec"] + list(cmd)
 
 
+def resolve_image_source_path(url_or_path):
+    """Turn a FileDialog url/path into a local filesystem path.
+
+    Display Settings runs in distrobox; the picker may return file:// URLs, percent-encoded
+    paths, or portal document paths. Prefer a real path the host can open.
+    """
+    from PySide6.QtCore import QFile, QIODevice
+
+    if isinstance(url_or_path, QUrl):
+        url = QUrl(url_or_path)
+    else:
+        raw = str(url_or_path or "").strip()
+        if not raw:
+            return ""
+        # QML selectedFile.toString() is usually file:///…; plain paths also appear.
+        if raw.startswith("file:") or "://" in raw:
+            url = QUrl(raw)
+        else:
+            url = QUrl.fromLocalFile(os.path.expanduser(raw))
+
+    local = url.toLocalFile() if url.isValid() else ""
+    if local:
+        local = os.path.expanduser(local)
+        if os.path.isfile(local):
+            return os.path.abspath(local)
+
+    # Portal / FUSE doc paths: QFile can often read them when os.path.isfile cannot
+    # (or the path only resolves briefly). Materialize into /tmp for the host copy.
+    qf = QFile(url.toString() if url.isValid() else (local or ""))
+    if qf.open(QIODevice.ReadOnly):
+        data = bytes(qf.readAll())
+        qf.close()
+        if data:
+            name = url.fileName() if url.isValid() else ""
+            ext = os.path.splitext(name or local or "")[1].lower()
+            if ext not in (".png", ".gif", ".jpg", ".jpeg", ".bmp", ".webp", ".hdr", ".exr", ".hdri"):
+                # Sniff a few magic bytes when the dialog strips the extension.
+                if data[:6] in (b"GIF87a", b"GIF89a"):
+                    ext = ".gif"
+                elif data[:8] == b"\x89PNG\r\n\x1a\n":
+                    ext = ".png"
+                elif data[:2] == b"\xff\xd8":
+                    ext = ".jpg"
+                elif data[:10].startswith(b"#?RADIANCE") or data[:6] == b"#?RGBE":
+                    ext = ".hdr"
+                else:
+                    ext = ".png"
+            tmp_dir = os.path.join(os.path.expanduser("~"), ".cache", "frametop")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp = os.path.join(tmp_dir, f"image-pick-{os.getpid()}{ext}")
+            with open(tmp, "wb") as f:
+                f.write(data)
+            return tmp
+
+    # Last resort: return the absolute path so host-side ft-layout can try
+    # (e.g. /run/media/... visible on the host but not in the container).
+    if local:
+        return os.path.abspath(local) if os.path.isabs(local) else local
+    return ""
+
+
 class Backend(QObject):
     changed = Signal()
     busyChanged = Signal()
@@ -91,13 +170,30 @@ class Backend(QObject):
         self._proc = None
         self._running = False
         self._running_count = 0
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        self._sock.bind("")  # an abstract address ft-screens can reply to
-        self._sock.settimeout(1.0)
+        # Abstract UNIX datagram to ft-screens. Missing on Windows (PC edit/test) —
+        # Backend still works for QML API / background helpers that shell out.
+        self._sock = None
+        if hasattr(socket, "AF_UNIX"):
+            try:
+                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._sock.bind("")  # an abstract address ft-screens can reply to
+                self._sock.settimeout(1.0)
+            except OSError:
+                self._sock = None
         self._started = {}  # conf values the running desktop started with
+        self._bg = {
+            "mode": "",
+            "preset": "",
+            "background": "",
+            "exists": False,
+            "width": 0,
+            "height": 0,
+            "error": "",
+        }
         self.poll = QTimer(interval=3000, timeout=self._check_running)
-        self.poll.start()
-        self._check_running()
+        if hasattr(os, "getuid"):
+            self.poll.start()
+            self._check_running()
 
     # --- state ---
     def _conf(self):
@@ -113,6 +209,8 @@ class Backend(QObject):
     def _check_running(self):
         # The session's own Wayland socket (host processes' environments aren't readable
         # from the container, so ft_layout.nested_env() doesn't work here).
+        if not hasattr(os, "getuid"):
+            return
         running = os.path.exists(f"/run/user/{os.getuid()}/frametop/wayland-0")
         count = self._screens_running() if running and ft_layout.backend() == "screens" else 0
         if running != self._running or count != self._running_count:
@@ -123,6 +221,8 @@ class Backend(QObject):
 
     def _ask_screens(self, text):
         """Request/reply to ft-screens; None if it isn't running."""
+        if self._sock is None:
+            return None
         try:
             self._sock.sendto(text.encode(), FT_SCREENS)
             return self._sock.recv(4096).decode()
@@ -241,22 +341,69 @@ class Backend(QObject):
 
     def _instrument_card(self, iid):
         layout = ft_layout.load_layout()
-        inst = ft_layout.instrument_entry(layout, iid) or ft_layout.default_instrument(iid)
+        itype = ft_layout.instrument_type_for_id(iid) or iid
+        inst = ft_layout.instrument_entry(layout, iid) or (
+            ft_layout.default_image_instrument(iid) if itype == "image"
+            else ft_layout.default_launcher_instrument(iid) if itype == "launcher"
+            else ft_layout.default_instrument(itype))
         att = inst.get("attention") or {}
-        default_m = (ft_layout.DEFAULT_BATTERY_METRES if iid == "battery"
-                     else ft_layout.DEFAULT_STORAGE_METRES if iid in ("storage", "sd")
-                     else ft_layout.DEFAULT_DATE_METRES if iid == "date"
-                     else ft_layout.DEFAULT_MEDIA_METRES if iid == "media"
+        default_m = (ft_layout.DEFAULT_BATTERY_METRES if itype == "battery"
+                     else ft_layout.DEFAULT_STORAGE_METRES if itype in ("storage", "sd")
+                     else ft_layout.DEFAULT_DATE_METRES if itype == "date"
+                     else ft_layout.DEFAULT_MEDIA_METRES if itype == "media"
+                     else ft_layout.DEFAULT_IMAGE_METRES if itype == "image"
+                     else ft_layout.DEFAULT_LAUNCHER_METRES if itype == "launcher"
                      else ft_layout.DEFAULT_INSTRUMENT_METRES)
-        return {
+        card = {
+            "id": iid,
+            "type": itype,
             "enabled": bool(inst.get("enabled")),
             "anchor": ft_layout.pin_anchor(inst.get("pin")) or "world",
             "metres": float(inst.get("metres", default_m)),
             "activeOpacity": float(inst.get("active_opacity", 1.0)),
-            "idleOpacity": float(inst.get("idle_opacity", ft_layout.DEFAULT_INSTRUMENT_IDLE)),
+            "idleOpacity": float(inst.get("idle_opacity",
+                                          ft_layout.DEFAULT_LAUNCHER_IDLE if itype == "launcher"
+                                          else ft_layout.DEFAULT_INSTRUMENT_IDLE)),
             "attentionEnabled": bool(att.get("enabled", True)),
             "color": ft_layout.normalize_instrument_color(inst.get("color")),
         }
+        if itype == "image":
+            path = str(inst.get("path") or "")
+            card["path"] = path
+            card["fileName"] = os.path.basename(path) if path else ""
+            card["label"] = "Image" if iid == "image" else f"Image ({iid})"
+        if itype == "launcher":
+            path = str(inst.get("path") or "")
+            card["path"] = path
+            card["fileName"] = os.path.basename(path) if path else ""
+            card["actionKind"] = inst.get("action_kind") or "application"
+            card["desktopId"] = inst.get("desktop_id") or ""
+            card["semantic"] = inst.get("semantic") or ""
+            card["commandShell"] = bool(inst.get("command_shell"))
+            cmd = inst.get("command") or []
+            card["commandText"] = (" ".join(cmd) if isinstance(cmd, list) else str(cmd or ""))
+            card["appearance"] = inst.get("appearance") or "app"
+            card["glyph"] = inst.get("glyph") or "star"
+            name = inst.get("label") or ""
+            if not name and card["desktopId"]:
+                name = card["desktopId"].replace(".desktop", "")
+            card["label"] = name or (iid if iid != "launcher" else "Launcher")
+            card["title"] = "Launcher" if iid == "launcher" else f"Launcher ({iid})"
+            # Stale app hint for Display Settings.
+            available = True
+            if card["actionKind"] == "application" and card["desktopId"]:
+                try:
+                    import ft_desktop
+                    available = bool(ft_desktop.find_desktop_by_id(card["desktopId"]))
+                except Exception:
+                    available = True
+            card["appAvailable"] = available
+        return card
+
+    @Property("QVariantList", notify=changed)
+    def instrumentColorPresets(self):
+        """Cyberpunk CRT / phosphor colour presets for coloured instruments."""
+        return [{"text": name, "value": value} for name, value in ft_layout.INSTRUMENT_COLOR_PRESETS]
 
     @Property("QVariantMap", notify=changed)
     def clockInstrument(self):
@@ -289,6 +436,46 @@ class Backend(QObject):
         return self._instrument_card("media")
 
     @Property("QVariantList", notify=changed)
+    def imageInstruments(self):
+        """All Image Spatial Instruments (image, image-2, …). Empty list if none configured."""
+        layout = ft_layout.load_layout()
+        items = [i for i in ft_layout.instruments_from_layout(layout) if i.get("type") == "image"]
+        if not items:
+            # Show one empty card so the user can enable/upload without Add first.
+            return [self._instrument_card("image")]
+        return [self._instrument_card(i["id"]) for i in items]
+
+    @Property("QVariantList", notify=changed)
+    def launcherInstruments(self):
+        """All Launcher Spatial Instruments (launcher, launcher-2, …)."""
+        layout = ft_layout.load_layout()
+        items = [i for i in ft_layout.instruments_from_layout(layout) if i.get("type") == "launcher"]
+        return [self._instrument_card(i["id"]) for i in items]
+
+    @Property("QVariantList", notify=changed)
+    def installedApps(self):
+        """Visible .desktop applications for the Launcher chooser."""
+        try:
+            import ft_desktop
+            apps = ft_desktop.list_applications()
+        except Exception:
+            return []
+        return [{"id": a["id"], "name": a["name"], "icon": a.get("icon") or ""} for a in apps]
+
+    @Property("QVariantList", notify=changed)
+    def semanticActions(self):
+        """Frametop/Asterism semantic actions for Launcher action type."""
+        return [{"id": a, "label": ft_layout.ACTION_LABELS.get(a, a)} for a in ft_layout.SEMANTIC_ACTIONS]
+
+    @Property("QVariantList", notify=changed)
+    def launcherGlyphs(self):
+        try:
+            import ft_desktop
+            return list(ft_desktop.LAUNCHER_GLYPHS)
+        except Exception:
+            return ["star", "play", "terminal", "gear"]
+
+    @Property("QVariantList", notify=changed)
     def plan(self):
         """The arrangement in the head frame, for the preview."""
         layout = ft_layout.load_layout()
@@ -306,6 +493,181 @@ class Backend(QObject):
     @Property(str, notify=busyChanged)
     def busy(self):
         return self._busy
+
+    # --- SteamVR compositor background (host frame-background CLI) ---
+    @Property("QVariantList", constant=True)
+    def backgroundPresets(self):
+        return list(BACKGROUND_PRESETS)
+
+    @Property(str, notify=changed)
+    def backgroundMode(self):
+        return self._bg.get("mode") or ""
+
+    @Property(str, notify=changed)
+    def backgroundPreset(self):
+        return self._bg.get("preset") or ""
+
+    @Property(str, notify=changed)
+    def backgroundPath(self):
+        return self._bg.get("background") or ""
+
+    @Property(str, notify=changed)
+    def backgroundFileName(self):
+        path = self._bg.get("background") or ""
+        return os.path.basename(path) if path else ""
+
+    @Property(bool, notify=changed)
+    def backgroundExists(self):
+        return bool(self._bg.get("exists"))
+
+    @Property(str, notify=changed)
+    def backgroundSizeText(self):
+        w, h = int(self._bg.get("width") or 0), int(self._bg.get("height") or 0)
+        if not w or not h:
+            return ""
+        ratio = w / h
+        note = " (~2:1 equirect)" if abs(ratio - 2.0) < 0.15 else f" (ratio {ratio:.2f}; prefer ~2:1)"
+        return f"{w} × {h}{note}"
+
+    @Property(str, notify=changed)
+    def backgroundError(self):
+        return self._bg.get("error") or ""
+
+    @Property(str, constant=True)
+    def backgroundDirectory(self):
+        return BACKGROUND_DIR
+
+    @Property(str, constant=True)
+    def backgroundDirectoryUrl(self):
+        """file:// URL for FileDialog.currentFolder."""
+        return QUrl.fromLocalFile(BACKGROUND_DIR).toString()
+
+    def _frame_background_argv(self, *args):
+        return host_command("python3", os.path.abspath(FRAME_BACKGROUND), *args)
+
+    def _apply_background_status(self, data, error=""):
+        self._bg = {
+            "mode": str(data.get("mode") or ""),
+            "preset": str(data.get("preset") or ""),
+            "background": str(data.get("background") or ""),
+            "exists": bool(data.get("exists")),
+            "width": int(data.get("width") or 0),
+            "height": int(data.get("height") or 0),
+            "error": error or "",
+        }
+        self.changed.emit()
+
+    @Slot()
+    def refreshBackground(self):
+        """Read live SteamVR background settings via scripts/frame-background on the host."""
+        argv = self._frame_background_argv("status", "--json")
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=20, check=False
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self._apply_background_status({}, error=str(e))
+            return
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            self._apply_background_status(
+                {},
+                error=err or out or f"exit code {proc.returncode}",
+            )
+            return
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            self._apply_background_status({}, error=out or "invalid JSON from frame-background")
+            return
+        if not isinstance(data, dict):
+            self._apply_background_status({}, error="unexpected status payload")
+            return
+        self._apply_background_status(data)
+
+    def _run_background(self, label, *args):
+        if self._proc is not None:
+            self.message.emit(f"Still busy: {self._busy}", True)
+            return
+        self._busy = label
+        self.busyChanged.emit()
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        argv = self._frame_background_argv(*args)
+        proc.finished.connect(lambda code, _status: self._done_background(proc, label, code))
+        self._proc = proc
+        proc.start(argv[0], argv[1:])
+
+    def _done_background(self, proc, label, code):
+        out = bytes(proc.readAllStandardOutput()).decode(errors="replace").strip()
+        self._proc = None
+        self._busy = ""
+        self.busyChanged.emit()
+        last = out.splitlines()[-1] if out else ""
+        if code == 0:
+            self.message.emit(
+                f"{label}: done" + (f" ({last})" if last and not last.startswith("ok") else ""),
+                False,
+            )
+        else:
+            self.message.emit(f"{label} failed: {last or 'exit code ' + str(code)}", True)
+        self.refreshBackground()
+
+    @Slot(str)
+    def setBackgroundPreset(self, preset_id):
+        """preset_id: aurora | night_mountains | aurorasky"""
+        preset_id = (preset_id or "").strip().lower()
+        if preset_id == "aurora":
+            self._run_background("Background Aurora", "aurora")
+            return
+        if preset_id in ("night_mountains", "aurorasky"):
+            self._run_background("Background image", "set", preset_id)
+            return
+        self.message.emit(f"Unknown background preset: {preset_id}", True)
+
+    @Slot("QVariant")
+    def setBackgroundFile(self, url_or_path):
+        """Apply a custom equirectangular image as the SteamVR skybox."""
+        path = resolve_image_source_path(url_or_path)
+        if not path:
+            self.message.emit("Could not read that file (empty path from the picker)", True)
+            return
+        self._run_background("Background image", "set", path)
+
+    @Slot()
+    def pickBackgroundFile(self):
+        """File picker that starts in frametop-backgrounds/ (QML portal dialogs ignore that)."""
+        self.ensureBackgroundDirectory()
+        if not os.path.isdir(BACKGROUND_DIR):
+            return
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            None,
+            "Choose 360° equirectangular background",
+            BACKGROUND_DIR,
+            "Images (*.png *.jpg *.jpeg *.webp *.hdr *.exr);;All files (*)",
+        )
+        if path:
+            self.setBackgroundFile(path)
+
+    @Slot()
+    def ensureBackgroundDirectory(self):
+        """Create ~/.config/openvr/config/frametop-backgrounds/ if missing."""
+        try:
+            os.makedirs(BACKGROUND_DIR, exist_ok=True)
+        except OSError as e:
+            self.message.emit(f"Could not create background folder: {e}", True)
+
+    @Slot()
+    def openBackgroundDirectory(self):
+        """Open ~/.config/openvr/config/frametop-backgrounds/ in the file manager."""
+        self.ensureBackgroundDirectory()
+        if not os.path.isdir(BACKGROUND_DIR):
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(BACKGROUND_DIR)):
+            self.message.emit(f"Could not open {BACKGROUND_DIR}", True)
+            return
+        self.message.emit(f"Opened {BACKGROUND_DIR}", False)
 
     # --- screens ---
     @Slot(int)
@@ -396,6 +758,8 @@ class Backend(QObject):
     def setScreenOpacities(self, i, active, idle):
         active = max(0.0, min(1.0, float(active)))
         idle = max(0.0, min(1.0, float(idle)))
+        if idle > active:
+            active, idle = idle, active
         def edit(s):
             s["opacity"] = round(active, 3)
             s["active_opacity"] = round(active, 3)
@@ -643,8 +1007,13 @@ class Backend(QObject):
         value = max(0.0, min(1.0, float(value)))
 
         def edit(inst):
-            inst["active_opacity"] = value
-            inst["opacity"] = value
+            idle = float(inst.get("idle_opacity", value))
+            active = value
+            if idle > active:
+                active, idle = idle, active
+            inst["active_opacity"] = active
+            inst["idle_opacity"] = idle
+            inst["opacity"] = active
 
         inst = self._edit_instrument(iid, edit)
         if self._running:
@@ -655,7 +1024,13 @@ class Backend(QObject):
         value = max(0.0, min(1.0, float(value)))
 
         def edit(inst):
-            inst["idle_opacity"] = value
+            active = float(inst.get("active_opacity", 1.0))
+            idle = value
+            if idle > active:
+                active, idle = idle, active
+            inst["active_opacity"] = active
+            inst["idle_opacity"] = idle
+            inst["opacity"] = active
 
         inst = self._edit_instrument(iid, edit)
         if self._running:
@@ -861,9 +1236,173 @@ class Backend(QObject):
     def setMediaAttention(self, enabled):
         self._set_instrument_attention("media", enabled)
 
+    @Slot(str)
+    def setMediaColor(self, color):
+        self._set_instrument_color("media", color)
+
     @Slot()
     def recenterMedia(self):
         self._recenter_instrument("media", "Media")
+
+    @Slot(str, bool)
+    def setImageEnabled(self, iid, enabled):
+        self._set_instrument_enabled(iid or "image", "Image", enabled)
+
+    @Slot(str, str)
+    def setImageAnchor(self, iid, mode):
+        self._set_instrument_anchor(iid or "image", mode)
+
+    @Slot(str, float)
+    def setImageMetres(self, iid, metres):
+        self._set_instrument_metres(iid or "image", metres)
+
+    @Slot(str, float)
+    def setImageActiveOpacity(self, iid, value):
+        self._set_instrument_active_opacity(iid or "image", value)
+
+    @Slot(str, float)
+    def setImageIdleOpacity(self, iid, value):
+        self._set_instrument_idle_opacity(iid or "image", value)
+
+    @Slot(str, bool)
+    def setImageAttention(self, iid, enabled):
+        self._set_instrument_attention(iid or "image", enabled)
+
+    @Slot(str)
+    def recenterImage(self, iid):
+        self._recenter_instrument(iid or "image", "Image")
+
+    @Slot(str, "QVariant")
+    def setImageFile(self, iid, url_or_path):
+        """Copy a chosen image into ~/.config/frametop-instruments/{iid}.* and push to ft-screens.
+
+        Installs via host ft-layout: the file dialog runs in distrobox, and many paths
+        (Downloads on removable media, portal docs) are only readable on the host.
+        """
+        iid = (iid or "image").strip().lower() or "image"
+        if not ft_layout.is_image_instrument_id(iid):
+            self.message.emit(f"Not an Image id: {iid}", True)
+            return
+        path = resolve_image_source_path(url_or_path)
+        if not path:
+            self.message.emit("Could not read that file (empty path from the picker)", True)
+            return
+
+        def edit(inst):
+            inst["id"] = iid
+            inst["type"] = "image"
+            inst["enabled"] = True
+
+        self._edit_instrument(iid, edit)
+        # Always install on the host so /run/media and home paths resolve.
+        self._run("Image file", "instrument", "file", iid, path)
+
+    @Slot()
+    def addImageInstrument(self):
+        """Allocate image / image-N and enable it."""
+        self._run("Adding Image", "instrument", "add", "image")
+
+    @Slot(str)
+    def removeImageInstrument(self, iid):
+        iid = (iid or "").strip().lower()
+        if not ft_layout.is_image_instrument_id(iid):
+            self.message.emit(f"Not an Image id: {iid}", True)
+            return
+        self._run("Removing Image", "instrument", "remove", iid)
+
+    @Slot()
+    def addLauncherInstrument(self):
+        self._run("Adding Launcher", "instrument", "add", "launcher")
+
+    @Slot(str)
+    def removeLauncherInstrument(self, iid):
+        iid = (iid or "").strip().lower()
+        if not ft_layout.is_launcher_instrument_id(iid):
+            self.message.emit(f"Not a Launcher id: {iid}", True)
+            return
+        self._run("Removing Launcher", "instrument", "remove", iid)
+
+    @Slot(str, bool)
+    def setLauncherEnabled(self, iid, enabled):
+        self._set_instrument_enabled(iid or "launcher", "Launcher", enabled)
+
+    @Slot(str, str)
+    def setLauncherAnchor(self, iid, mode):
+        self._set_instrument_anchor(iid or "launcher", mode)
+
+    @Slot(str, float)
+    def setLauncherMetres(self, iid, metres):
+        self._set_instrument_metres(iid or "launcher", metres)
+
+    @Slot(str, float)
+    def setLauncherActiveOpacity(self, iid, value):
+        self._set_instrument_active_opacity(iid or "launcher", value)
+
+    @Slot(str, float)
+    def setLauncherIdleOpacity(self, iid, value):
+        self._set_instrument_idle_opacity(iid or "launcher", value)
+
+    @Slot(str, bool)
+    def setLauncherAttention(self, iid, enabled):
+        self._set_instrument_attention(iid or "launcher", enabled)
+
+    @Slot(str)
+    def recenterLauncher(self, iid):
+        self._recenter_instrument(iid or "launcher", "Launcher")
+
+    @Slot(str, str)
+    def setLauncherDesktop(self, iid, desktop_id):
+        iid = (iid or "launcher").strip().lower()
+        desktop_id = (desktop_id or "").strip()
+        if not desktop_id:
+            self.message.emit("Pick an application", True)
+            return
+        self._run("Setting Launcher app", "instrument", "desktop", iid, desktop_id)
+
+    @Slot(str, str)
+    def setLauncherSemantic(self, iid, action):
+        iid = (iid or "launcher").strip().lower()
+        action = (action or "").strip()
+        if not action:
+            self.message.emit("Pick a Frametop action", True)
+            return
+        self._run("Setting Launcher action", "instrument", "semantic", iid, action)
+
+    @Slot(str, str, bool)
+    def setLauncherCommand(self, iid, text, shell):
+        iid = (iid or "launcher").strip().lower()
+        text = (text or "").strip()
+        if not text:
+            self.message.emit("Enter a command", True)
+            return
+        if shell:
+            self._run("Setting Launcher command", "instrument", "command", iid, "--shell", text)
+        else:
+            parts = text.split()
+            self._run("Setting Launcher command", "instrument", "command", iid, *parts)
+
+    @Slot(str, str, str)
+    def setLauncherAppearance(self, iid, mode, extra):
+        iid = (iid or "launcher").strip().lower()
+        mode = (mode or "app").strip().lower()
+        extra = (extra or "").strip()
+        args = ["instrument", "appearance", iid, mode]
+        if extra:
+            args.append(extra)
+        self._run("Setting Launcher look", *args)
+
+    @Slot(str, str)
+    def setLauncherImageFile(self, iid, url):
+        iid = (iid or "launcher").strip().lower()
+        path = resolve_image_source_path(url)
+        if not path:
+            self.message.emit("Could not read that image", True)
+            return
+        self._run("Launcher image", "instrument", "appearance", iid, "image", path)
+
+    @Slot(str)
+    def activateLauncher(self, iid):
+        self._run("Activating Launcher", "instrument", "activate", iid or "launcher")
 
     @Slot(str)
     def applyProfile(self, name):
@@ -972,7 +1511,9 @@ class Backend(QObject):
 
 
 def main():
-    app = QGuiApplication(sys.argv)
+    # QApplication (not bare QGuiApplication) so background file picking can use
+    # QFileDialog with a reliable start directory (QML portal FileDialog ignores it).
+    app = QApplication(sys.argv)
     app.setApplicationName("ft-display-settings")
     app.setApplicationDisplayName("Frametop Display Settings")
     app.setDesktopFileName("ft-display-settings")

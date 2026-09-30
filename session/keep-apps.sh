@@ -11,7 +11,7 @@ cg=$(systemctl --user show -p ControlGroup --value "$unit" 2>/dev/null)
 # The desktop's own processes stay in the unit and stop with it: the session, KWin,
 # Plasma, and the session services it started (portals, input methods, kded, wallet...).
 own='^(frametop-sessi|dbus-|startplasma|plasma|kwin|Xwayland|ksmserver|krdpserver|Xvnc|xfreerdp|ft-layout|'
-own+='ft-shell-watch|ft-shell-restar|'
+own+='ft-shell-watch|ft-shell-restar|ft-launch|'
 own+='kded|kactivitymanage|kaccess|kglobalaccel|kscreen|kwalletd|ksecretd|polkit-kde|org_kde_|baloo|'
 own+='xembedsniproxy|gmenudbusmenu|DiscoverNotifie|kimpanel|ibus|xdg-|at-spi|dconf-service|fusermount|agent)'
 keep=()

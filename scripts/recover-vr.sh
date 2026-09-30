@@ -38,6 +38,10 @@ echo "  - stop and disable frametop-pointer.service and frametop-input-relay.ser
 echo "  - clean the input-relay fd store if present"
 echo "  - unregister ft_pointer with vrpathreg (after backing up openvrpaths.vrpath)"
 echo "  - set POINTER=0 in ~/.config/frametop.conf"
+echo "  - remove an empty ~/.config/openvr/steamvr-pending.path if present"
+echo "    (an empty pending path makes \`steamvr path\` fail with realpath: '' and"
+echo "    SteamVR crash-loops into a black screen after the boot logo)"
+echo "  - stop a steamvr.service crash loop so health-check stops turning panels off"
 echo "It leaves layout JSON, profiles, and desktop launcher settings intact."
 echo
 
@@ -109,13 +113,45 @@ else
   echo 'POINTER already off or conf missing (ok)'
 fi
 
+echo '== steamvr-pending.path'
+pending=\$HOME/.config/openvr/steamvr-pending.path
+# An empty pending file makes /usr/bin/steamvr run: realpath \"\" and exit under set -e,
+# so select_steamvr.sh gets an empty path, vrstartup never runs, and steamvr.service
+# crash-loops (health-check then turns the panels off → black screen after boot logo).
+if [ -e \"\$pending\" ] && [ ! -s \"\$pending\" ]; then
+  rm -f \"\$pending\"
+  say 'removed empty ~/.config/openvr/steamvr-pending.path'
+elif [ -s \"\$pending\" ]; then
+  echo \"pending path present: \$(cat \"\$pending\") (left alone; apply on next SteamVR start)\"
+else
+  echo 'no steamvr-pending.path (ok)'
+fi
+
+echo '== steamvr.service crash loop'
+# After HmdNotFound, steamvr-health-check turns panels off and the unit restarts forever.
+# Stop it so the next manual start (headset on) is not racing a health-check.
+if systemctl --user is-active steamvr.service >/dev/null 2>&1 \
+    || systemctl --user is-failed steamvr.service >/dev/null 2>&1 \
+    || systemctl --user show -p ActiveState --value steamvr.service 2>/dev/null | grep -qE 'activat|deactivat'; then
+  systemctl --user stop steamvr.service 2>/dev/null || true
+  systemctl --user reset-failed steamvr.service 2>/dev/null || true
+  # Stuck vrserver -waitformonitor after panels-off.
+  pkill -TERM -x vrserver 2>/dev/null || true
+  sleep 1
+  pkill -KILL -x vrserver 2>/dev/null || true
+  say 'stopped steamvr.service (break crash loop; start it again with the headset on)'
+else
+  echo 'steamvr.service idle (ok)'
+fi
+
 echo
 if [ \$CHANGED -eq 0 ]; then
   echo 'Nothing needed changing.'
 else
   echo 'Summary of changes above (lines starting with CHANGED:).'
 fi
-echo 'Next: reboot the headset, or restart SteamVR yourself, to confirm stock VR boots.'
+echo 'Next: put the headset on, then: systemctl --user start steamvr.service'
+echo 'When vrcompositor is up: desktops.sh start'
 echo 'Re-enable the optional 3D mouse later with:'
 echo '  pointer/driver/install.sh install && pointer/helper/run.sh install'
 echo '  (and desktops.sh relay install if you also disabled the input relay)'

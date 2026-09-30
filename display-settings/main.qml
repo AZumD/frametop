@@ -1,6 +1,7 @@
 // Frametop Display Settings (Kirigami). Backend: ft_display_settings.py ("backend").
 import QtQuick
 import QtQuick.Controls as Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
@@ -13,11 +14,13 @@ Kirigami.ApplicationWindow {
     // Pages as tabs across the top (a side drawer was easy to miss).
     readonly property var pages: backend.backend === "screens"
         ? [{ text: "Screens", icon: "video-display", page: screensPage },
-           { text: "Spatial Instruments", icon: "clock", page: instrumentsPage },
            { text: "Layout", icon: "view-grid", page: layoutPage },
-           { text: "Visibility & wrist", icon: "view-visible", page: visibilityPage }]
+           { text: "Visibility", icon: "view-visible", page: visibilityPage },
+           { text: "Background", icon: "wallpaper", page: backgroundPage },
+           { text: "Spatial Instruments", icon: "clock", page: instrumentsPage }]
         : [{ text: "Screens", icon: "video-display", page: screensPage },
-           { text: "Layout", icon: "view-grid", page: layoutPage }]
+           { text: "Layout", icon: "view-grid", page: layoutPage },
+           { text: "Background", icon: "wallpaper", page: backgroundPage }]
 
     header: Controls.TabBar {
         id: tabs
@@ -30,8 +33,12 @@ Kirigami.ApplicationWindow {
                 onClicked: root.show(modelData.page)
             }
         }
-        Component.onCompleted: currentIndex = ({ instruments: 1, layout: backend.backend === "screens" ? 2 : 1,
-                                                visibility: 3 })[startPage] || 0
+        Component.onCompleted: currentIndex = ({
+            layout: 1,
+            visibility: backend.backend === "screens" ? 2 : 0,
+            background: backend.backend === "screens" ? 3 : 2,
+            instruments: backend.backend === "screens" ? 4 : 0
+        })[startPage] || 0
     }
 
     function show(page) {
@@ -39,9 +46,9 @@ Kirigami.ApplicationWindow {
         pageStack.push(page)
     }
 
-    // FT_DISPLAY_PAGE=layout|visibility|instruments opens the app on that page.
+    // FT_DISPLAY_PAGE=layout|visibility|instruments|background opens the app on that page.
     pageStack.initialPage: ({ layout: layoutPage, visibility: visibilityPage,
-                              instruments: instrumentsPage })[startPage] || screensPage
+                              instruments: instrumentsPage, background: backgroundPage })[startPage] || screensPage
 
     Connections {
         target: backend
@@ -427,6 +434,7 @@ Kirigami.ApplicationWindow {
     Component {
         id: instrumentsPage
         Kirigami.ScrollablePage {
+            id: ipage
             title: "Spatial Instruments"
             property var clock: backend.clockInstrument
             property var date: backend.dateInstrument
@@ -434,6 +442,42 @@ Kirigami.ApplicationWindow {
             property var storage: backend.storageInstrument
             property var sd: backend.sdInstrument
             property var media: backend.mediaInstrument
+            property var images: backend.imageInstruments
+            property var launchers: backend.launcherInstruments
+            property var apps: backend.installedApps
+            property var actions: backend.semanticActions
+            property var glyphs: backend.launcherGlyphs
+            property var colorPresets: backend.instrumentColorPresets
+            property string pendingImageId: "image"
+            property string pendingLauncherFileId: "launcher"
+
+            // Which card's settings sheet is open: "clock"|"date"|… or "image:<id>"|"launcher:<id>"
+            property string editKey: ""
+            property var editImage: null
+            property var editLauncher: null
+
+            readonly property var anchorChoices: [
+                { text: "World", value: "world" },
+                { text: "Position-follow", value: "position-follow" },
+                { text: "Yaw-follow", value: "yaw-follow" },
+                { text: "Head (soft)", value: "head" },
+                { text: "Head (rigid)", value: "head-rigid" }
+            ]
+
+            function openBuiltin(key) { editImage = null; editLauncher = null; editKey = key }
+            function openImage(img) { editLauncher = null; editImage = img; editKey = "image:" + img.id }
+            function openLauncher(ln) { editImage = null; editLauncher = ln; editKey = "launcher:" + ln.id }
+            function closeEdit() { editKey = ""; editImage = null; editLauncher = null }
+
+            // Quiet plate behind instrument previews (VR textures are transparent overlays).
+            component PreviewPlate: Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 4.5
+                color: Qt.rgba(0.07, 0.08, 0.10, 1)
+                radius: 3
+                property bool lit: true
+                opacity: lit ? 1 : 0.35
+            }
 
             ColumnLayout {
                 spacing: Kirigami.Units.largeSpacing
@@ -442,453 +486,1135 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     opacity: 0.75
-                    text: "Spatial Instruments are lightweight ambient information in VR space — "
-                          + "not KDE windows or virtual monitors. Types: Clock (HH:MM), Date "
-                          + "(weekday + day + month), Battery (five-segment headset gauge), "
-                          + "Device storage (summed internal mounts), SD card (mmc), and Media "
-                          + "(MPRIS now-playing with prev / play-pause / next)."
+                    text: "Ambient overlays in VR space — not desktop windows. Previews match what ft-screens "
+                          + "actually draws. Gaze brightens; laser-click a Launcher to open it."
                 }
 
-                Kirigami.FormLayout {
+                RowLayout {
+                    spacing: Kirigami.Units.smallSpacing
+                    Controls.Button {
+                        text: "Add Image"
+                        icon.name: "insert-image"
+                        enabled: backend.busy === ""
+                        onClicked: backend.addImageInstrument()
+                    }
+                    Controls.Button {
+                        text: "Add Launcher"
+                        icon.name: "application-x-executable"
+                        enabled: backend.busy === ""
+                        onClicked: backend.addLauncherInstrument()
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                Controls.Label {
+                    text: "Built-in"
+                    font.bold: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                }
+
+                GridLayout {
                     Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: Kirigami.Units.largeSpacing
+                    rowSpacing: Kirigami.Units.largeSpacing
 
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Clock" }
+                    // Honest previews: same geometry language as screens/vr.cpp instrument textures
+                    // (7-seg digits, 5×7 glyphs, segment battery, usage bar + icon, media transport).
 
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: clock.enabled === true
-                        onToggled: backend.setClockEnabled(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(clock.anchor || "world"))
-                        onActivated: backend.setClockAnchor(currentValue)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((clock.metres !== undefined ? clock.metres : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setClockMetres(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((clock.idleOpacity !== undefined ? clock.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setClockIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((clock.activeOpacity !== undefined ? clock.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setClockActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: clock.attentionEnabled !== false
-                        onToggled: backend.setClockAttention(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Colour:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "Ice", value: "#EBF0F5" },
-                            { text: "White", value: "#FFFFFF" },
-                            { text: "Amber", value: "#FFB84D" },
-                            { text: "Mint", value: "#7DFFB2" },
-                            { text: "Sky", value: "#7EC8FF" },
-                            { text: "Rose", value: "#FF8FA3" },
-                            { text: "Violet", value: "#C5A3FF" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(clock.color || "#EBF0F5"))
-                        onActivated: backend.setClockColor(currentValue)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterClock()
-                    }
-
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Date" }
-
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: date.enabled === true
-                        onToggled: backend.setDateEnabled(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(date.anchor || "world"))
-                        onActivated: backend.setDateAnchor(currentValue)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((date.metres !== undefined ? date.metres : 0.38) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setDateMetres(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((date.idleOpacity !== undefined ? date.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setDateIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((date.activeOpacity !== undefined ? date.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setDateActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: date.attentionEnabled !== false
-                        onToggled: backend.setDateAttention(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Colour:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "Ice", value: "#EBF0F5" },
-                            { text: "White", value: "#FFFFFF" },
-                            { text: "Amber", value: "#FFB84D" },
-                            { text: "Mint", value: "#7DFFB2" },
-                            { text: "Sky", value: "#7EC8FF" },
-                            { text: "Rose", value: "#FF8FA3" },
-                            { text: "Violet", value: "#C5A3FF" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(date.color || "#EBF0F5"))
-                        onActivated: backend.setDateColor(currentValue)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterDate()
+                    // ---- Clock (7-segment HH:MM)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: clock.enabled === true
+                                Canvas {
+                                    id: clockCanvas
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    property color ink: clock.color || "#39FF14"
+                                    onInkChanged: requestPaint()
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                    // Digits 1 4 : 3 5 — mirrors DrawSegDigit / RefreshClockTexture
+                                    readonly property var masks: [0x77, 0x24, 0x5d, 0x6d, 0x2e, 0x6b, 0x7b, 0x25, 0x7f, 0x6f]
+                                    function drawDigit(ctx, ox, oy, dw, dh, digit, color) {
+                                        const bits = masks[digit]
+                                        const t = Math.max(2, Math.floor(dw / 8))
+                                        const mid = oy + dh / 2
+                                        ctx.fillStyle = color
+                                        function segH(y) { ctx.fillRect(ox + t, y - t / 2, dw - 2 * t, t) }
+                                        function segV(x, y0, y1) { ctx.fillRect(x - t / 2, y0 + t / 2, t, Math.max(1, y1 - y0 - t)) }
+                                        if (bits & 0x01) segH(oy + t)
+                                        if (bits & 0x02) segV(ox + t, oy, mid)
+                                        if (bits & 0x04) segV(ox + dw - t, oy, mid)
+                                        if (bits & 0x08) segH(mid)
+                                        if (bits & 0x10) segV(ox + t, mid, oy + dh)
+                                        if (bits & 0x20) segV(ox + dw - t, mid, oy + dh)
+                                        if (bits & 0x40) segH(oy + dh - t)
+                                    }
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.reset()
+                                        const w = width, h = height
+                                        const dw = Math.min(28, w / 7), dh = Math.min(44, h * 0.75)
+                                        const gap = 7, colon = 10
+                                        const total = 4 * dw + 3 * gap + colon
+                                        let ox = (w - total) / 2
+                                        const oy = (h - dh) / 2
+                                        const digits = [1, 4, 3, 5]
+                                        for (let i = 0; i < 4; ++i) {
+                                            if (i === 2) {
+                                                const cx = ox + 2
+                                                ctx.fillStyle = ink
+                                                ctx.fillRect(cx, oy + dh / 3 - 3, 5, 6)
+                                                ctx.fillRect(cx, oy + 2 * dh / 3 - 3, 5, 6)
+                                                ox += colon
+                                            }
+                                            drawDigit(ctx, ox, oy, dw, dh, digits[i], ink)
+                                            ox += dw + gap
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "Clock"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: clock.enabled === true
+                                    onToggled: backend.setClockEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Seven-segment HH:MM floating in space (transparent backdrop)."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("clock")
+                            }
+                        }
                     }
 
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Battery" }
-
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: battery.enabled === true
-                        onToggled: backend.setBatteryEnabled(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(battery.anchor || "world"))
-                        onActivated: backend.setBatteryAnchor(currentValue)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((battery.metres !== undefined ? battery.metres : 0.32) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setBatteryMetres(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((battery.idleOpacity !== undefined ? battery.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setBatteryIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((battery.activeOpacity !== undefined ? battery.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setBatteryActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: battery.attentionEnabled !== false
-                        onToggled: backend.setBatteryAttention(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Colour:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "Ice", value: "#EBF0F5" },
-                            { text: "White", value: "#FFFFFF" },
-                            { text: "Amber", value: "#FFB84D" },
-                            { text: "Mint", value: "#7DFFB2" },
-                            { text: "Sky", value: "#7EC8FF" },
-                            { text: "Rose", value: "#FF8FA3" },
-                            { text: "Violet", value: "#C5A3FF" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(battery.color || "#EBF0F5"))
-                        onActivated: backend.setBatteryColor(currentValue)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterBattery()
-                    }
-
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Device storage" }
-
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: storage.enabled === true
-                        onToggled: backend.setStorageEnabled(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(storage.anchor || "world"))
-                        onActivated: backend.setStorageAnchor(currentValue)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((storage.metres !== undefined ? storage.metres : 0.34) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setStorageMetres(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((storage.idleOpacity !== undefined ? storage.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setStorageIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((storage.activeOpacity !== undefined ? storage.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setStorageActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: storage.attentionEnabled !== false
-                        onToggled: backend.setStorageAttention(checked)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterStorage()
+                    // ---- Date (5×7 weekday/month + 7-seg day-of-month)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: date.enabled === true
+                                Canvas {
+                                    id: dateCanvas
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    property color ink: date.color || "#39FF14"
+                                    onInkChanged: requestPaint()
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                    readonly property var masks: [0x77, 0x24, 0x5d, 0x6d, 0x2e, 0x6b, 0x7b, 0x25, 0x7f, 0x6f]
+                                    // 5×7 rows for letters used in WED / SEP (bit4 = left)
+                                    readonly property var glyphs: ({
+                                        "W": [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
+                                        "E": [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+                                        "D": [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+                                        "S": [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+                                        "P": [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10]
+                                    })
+                                    function drawDigit(ctx, ox, oy, dw, dh, digit, color) {
+                                        const bits = masks[digit]
+                                        const t = Math.max(2, Math.floor(dw / 8))
+                                        const mid = oy + dh / 2
+                                        ctx.fillStyle = color
+                                        function segH(y) { ctx.fillRect(ox + t, y - t / 2, dw - 2 * t, t) }
+                                        function segV(x, y0, y1) { ctx.fillRect(x - t / 2, y0 + t / 2, t, Math.max(1, y1 - y0 - t)) }
+                                        if (bits & 0x01) segH(oy + t)
+                                        if (bits & 0x02) segV(ox + t, oy, mid)
+                                        if (bits & 0x04) segV(ox + dw - t, oy, mid)
+                                        if (bits & 0x08) segH(mid)
+                                        if (bits & 0x10) segV(ox + t, mid, oy + dh)
+                                        if (bits & 0x20) segV(ox + dw - t, mid, oy + dh)
+                                        if (bits & 0x40) segH(oy + dh - t)
+                                    }
+                                    function drawWord(ctx, ox, oy, cell, word, color) {
+                                        const scale = Math.max(2, Math.floor(cell / 7))
+                                        const adv = 5 * scale + scale
+                                        ctx.fillStyle = color
+                                        for (let i = 0; i < word.length; ++i) {
+                                            const rows = glyphs[word[i]] || [0,0,0,0,0,0,0]
+                                            for (let row = 0; row < 7; ++row) {
+                                                const bits = rows[row]
+                                                for (let col = 0; col < 5; ++col) {
+                                                    if (!(bits & (1 << (4 - col)))) continue
+                                                    ctx.fillRect(ox + i * adv + col * scale, oy + row * scale, scale - 0.5, scale - 0.5)
+                                                }
+                                            }
+                                        }
+                                        return word.length * adv - scale
+                                    }
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.reset()
+                                        const w = width, h = height
+                                        const cell = 12, dw = 18, dh = 30, dgap = 4, gap = 10
+                                        const dayW = 3 * (5 * Math.max(2, Math.floor(cell / 7)) + Math.max(2, Math.floor(cell / 7))) - Math.max(2, Math.floor(cell / 7))
+                                        const monW = dayW
+                                        const numW = 2 * dw + dgap
+                                        const total = dayW + gap + numW + gap + monW
+                                        let ox = (w - total) / 2
+                                        const letterOy = (h - 7 * Math.max(2, Math.floor(cell / 7))) / 2
+                                        const digitOy = (h - dh) / 2
+                                        const dim = Qt.rgba(ink.r * 0.85, ink.g * 0.88, ink.b * 0.9, 1)
+                                        ox += drawWord(ctx, ox, letterOy, cell, "WED", dim) + gap
+                                        drawDigit(ctx, ox, digitOy, dw, dh, 3, ink)
+                                        ox += dw + dgap
+                                        drawDigit(ctx, ox, digitOy, dw, dh, 0, ink)
+                                        ox += dw + gap
+                                        drawWord(ctx, ox, letterOy, cell, "SEP", dim)
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "Date"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: date.enabled === true
+                                    onToggled: backend.setDateEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Pixel weekday + seven-segment day + pixel month (WED 30 SEP)."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("date")
+                            }
+                        }
                     }
 
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "SD card" }
-
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: sd.enabled === true
-                        onToggled: backend.setSdEnabled(checked)
-                    }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(sd.anchor || "world"))
-                        onActivated: backend.setSdAnchor(currentValue)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((sd.metres !== undefined ? sd.metres : 0.34) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setSdMetres(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((sd.idleOpacity !== undefined ? sd.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setSdIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((sd.activeOpacity !== undefined ? sd.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setSdActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: sd.attentionEnabled !== false
-                        onToggled: backend.setSdAttention(checked)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterSd()
+                    // ---- Battery (five rounded blocks only — no percent text)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: battery.enabled === true
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Repeater {
+                                        model: 5
+                                        Rectangle {
+                                            required property int index
+                                            width: 22
+                                            height: 18
+                                            radius: 3
+                                            color: battery.color || "#39FF14"
+                                            opacity: index < 4 ? 0.92 : 0.28
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "Battery"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: battery.enabled === true
+                                    onToggled: backend.setBatteryEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Five rounded charge blocks for the headset — no digits."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("battery")
+                            }
+                        }
                     }
 
-                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Media" }
+                    // ---- Media (glyph title + geometric prev / play|pause / next)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: media.enabled === true
+                                Canvas {
+                                    anchors.fill: parent
+                                    anchors.margins: 6
+                                    property color ink: media.color || "#39FF14"
+                                    onInkChanged: requestPaint()
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.reset()
+                                        const w = width, h = height
+                                        // Sample track line (pixel-ish dashes), then transport icons
+                                        ctx.fillStyle = ink
+                                        const label = "TRACK — ARTIST"
+                                        ctx.font = "bold 11px monospace"
+                                        ctx.fillText(label, (w - ctx.measureText(label).width) / 2, 18)
+                                        const by = h - 22
+                                        const third = w / 3
+                                        function prev(cx) {
+                                            ctx.fillRect(cx - 10, by - 6, 3, 12)
+                                            ctx.beginPath()
+                                            ctx.moveTo(cx + 6, by - 7); ctx.lineTo(cx - 4, by); ctx.lineTo(cx + 6, by + 7); ctx.closePath(); ctx.fill()
+                                        }
+                                        function pause(cx) {
+                                            ctx.fillRect(cx - 6, by - 7, 4, 14)
+                                            ctx.fillRect(cx + 2, by - 7, 4, 14)
+                                        }
+                                        function next(cx) {
+                                            ctx.beginPath()
+                                            ctx.moveTo(cx - 6, by - 7); ctx.lineTo(cx + 4, by); ctx.lineTo(cx - 6, by + 7); ctx.closePath(); ctx.fill()
+                                            ctx.fillRect(cx + 5, by - 6, 3, 12)
+                                        }
+                                        prev(third / 2)
+                                        pause(third + third / 2)
+                                        next(2 * third + third / 2)
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "Media"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: media.enabled === true
+                                    onToggled: backend.setMediaEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Scrolling track text with prev / pause / next glyphs underneath."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("media")
+                            }
+                        }
+                    }
 
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Enabled:"
-                        checked: media.enabled === true
-                        onToggled: backend.setMediaEnabled(checked)
+                    // ---- Device storage (disk icon + usage bar)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: storage.enabled === true
+                                Item {
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    // Disk glyph
+                                    Rectangle {
+                                        id: diskGlyph
+                                        width: 18; height: 18
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 4
+                                        color: "#78d2e6"
+                                        Rectangle {
+                                            anchors.centerIn: parent
+                                            width: 8; height: 8
+                                            color: Qt.rgba(0.08, 0.09, 0.11, 0.85)
+                                        }
+                                    }
+                                    // Usage track + fill (~55%)
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.left: diskGlyph.right
+                                        anchors.leftMargin: 10
+                                        anchors.right: parent.right
+                                        height: 16
+                                        radius: 3
+                                        color: Qt.rgba(0.27, 0.30, 0.37, 0.45)
+                                        Rectangle {
+                                            width: parent.width * 0.55
+                                            height: parent.height - 4
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            x: 2
+                                            radius: 2
+                                            color: "#78d2e6"
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "Device storage"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: storage.enabled === true
+                                    onToggled: backend.setStorageEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Small disk icon and a fill bar for used space — no free-GB caption."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("storage")
+                            }
+                        }
                     }
-                    Controls.ComboBox {
-                        Kirigami.FormData.label: "Anchor:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-                        model: [
-                            { text: "World", value: "world" },
-                            { text: "Position-follow", value: "position-follow" },
-                            { text: "Yaw-follow", value: "yaw-follow" },
-                            { text: "Head (soft)", value: "head" },
-                            { text: "Head (rigid)", value: "head-rigid" }
-                        ]
-                        textRole: "text"
-                        valueRole: "value"
-                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue(media.anchor || "world"))
-                        onActivated: backend.setMediaAnchor(currentValue)
+
+                    // ---- SD card (notched card + usage bar)
+                    Kirigami.AbstractCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            PreviewPlate {
+                                lit: sd.enabled === true
+                                Item {
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    Item {
+                                        id: sdGlyph
+                                        width: 18; height: 20
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 4
+                                        Rectangle {
+                                            x: 2; width: 14; height: 20
+                                            color: "#78d2e6"
+                                        }
+                                        Rectangle {
+                                            x: 0; y: 4; width: 4; height: 6
+                                            color: "#78d2e6"
+                                        }
+                                        Rectangle {
+                                            x: 6; y: 4; width: 6; height: 4
+                                            color: Qt.rgba(0.08, 0.09, 0.11, 0.85)
+                                        }
+                                    }
+                                    Rectangle {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.left: sdGlyph.right
+                                        anchors.leftMargin: 10
+                                        anchors.right: parent.right
+                                        height: 16
+                                        radius: 3
+                                        color: Qt.rgba(0.27, 0.30, 0.37, 0.45)
+                                        Rectangle {
+                                            width: parent.width * 0.35
+                                            height: parent.height - 4
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            x: 2
+                                            radius: 2
+                                            color: "#78d2e6"
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Controls.Label { text: "SD card"; font.bold: true; Layout.fillWidth: true }
+                                Controls.Switch {
+                                    checked: sd.enabled === true
+                                    onToggled: backend.setSdEnabled(checked)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                                text: "Notched SD glyph and a fill bar (empty bar if no card)."
+                                font: Kirigami.Theme.smallFont
+                            }
+                            Controls.Button {
+                                text: "Configure…"
+                                flat: true
+                                onClicked: ipage.openBuiltin("sd")
+                            }
+                        }
                     }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Size (metres):"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 8; to: 200; stepSize: 5
-                        value: Math.round((media.metres !== undefined ? media.metres : 0.42) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setMediaMetres(value / 100)
+                }
+
+                Controls.Label {
+                    visible: images.length > 0
+                    text: "Images"
+                    font.bold: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                }
+
+                GridLayout {
+                    visible: images.length > 0
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: Kirigami.Units.largeSpacing
+                    rowSpacing: Kirigami.Units.largeSpacing
+
+                    Repeater {
+                        model: images
+                        delegate: Kirigami.AbstractCard {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                            readonly property var img: modelData
+                            contentItem: ColumnLayout {
+                                spacing: Kirigami.Units.smallSpacing
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Kirigami.Units.gridUnit * 4.5
+                                    color: Qt.rgba(0.07, 0.08, 0.10, 1)
+                                    radius: 3
+                                    opacity: (img && img.enabled) ? 1 : 0.35
+                                    // Checkerboard = transparent PNG/GIF floating in VR
+                                    Canvas {
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        onWidthChanged: requestPaint()
+                                        onHeightChanged: requestPaint()
+                                        onPaint: {
+                                            const ctx = getContext("2d")
+                                            ctx.reset()
+                                            const s = 8
+                                            for (let y = 0; y < height; y += s)
+                                                for (let x = 0; x < width; x += s) {
+                                                    ctx.fillStyle = ((x / s + y / s) % 2 === 0)
+                                                        ? Qt.rgba(0.18, 0.19, 0.22, 1)
+                                                        : Qt.rgba(0.12, 0.13, 0.15, 1)
+                                                    ctx.fillRect(x, y, s, s)
+                                                }
+                                            ctx.strokeStyle = Qt.rgba(0.55, 0.58, 0.62, 0.9)
+                                            ctx.lineWidth = 2
+                                            ctx.strokeRect(width * 0.2, height * 0.15, width * 0.6, height * 0.7)
+                                        }
+                                    }
+                                    Controls.Label {
+                                        anchors.centerIn: parent
+                                        text: (img && img.fileName) ? img.fileName : "no file yet"
+                                        elide: Text.ElideMiddle
+                                        width: parent.width - 24
+                                        horizontalAlignment: Text.AlignHCenter
+                                        font: Kirigami.Theme.smallFont
+                                        color: Kirigami.Theme.textColor
+                                    }
+                                }
+                                RowLayout {
+                                    Controls.Label {
+                                        text: (img && img.label) ? img.label : "Image"
+                                        font.bold: true
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Controls.Switch {
+                                        checked: !!(img && img.enabled)
+                                        onToggled: backend.setImageEnabled(img.id, checked)
+                                    }
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    opacity: 0.7
+                                    text: "Your image floats as raw pixels with alpha — no window chrome."
+                                    font: Kirigami.Theme.smallFont
+                                }
+                                Controls.Button {
+                                    text: "Configure…"
+                                    flat: true
+                                    onClicked: ipage.openImage(img)
+                                }
+                            }
+                        }
                     }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Idle opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((media.idleOpacity !== undefined ? media.idleOpacity : 0.35) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setMediaIdleOpacity(value / 100)
-                    }
-                    Controls.SpinBox {
-                        Kirigami.FormData.label: "Active opacity:"
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                        from: 0; to: 100; stepSize: 5
-                        value: Math.round((media.activeOpacity !== undefined ? media.activeOpacity : 1.0) * 100)
-                        textFromValue: (v) => (v / 100).toFixed(2)
-                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                        onValueModified: backend.setMediaActiveOpacity(value / 100)
-                    }
-                    Controls.Switch {
-                        Kirigami.FormData.label: "Gaze attention:"
-                        checked: media.attentionEnabled !== false
-                        onToggled: backend.setMediaAttention(checked)
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: " "
-                        text: "Place in front of me"
-                        enabled: backend.desktopRunning && backend.busy === ""
-                        onClicked: backend.recenterMedia()
+                }
+
+                Controls.Label {
+                    visible: launchers.length > 0
+                    text: "Launchers"
+                    font.bold: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                }
+
+                GridLayout {
+                    visible: launchers.length > 0
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: Kirigami.Units.largeSpacing
+                    rowSpacing: Kirigami.Units.largeSpacing
+
+                    Repeater {
+                        model: launchers
+                        delegate: Kirigami.AbstractCard {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                            readonly property var ln: modelData
+                            contentItem: ColumnLayout {
+                                spacing: Kirigami.Units.smallSpacing
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Kirigami.Units.gridUnit * 4.5
+                                    color: Qt.rgba(0.07, 0.08, 0.10, 1)
+                                    radius: 3
+                                    opacity: (ln && ln.enabled) ? 1 : 0.35
+                                    // Square icon face like the VR launcher overlay (not a window)
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: Math.min(parent.height - 16, 56)
+                                        height: width
+                                        radius: 10
+                                        color: Qt.rgba(0.16, 0.18, 0.22, 1)
+                                        border.color: Qt.rgba(0.45, 0.48, 0.55, 0.8)
+                                        border.width: 1
+                                        Controls.Label {
+                                            anchors.centerIn: parent
+                                            text: (ln && ln.title) ? ln.title.charAt(0) : "?"
+                                            font.pixelSize: parent.width * 0.4
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Controls.Label {
+                                        text: (ln && ln.title) ? ln.title : "Launcher"
+                                        font.bold: true
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Controls.Switch {
+                                        checked: !!(ln && ln.enabled)
+                                        onToggled: backend.setLauncherEnabled(ln.id, checked)
+                                    }
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    opacity: 0.7
+                                    text: "Square icon face in VR (app icon / glyph). Laser-click opens; bar moves."
+                                    font: Kirigami.Theme.smallFont
+                                    color: (ln && ln.actionKind === "application" && ln.desktopId && ln.appAvailable === false)
+                                           ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
+                                }
+                                Controls.Button {
+                                    text: "Configure…"
+                                    flat: true
+                                    onClicked: ipage.openLauncher(ln)
+                                }
+                            }
+                        }
                     }
                 }
 
                 Controls.Label {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
-                    opacity: 0.7
-                    text: "In VR, aim a controller laser at an instrument to reveal its move bar; drag to reposition; "
-                          + "scroll to push/pull. Clock is HH:MM; Date is weekday + day + month (e.g. TUE 29 SEP); "
-                          + "Battery is five segments; Device storage sums the headset’s split Linux mounts; SD uses "
-                          + "the mmc card (capacity even when unmounted). Media shows scrolling now-playing text from "
-                          + "MPRIS players in the nested desktop; laser-click prev / play-pause / next on the overlay."
+                    opacity: 0.65
+                    text: "In VR: laser on an instrument shows its move bar; drag to place, scroll to push/pull. "
+                          + "Launcher icon click activates; bar drag moves. Profiles replace the whole set."
                 }
+            }
+
+            // -------- settings dialog (one shared)
+            Kirigami.Dialog {
+                id: editSheet
+                title: editKey.indexOf("launcher:") === 0 ? ((editLauncher && editLauncher.title) || "Launcher")
+                     : editKey.indexOf("image:") === 0 ? ((editImage && editImage.label) || "Image")
+                     : editKey === "clock" ? "Clock"
+                     : editKey === "date" ? "Date"
+                     : editKey === "battery" ? "Battery"
+                     : editKey === "media" ? "Media"
+                     : editKey === "storage" ? "Device storage"
+                     : editKey === "sd" ? "SD card"
+                     : "Instrument"
+                standardButtons: Kirigami.Dialog.Close
+                preferredWidth: Math.min(Kirigami.Units.gridUnit * 30, ipage.width * 0.92)
+                onClosed: ipage.closeEdit()
+
+                // Open/close when editKey changes
+                Connections {
+                    target: ipage
+                    function onEditKeyChanged() {
+                        if (ipage.editKey !== "")
+                            editSheet.open()
+                        else if (editSheet.opened)
+                            editSheet.close()
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: Kirigami.Units.largeSpacing
+                    width: Math.min(Kirigami.Units.gridUnit * 28, ipage.width * 0.9)
+
+                    // Shared controls for built-ins (clock/date/battery/media/storage/sd)
+                    Kirigami.FormLayout {
+                        Layout.fillWidth: true
+                        visible: ["clock", "date", "battery", "media", "storage", "sd"].indexOf(editKey) >= 0
+
+                        Controls.ComboBox {
+                            id: builtinAnchor
+                            Kirigami.FormData.label: "Anchor:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                            model: ipage.anchorChoices
+                            textRole: "text"
+                            valueRole: "value"
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : editKey === "media" ? media
+                                        : editKey === "storage" ? storage
+                                        : sd
+                                currentIndex = Math.max(0, indexOfValue((d && d.anchor) || "world"))
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinAnchor.syncFrom() } }
+                            onActivated: {
+                                if (editKey === "clock") backend.setClockAnchor(currentValue)
+                                else if (editKey === "date") backend.setDateAnchor(currentValue)
+                                else if (editKey === "battery") backend.setBatteryAnchor(currentValue)
+                                else if (editKey === "media") backend.setMediaAnchor(currentValue)
+                                else if (editKey === "storage") backend.setStorageAnchor(currentValue)
+                                else if (editKey === "sd") backend.setSdAnchor(currentValue)
+                            }
+                        }
+                        Controls.SpinBox {
+                            id: builtinMetres
+                            Kirigami.FormData.label: "Size (metres):"
+                            from: 8; to: 200; stepSize: 5
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : editKey === "media" ? media
+                                        : editKey === "storage" ? storage
+                                        : sd
+                                const def = editKey === "clock" ? 0.35
+                                          : editKey === "date" ? 0.38
+                                          : editKey === "battery" ? 0.32
+                                          : editKey === "media" ? 0.42
+                                          : 0.34
+                                value = Math.round(((d && d.metres !== undefined) ? d.metres : def) * 100)
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinMetres.syncFrom() } }
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: {
+                                const m = value / 100
+                                if (editKey === "clock") backend.setClockMetres(m)
+                                else if (editKey === "date") backend.setDateMetres(m)
+                                else if (editKey === "battery") backend.setBatteryMetres(m)
+                                else if (editKey === "media") backend.setMediaMetres(m)
+                                else if (editKey === "storage") backend.setStorageMetres(m)
+                                else if (editKey === "sd") backend.setSdMetres(m)
+                            }
+                        }
+                        Controls.SpinBox {
+                            id: builtinIdle
+                            Kirigami.FormData.label: "Idle opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : editKey === "media" ? media
+                                        : editKey === "storage" ? storage
+                                        : sd
+                                value = Math.round(((d && d.idleOpacity !== undefined) ? d.idleOpacity : 0.35) * 100)
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinIdle.syncFrom() } }
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: {
+                                const v = value / 100
+                                if (editKey === "clock") backend.setClockIdleOpacity(v)
+                                else if (editKey === "date") backend.setDateIdleOpacity(v)
+                                else if (editKey === "battery") backend.setBatteryIdleOpacity(v)
+                                else if (editKey === "media") backend.setMediaIdleOpacity(v)
+                                else if (editKey === "storage") backend.setStorageIdleOpacity(v)
+                                else if (editKey === "sd") backend.setSdIdleOpacity(v)
+                            }
+                        }
+                        Controls.SpinBox {
+                            id: builtinActive
+                            Kirigami.FormData.label: "Active opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : editKey === "media" ? media
+                                        : editKey === "storage" ? storage
+                                        : sd
+                                value = Math.round(((d && d.activeOpacity !== undefined) ? d.activeOpacity : 1.0) * 100)
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinActive.syncFrom() } }
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: {
+                                const v = value / 100
+                                if (editKey === "clock") backend.setClockActiveOpacity(v)
+                                else if (editKey === "date") backend.setDateActiveOpacity(v)
+                                else if (editKey === "battery") backend.setBatteryActiveOpacity(v)
+                                else if (editKey === "media") backend.setMediaActiveOpacity(v)
+                                else if (editKey === "storage") backend.setStorageActiveOpacity(v)
+                                else if (editKey === "sd") backend.setSdActiveOpacity(v)
+                            }
+                        }
+                        Controls.Switch {
+                            id: builtinAttn
+                            Kirigami.FormData.label: "Gaze attention:"
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : editKey === "media" ? media
+                                        : editKey === "storage" ? storage
+                                        : sd
+                                checked = !(d && d.attentionEnabled === false)
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinAttn.syncFrom() } }
+                            onToggled: {
+                                if (editKey === "clock") backend.setClockAttention(checked)
+                                else if (editKey === "date") backend.setDateAttention(checked)
+                                else if (editKey === "battery") backend.setBatteryAttention(checked)
+                                else if (editKey === "media") backend.setMediaAttention(checked)
+                                else if (editKey === "storage") backend.setStorageAttention(checked)
+                                else if (editKey === "sd") backend.setSdAttention(checked)
+                            }
+                        }
+                        Controls.ComboBox {
+                            id: builtinColor
+                            visible: ["clock", "date", "battery", "media"].indexOf(editKey) >= 0
+                            Kirigami.FormData.label: "Colour:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                            model: colorPresets
+                            textRole: "text"
+                            valueRole: "value"
+                            function syncFrom() {
+                                const d = editKey === "clock" ? clock
+                                        : editKey === "date" ? date
+                                        : editKey === "battery" ? battery
+                                        : media
+                                currentIndex = Math.max(0, indexOfValue((d && d.color) || "#39FF14"))
+                            }
+                            Component.onCompleted: syncFrom()
+                            Connections { target: ipage; function onEditKeyChanged() { builtinColor.syncFrom() } }
+                            onActivated: {
+                                if (editKey === "clock") backend.setClockColor(currentValue)
+                                else if (editKey === "date") backend.setDateColor(currentValue)
+                                else if (editKey === "battery") backend.setBatteryColor(currentValue)
+                                else if (editKey === "media") backend.setMediaColor(currentValue)
+                            }
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Place in front of me"
+                            enabled: backend.desktopRunning && backend.busy === ""
+                            onClicked: {
+                                if (editKey === "clock") backend.recenterClock()
+                                else if (editKey === "date") backend.recenterDate()
+                                else if (editKey === "battery") backend.recenterBattery()
+                                else if (editKey === "media") backend.recenterMedia()
+                                else if (editKey === "storage") backend.recenterStorage()
+                                else if (editKey === "sd") backend.recenterSd()
+                            }
+                        }
+                    }
+
+                    // Image settings
+                    Kirigami.FormLayout {
+                        Layout.fillWidth: true
+                        visible: editKey.indexOf("image:") === 0 && editImage
+                        readonly property var img: editImage
+
+                        Controls.ComboBox {
+                            Kirigami.FormData.label: "Anchor:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                            model: ipage.anchorChoices
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((img && img.anchor) || "world"))
+                            onActivated: if (img) backend.setImageAnchor(img.id, currentValue)
+                        }
+                        Controls.Label {
+                            Kirigami.FormData.label: "File:"
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                            text: (img && img.fileName) ? img.fileName : "(none — pick a PNG or GIF)"
+                            opacity: (img && img.fileName) ? 1.0 : 0.6
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Choose image…"
+                            enabled: backend.busy === ""
+                            onClicked: {
+                                pendingImageId = img.id
+                                imageFileDialog.open()
+                            }
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Size (metres):"
+                            from: 8; to: 200; stepSize: 5
+                            value: Math.round(((img && img.metres !== undefined) ? img.metres : 0.50) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (img) backend.setImageMetres(img.id, value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Idle opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round(((img && img.idleOpacity !== undefined) ? img.idleOpacity : 0.35) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (img) backend.setImageIdleOpacity(img.id, value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Active opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round(((img && img.activeOpacity !== undefined) ? img.activeOpacity : 1.0) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (img) backend.setImageActiveOpacity(img.id, value / 100)
+                        }
+                        Controls.Switch {
+                            Kirigami.FormData.label: "Gaze attention:"
+                            checked: !(img && img.attentionEnabled === false)
+                            onToggled: if (img) backend.setImageAttention(img.id, checked)
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Place in front of me"
+                            enabled: backend.desktopRunning && backend.busy === ""
+                            onClicked: if (img) backend.recenterImage(img.id)
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Remove"
+                            enabled: backend.busy === "" && images.length > 1
+                            onClicked: {
+                                if (img) backend.removeImageInstrument(img.id)
+                                ipage.closeEdit()
+                            }
+                        }
+                    }
+
+                    // Launcher settings
+                    Kirigami.FormLayout {
+                        Layout.fillWidth: true
+                        visible: editKey.indexOf("launcher:") === 0 && editLauncher
+                        readonly property var ln: editLauncher
+
+                        Controls.Label {
+                            visible: !!(ln && ln.actionKind === "application" && ln.desktopId && ln.appAvailable === false)
+                            Kirigami.FormData.label: " "
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: Kirigami.Theme.negativeTextColor
+                            text: "Configured application is not available on this system."
+                        }
+                        Controls.ComboBox {
+                            Kirigami.FormData.label: "Action type:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                            model: [
+                                { text: "Application", value: "application" },
+                                { text: "Frametop action", value: "action" },
+                                { text: "Custom command", value: "command" }
+                            ]
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.actionKind) || "application"))
+                            onActivated: {
+                                if (!ln) return
+                                if (currentValue === "application" && apps.length)
+                                    backend.setLauncherDesktop(ln.id, apps[0].id)
+                                else if (currentValue === "action" && actions.length)
+                                    backend.setLauncherSemantic(ln.id, actions[0].id)
+                            }
+                        }
+                        Controls.ComboBox {
+                            visible: !ln || ln.actionKind === "application" || ln.actionKind === undefined
+                            Kirigami.FormData.label: "Application:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                            model: apps
+                            textRole: "name"
+                            valueRole: "id"
+                            Component.onCompleted: {
+                                const want = (ln && ln.desktopId) || ""
+                                const i = indexOfValue(want)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: if (ln) backend.setLauncherDesktop(ln.id, currentValue)
+                        }
+                        Controls.ComboBox {
+                            visible: !!(ln && ln.actionKind === "action")
+                            Kirigami.FormData.label: "Action:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                            model: actions
+                            textRole: "label"
+                            valueRole: "id"
+                            Component.onCompleted: {
+                                const want = (ln && ln.semantic) || ""
+                                const i = indexOfValue(want)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: if (ln) backend.setLauncherSemantic(ln.id, currentValue)
+                        }
+                        Controls.TextField {
+                            visible: !!(ln && ln.actionKind === "command")
+                            Kirigami.FormData.label: "Command:"
+                            Layout.fillWidth: true
+                            placeholderText: ln && ln.commandShell ? "shell command" : "argv words"
+                            text: (ln && ln.commandText) ? ln.commandText : ""
+                            onEditingFinished: if (ln) backend.setLauncherCommand(ln.id, text, !!(ln && ln.commandShell))
+                        }
+                        Controls.Switch {
+                            visible: !!(ln && ln.actionKind === "command")
+                            Kirigami.FormData.label: "Run via shell:"
+                            checked: !!(ln && ln.commandShell)
+                            onToggled: if (ln) backend.setLauncherCommand(ln.id, (ln && ln.commandText) || "", checked)
+                        }
+                        Controls.ComboBox {
+                            Kirigami.FormData.label: "Appearance:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                            model: [
+                                { text: "App icon", value: "app" },
+                                { text: "Glyph", value: "glyph" },
+                                { text: "Custom image", value: "image" },
+                                { text: "Fallback", value: "fallback" }
+                            ]
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.appearance) || "app"))
+                            onActivated: {
+                                if (!ln) return
+                                if (currentValue === "glyph")
+                                    backend.setLauncherAppearance(ln.id, "glyph", (ln && ln.glyph) || "star")
+                                else if (currentValue === "app")
+                                    backend.setLauncherAppearance(ln.id, "app", "")
+                                else if (currentValue === "fallback")
+                                    backend.setLauncherAppearance(ln.id, "fallback", "")
+                            }
+                        }
+                        Controls.ComboBox {
+                            visible: !!(ln && ln.appearance === "glyph")
+                            Kirigami.FormData.label: "Glyph:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                            model: glyphs
+                            Component.onCompleted: {
+                                const want = (ln && ln.glyph) || "star"
+                                const i = model.indexOf(want)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: if (ln) backend.setLauncherAppearance(ln.id, "glyph", currentText)
+                        }
+                        Controls.Button {
+                            visible: !!(ln && ln.appearance === "image")
+                            Kirigami.FormData.label: " "
+                            text: "Choose custom image…"
+                            enabled: backend.busy === ""
+                            onClicked: {
+                                pendingLauncherFileId = ln.id
+                                launcherFileDialog.open()
+                            }
+                        }
+                        Controls.ComboBox {
+                            Kirigami.FormData.label: "Anchor:"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                            model: ipage.anchorChoices
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.anchor) || "world"))
+                            onActivated: if (ln) backend.setLauncherAnchor(ln.id, currentValue)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Size (metres):"
+                            from: 8; to: 120; stepSize: 2
+                            value: Math.round(((ln && ln.metres !== undefined) ? ln.metres : 0.28) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (ln) backend.setLauncherMetres(ln.id, value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Idle opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round(((ln && ln.idleOpacity !== undefined) ? ln.idleOpacity : 0.55) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (ln) backend.setLauncherIdleOpacity(ln.id, value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Active opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round(((ln && ln.activeOpacity !== undefined) ? ln.activeOpacity : 1.0) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: if (ln) backend.setLauncherActiveOpacity(ln.id, value / 100)
+                        }
+                        Controls.Switch {
+                            Kirigami.FormData.label: "Gaze attention:"
+                            checked: !(ln && ln.attentionEnabled === false)
+                            onToggled: if (ln) backend.setLauncherAttention(ln.id, checked)
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Place in front of me"
+                            enabled: backend.desktopRunning && backend.busy === ""
+                            onClicked: if (ln) backend.recenterLauncher(ln.id)
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Test activate"
+                            enabled: backend.busy === ""
+                            onClicked: if (ln) backend.activateLauncher(ln.id)
+                        }
+                        Controls.Button {
+                            Kirigami.FormData.label: " "
+                            text: "Remove"
+                            enabled: backend.busy === ""
+                            onClicked: {
+                                if (ln) backend.removeLauncherInstrument(ln.id)
+                                ipage.closeEdit()
+                            }
+                        }
+                    }
+                }
+            }
+
+            FileDialog {
+                id: imageFileDialog
+                title: "Choose image for Spatial Instrument"
+                fileMode: FileDialog.OpenFile
+                nameFilters: [
+                    "Images (*.png *.gif *.jpg *.jpeg)",
+                    "All files (*)"
+                ]
+                onAccepted: backend.setImageFile(pendingImageId || "image", selectedFile.toString())
+            }
+            FileDialog {
+                id: launcherFileDialog
+                title: "Choose custom Launcher image"
+                fileMode: FileDialog.OpenFile
+                nameFilters: [
+                    "Images (*.png *.gif *.jpg *.jpeg)",
+                    "All files (*)"
+                ]
+                onAccepted: backend.setLauncherImageFile(pendingLauncherFileId || "launcher", selectedFile.toString())
             }
         }
     }
@@ -1063,7 +1789,7 @@ Kirigami.ApplicationWindow {
                         opacity: 0.7
                         text: "Profiles store the whole spatial workspace: screens (pose, width, curve, anchors, "
                               + "active/idle opacity, gaze attention) and Spatial Instruments (Clock, Date, Battery, "
-                              + "Device storage, SD card, Media). "
+                              + "Device storage, SD card, Media, Image, Launcher). "
                               + "They do not change screen count, resolution, or scale. CLI: ft-layout profile apply NAME"
                     }
 
@@ -1262,6 +1988,7 @@ Kirigami.ApplicationWindow {
                         model: [
                             { value: "always", text: "Always", help: "Meta+Shift+H (or a mapped button) hides them. During VR games, see below." },
                             { value: "dashboard", text: "Only with the SteamVR dashboard open", help: "They come and go with the dashboard. Meta+Shift+H shows them anyway." },
+                            { value: "except_dashboard", text: "Hide whenever the SteamVR dashboard opens", help: "Screens stay up normally, then tuck away when you open the dashboard so Steam UI has the view. Meta+Shift+H shows them anyway while the dashboard is open." },
                             { value: "gesture", text: "While I look at my wrist", help: "They show while you look toward the controller below. Meta+Shift+H shows them anyway." },
                             { value: "toggle", text: "Only when I show them", help: "Hidden until Meta+Shift+H (or a mapped button) shows them." }
                         ]
@@ -1433,6 +2160,147 @@ Kirigami.ApplicationWindow {
                           + "at a corner without the panel chasing (past the angle it follows again). "
                           + "Use the anchor button under each screen to cycle "
                           + "modes, or CLI: ft-layout pin 1 head. Save current arrangement / a named profile keeps anchors."
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- Background
+    Component {
+        id: backgroundPage
+        Kirigami.ScrollablePage {
+            id: bpage
+            title: "Background"
+
+            actions: [
+                Kirigami.Action {
+                    text: "Refresh"
+                    icon.name: "view-refresh"
+                    enabled: backend.busy === ""
+                    onTriggered: backend.refreshBackground()
+                },
+                Kirigami.Action {
+                    text: "Open folder"
+                    icon.name: "folder-open"
+                    onTriggered: backend.openBackgroundDirectory()
+                }
+            ]
+
+            Component.onCompleted: backend.refreshBackground()
+
+            // QML portal FileDialog ignores currentFolder (opens ~). Use QtWidgets picker.
+            function openBackgroundPicker() {
+                backend.pickBackgroundFile()
+            }
+
+            ColumnLayout {
+                width: parent.width
+                spacing: Kirigami.Units.largeSpacing
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: backend.backgroundError !== ""
+                    type: Kirigami.MessageType.Warning
+                    text: backend.backgroundError
+                          + " — SteamVR must be running. CLI: scripts/frame-background status"
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+
+                    Kirigami.Separator {
+                        Kirigami.FormData.isSection: true
+                        Kirigami.FormData.label: "SteamVR environment"
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: "Mode:"
+                        text: backend.backgroundMode === "aurora" ? "Aurora (procedural)"
+                              : backend.backgroundMode === "image" ? "Image (360° skybox)"
+                              : (backend.backgroundMode || "—")
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: "Current file:"
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                        text: backend.backgroundMode === "aurora" ? "(Aurora — no image file)"
+                              : (backend.backgroundFileName || "(none)")
+                        opacity: backend.backgroundFileName || backend.backgroundMode === "aurora" ? 1.0 : 0.6
+                    }
+                    Controls.Label {
+                        visible: backend.backgroundSizeText !== ""
+                        Kirigami.FormData.label: "Size:"
+                        text: backend.backgroundSizeText
+                    }
+                    Controls.Label {
+                        visible: backend.backgroundPath !== "" && backend.backgroundMode === "image"
+                        Kirigami.FormData.label: "Path:"
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.75
+                        text: backend.backgroundPath
+                    }
+
+                    Kirigami.Separator {
+                        Kirigami.FormData.isSection: true
+                        Kirigami.FormData.label: "Choose"
+                    }
+
+                    Repeater {
+                        model: backend.backgroundPresets
+                        delegate: Controls.RadioButton {
+                            required property var modelData
+                            Kirigami.FormData.label: index === 0 ? "Preset:" : " "
+                            text: modelData.text
+                            checked: backend.backgroundPreset === modelData.id
+                            enabled: backend.busy === ""
+                            onToggled: if (checked) backend.setBackgroundPreset(modelData.id)
+                        }
+                    }
+
+                    Controls.RadioButton {
+                        Kirigami.FormData.label: " "
+                        text: "Custom image…"
+                        checked: backend.backgroundPreset === "custom"
+                        enabled: backend.busy === ""
+                        // Selecting the radio alone does not open the dialog; use the button.
+                        onToggled: if (checked && backend.backgroundPreset !== "custom")
+                                       bpage.openBackgroundPicker()
+                    }
+
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Choose equirectangular image…"
+                        enabled: backend.busy === ""
+                        onClicked: bpage.openBackgroundPicker()
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Open backgrounds folder"
+                        icon.name: "folder-open"
+                        onClicked: backend.openBackgroundDirectory()
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: "Folder:"
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.75
+                        text: backend.backgroundDirectory
+                    }
+                }
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    opacity: 0.7
+                    text: "This is SteamVR’s passive sky behind the dashboard (not SteamVR Home, not Frametop screens). "
+                          + "Aurora is Valve’s procedural environment. Image mode loads a 360° equirectangular "
+                          + "texture (about 2:1, e.g. 2048×1024 or 4096×2048). Custom files (PNG/JPEG/WebP/HDR/EXR) "
+                          + "are converted to 8-bit PNG under ~/.config/openvr/config/frametop-backgrounds/ "
+                          + "(HDR is tonemapped to SDR). Opaque Room View / passthrough "
+                          + "can cover the skybox while it is on. CLI: scripts/frame-background set PATH"
                 }
             }
         }

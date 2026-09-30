@@ -16,7 +16,8 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
    "preset": {"kind": "arc" | "flat", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0},
    "primary": 2,                      the screen with the taskbar (1-based; default: the biggest)
    "visibility": {"mode": "always",   ft-screens: always | dashboard (only with the SteamVR
-                  "wrist_angle": 60,    dashboard open) | gesture (while you look at a controller)
+                  "wrist_angle": 60,    dashboard open) | except_dashboard (hide while dashboard
+                                       open) | gesture (while you look at a controller)
                   "gesture_hand": "left", "gesture_angle": 20},   | toggle (hidden until shown);
                                       wrist_angle: a controller-pinned screen shows while you see
                                       its front within this many degrees
@@ -28,9 +29,10 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                 "scale": 1.0,                         KWin output scale (1.0 = 100%)
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
-   "instruments": [{"id": "clock"|"battery"|"storage"|"sd"|"date"|"media", "type": …,
+   "instruments": [{"id": "clock"|"battery"|"storage"|"sd"|"date"|"media"|"image", "type": …,
                      "enabled", "pos"/"face"/"roll" or "pin", "metres",
-                     "active_opacity", "idle_opacity", "attention"}],   Spatial Instruments
+                     "active_opacity", "idle_opacity", "attention",
+                     "path"}],   Spatial Instruments (path = Image file under ~/.config/frametop-instruments)
    "panel_size": [w, h]}              gamescope: last measured panel size
 
 Named spatial profiles (same screen count; no resolution/scale/visibility) live in
@@ -69,12 +71,22 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout profile apply-slot N [--duration MS]
   ft-layout profile next|previous [--duration MS]
   ft-layout instrument list|state [--json]
-  ft-layout instrument enable|disable|recenter clock|battery|storage|sd|date|media
+  ft-layout instrument enable|disable|recenter clock|battery|…|image|image-N|launcher|launcher-N
+  ft-layout instrument file image|image-N|launcher|launcher-N PATH
+  ft-layout instrument add image|launcher        add another Image or Launcher instance
+  ft-layout instrument remove image-N|launcher-N
+  ft-layout instrument activate launcher|launcher-N   # fire action (CLI / tests)
+  ft-layout instrument desktop ID DESKTOP_ID     # Application launcher + default app icon
+  ft-layout instrument semantic ID ACTION        # Asterism/Frametop semantic action
+  ft-layout instrument command ID [--shell] …    # custom argv or shell command
+  ft-layout instrument appearance ID app|glyph|image|fallback [glyph|PATH]
+  ft-layout apps list [--json] [--search Q]      # installed .desktop applications
 """
 import json
 import math
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -84,6 +96,11 @@ try:
     import fcntl
 except ImportError:  # Windows unit tests; Frame always has fcntl
     fcntl = None
+
+try:
+    import ft_desktop
+except ImportError:
+    ft_desktop = None  # unit tests can inject; Frame always has layout/ft_desktop.py beside this file
 
 LAYOUT_PATH = os.path.expanduser("~/.config/frametop-layout.json")
 PROFILES_PATH = os.path.expanduser("~/.config/frametop-layout-profiles.json")
@@ -108,11 +125,16 @@ PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 INSTRUMENT_ANCHORS = ("world", "head", "head-rigid", "yaw-follow", "position-follow")
-KNOWN_INSTRUMENT_TYPES = ("clock", "battery", "storage", "sd", "date", "media")
+KNOWN_INSTRUMENT_TYPES = ("clock", "battery", "storage", "sd", "date", "media", "image", "launcher")
 DEFAULT_BATTERY_METRES = 0.32
 DEFAULT_STORAGE_METRES = 0.34
 DEFAULT_DATE_METRES = 0.38
 DEFAULT_MEDIA_METRES = 0.42
+DEFAULT_IMAGE_METRES = 0.50
+DEFAULT_LAUNCHER_METRES = 0.28
+DEFAULT_LAUNCHER_IDLE = 0.55
+INSTRUMENTS_DIR = os.path.expanduser("~/.config/frametop-instruments")
+LAUNCH_BRIDGE = "\0frametop_launch"
 CONTROLLER_ANCHORS = ("left", "right")
 SOFT_FOLLOW_ANCHORS = ("head", "yaw-follow", "position-follow")
 SLOT_COUNT = 6
@@ -121,7 +143,16 @@ DEFAULT_FOLLOW_LAG_MS = 120
 DEFAULT_OPACITY = 1.0
 DEFAULT_INSTRUMENT_METRES = 0.35
 DEFAULT_INSTRUMENT_IDLE = 0.35
-DEFAULT_INSTRUMENT_COLOR = "#EBF0F5"
+DEFAULT_INSTRUMENT_COLOR = "#39FF14"  # CRT phosphor green
+INSTRUMENT_COLOR_PRESETS = (
+    ("CRT Green", "#39FF14"),
+    ("Phosphor Amber", "#FFB000"),
+    ("Hot Magenta", "#FF2BD6"),
+    ("Ice Cyan", "#00F0FF"),
+    ("Neon Pink", "#FF4DA6"),
+    ("Volt Yellow", "#D6FF00"),
+    ("White", "#F5FFF5"),
+)
 DEFAULT_ATTENTION_IN_MS = 150.0
 DEFAULT_ATTENTION_OUT_MS = 250.0
 DEFAULT_ATTENTION_DWELL_MS = 80.0
@@ -233,7 +264,10 @@ def screen_opacity(entry):
 
 
 def screen_opacities(entry):
-    """Return (active, idle). Legacy opacity=X means both active and idle = X, attention off."""
+    """Return (active, idle). Legacy opacity=X means both active and idle = X, attention off.
+
+    Looking (active) is never dimmer than looking away (idle); swapped values are corrected.
+    """
     active = screen_opacity(entry)
     try:
         if "idle_opacity" in entry:
@@ -242,6 +276,8 @@ def screen_opacities(entry):
             idle = active
     except (TypeError, ValueError):
         idle = active
+    if idle > active:
+        active, idle = idle, active
     return active, idle
 
 
@@ -422,6 +458,131 @@ def default_media_instrument():
         "active_opacity": 1.0,
         "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
         "opacity": 1.0,
+        "color": DEFAULT_INSTRUMENT_COLOR,
+        "attention": default_instrument_attention(),
+    }
+
+
+def is_image_instrument_id(iid):
+    """True for image / image-2 / image-3 … (type stays 'image')."""
+    iid = str(iid or "").strip().lower()
+    if iid == "image":
+        return True
+    if not iid.startswith("image-"):
+        return False
+    suffix = iid[6:]
+    if not suffix.isdigit():
+        return False
+    return int(suffix) >= 2
+
+
+def next_image_instrument_id(layout):
+    """Allocate the next free Image instance id (image, then image-2, image-3, …)."""
+    used = {i["id"] for i in instruments_from_layout(layout) if i.get("type") == "image"}
+    if "image" not in used:
+        return "image"
+    n = 2
+    while f"image-{n}" in used:
+        n += 1
+    return f"image-{n}"
+
+
+def default_image_instrument(iid="image"):
+    """Floating PNG/JPEG/GIF in VR (path under ~/.config/frametop-instruments)."""
+    iid = str(iid or "image").strip().lower() or "image"
+    if not is_image_instrument_id(iid):
+        iid = "image"
+    return {
+        "id": iid,
+        "type": "image",
+        "enabled": False,
+        "metres": DEFAULT_IMAGE_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "path": "",
+        "attention": default_instrument_attention(),
+    }
+
+
+def install_instrument_image(src, iid="image"):
+    """Copy an image into INSTRUMENTS_DIR as {iid}.<ext>; return absolute dest path.
+
+    Accepts Image ids (image / image-N) and Launcher ids (launcher / launcher-N) for
+    custom appearance artwork. Reuses one asset directory for both.
+    """
+    iid = str(iid or "image").strip().lower() or "image"
+    if not (is_image_instrument_id(iid) or is_launcher_instrument_id(iid)):
+        raise ValueError(f"not an image/launcher instrument id: {iid!r}")
+    src = os.path.abspath(os.path.expanduser(str(src or "").strip()))
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"no such file or directory: {src}")
+    ext = os.path.splitext(src)[1].lower()
+    if ext not in (".png", ".gif", ".jpg", ".jpeg"):
+        raise ValueError(f"unsupported image type {ext or '(none)'} (want png/gif/jpg)")
+    os.makedirs(INSTRUMENTS_DIR, exist_ok=True)
+    dest = os.path.join(INSTRUMENTS_DIR, f"{iid}{ext}")
+    # Re-picking the already-installed file used to delete dest then copy2(src→dest) with
+    # src==dest removed — FileNotFoundError and a broken Image card.
+    if os.path.abspath(src) == os.path.abspath(dest):
+        return dest
+    prefix = f"{iid}."
+    for name in os.listdir(INSTRUMENTS_DIR):
+        if name == iid or name.startswith(prefix):
+            try:
+                os.remove(os.path.join(INSTRUMENTS_DIR, name))
+            except OSError:
+                pass
+    shutil.copy2(src, dest)
+    return dest
+
+
+def is_launcher_instrument_id(iid):
+    """True for launcher / launcher-2 / launcher-3 … (type stays 'launcher')."""
+    iid = str(iid or "").strip().lower()
+    if iid == "launcher":
+        return True
+    if not iid.startswith("launcher-"):
+        return False
+    suffix = iid[9:]
+    if not suffix.isdigit():
+        return False
+    return int(suffix) >= 2
+
+
+def next_launcher_instrument_id(layout):
+    """Allocate the next free Launcher instance id."""
+    used = {i["id"] for i in instruments_from_layout(layout) if i.get("type") == "launcher"}
+    if "launcher" not in used:
+        return "launcher"
+    n = 2
+    while f"launcher-{n}" in used:
+        n += 1
+    return f"launcher-{n}"
+
+
+def default_launcher_instrument(iid="launcher"):
+    """Spatial shortcut: application / semantic action / custom command + appearance."""
+    iid = str(iid or "launcher").strip().lower() or "launcher"
+    if not is_launcher_instrument_id(iid):
+        iid = "launcher"
+    return {
+        "id": iid,
+        "type": "launcher",
+        "enabled": False,
+        "metres": DEFAULT_LAUNCHER_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_LAUNCHER_IDLE,
+        "opacity": 1.0,
+        "action_kind": "application",  # application | action | command
+        "desktop_id": "",
+        "semantic": "",
+        "command": [],          # argv list when command_shell is False
+        "command_shell": False,  # True => command[0] is shell script text
+        "appearance": "app",     # app | glyph | image | fallback
+        "glyph": "star",
+        "path": "",              # custom image or resolved app icon raster
+        "label": "",             # optional UI name; not drawn in VR by default
         "attention": default_instrument_attention(),
     }
 
@@ -439,6 +600,10 @@ def default_instrument(itype):
         return default_date_instrument()
     if itype == "media":
         return default_media_instrument()
+    if itype == "image" or is_image_instrument_id(itype):
+        return default_image_instrument("image" if itype == "image" else itype)
+    if itype == "launcher" or is_launcher_instrument_id(itype):
+        return default_launcher_instrument("launcher" if itype == "launcher" else itype)
     return default_clock_instrument()
 
 
@@ -632,12 +797,30 @@ def normalize_instrument(entry, warn=True):
             log("warning: ignoring non-object instrument entry", file=sys.stderr)
         return None
     itype = str(entry.get("type") or "").strip().lower()
+    iid_raw = str(entry.get("id") or itype).strip().lower() or itype
+    # Multi-instance types keep type fixed with ids type / type-N.
+    if is_image_instrument_id(iid_raw):
+        itype = "image"
+    elif itype == "image" and not is_image_instrument_id(iid_raw):
+        iid_raw = "image"
+    if is_launcher_instrument_id(iid_raw):
+        itype = "launcher"
+    elif itype == "launcher" and not is_launcher_instrument_id(iid_raw):
+        iid_raw = "launcher"
     if itype not in KNOWN_INSTRUMENT_TYPES:
         if warn:
             log(f"warning: ignoring unknown instrument type {itype!r}", file=sys.stderr)
         return None
-    iid = str(entry.get("id") or itype).strip() or itype
-    out = default_instrument(itype)
+    iid = iid_raw
+    if itype not in ("image", "launcher") and iid != itype:
+        # Singletons: id must match type.
+        iid = itype
+    if itype == "image":
+        out = default_image_instrument(iid)
+    elif itype == "launcher":
+        out = default_launcher_instrument(iid)
+    else:
+        out = default_instrument(itype)
     out["id"] = iid
     out["type"] = itype
     out["enabled"] = bool(entry.get("enabled", False))
@@ -647,6 +830,12 @@ def normalize_instrument(entry, warn=True):
         default_m = DEFAULT_STORAGE_METRES
     elif itype == "date":
         default_m = DEFAULT_DATE_METRES
+    elif itype == "media":
+        default_m = DEFAULT_MEDIA_METRES
+    elif itype == "image":
+        default_m = DEFAULT_IMAGE_METRES
+    elif itype == "launcher":
+        default_m = DEFAULT_LAUNCHER_METRES
     else:
         default_m = DEFAULT_INSTRUMENT_METRES
     try:
@@ -671,13 +860,58 @@ def normalize_instrument(entry, warn=True):
             idle = active
     except (TypeError, ValueError):
         idle = active
+    if idle > active:
+        active, idle = idle, active
     out["active_opacity"] = round(active, 3)
     out["idle_opacity"] = round(idle, 3)
     out["opacity"] = round(active, 3)
-    if itype in ("clock", "battery", "date"):
+    if itype in ("clock", "battery", "date", "media"):
         out["color"] = normalize_instrument_color(entry.get("color"), DEFAULT_INSTRUMENT_COLOR)
     else:
         out.pop("color", None)
+    if itype in ("image", "launcher"):
+        path = str(entry.get("path") or "").strip()
+        out["path"] = path
+    else:
+        out.pop("path", None)
+    if itype == "launcher":
+        kind = str(entry.get("action_kind") or entry.get("action") or "application").strip().lower()
+        if kind not in ("application", "action", "command"):
+            kind = "application"
+        out["action_kind"] = kind
+        out["desktop_id"] = str(entry.get("desktop_id") or "").strip()
+        out["semantic"] = str(entry.get("semantic") or "").strip()
+        shell = bool(entry.get("command_shell", False))
+        out["command_shell"] = shell
+        cmd = entry.get("command")
+        if shell:
+            if isinstance(cmd, list) and cmd:
+                out["command"] = [str(cmd[0])]
+            elif isinstance(cmd, str) and cmd.strip():
+                out["command"] = [cmd.strip()]
+            else:
+                out["command"] = []
+        else:
+            if isinstance(cmd, list):
+                out["command"] = [str(a) for a in cmd if str(a)]
+            elif isinstance(cmd, str) and cmd.strip():
+                # Legacy: single string treated as argv[0] only (not shell).
+                out["command"] = [cmd.strip()]
+            else:
+                out["command"] = []
+        appear = str(entry.get("appearance") or "app").strip().lower()
+        if appear not in ("app", "glyph", "image", "fallback"):
+            appear = "app"
+        out["appearance"] = appear
+        glyph = str(entry.get("glyph") or "star").strip().lower() or "star"
+        if ft_desktop and glyph not in ft_desktop.LAUNCHER_GLYPHS:
+            glyph = "star"
+        out["glyph"] = glyph
+        out["label"] = str(entry.get("label") or "").strip()
+    else:
+        for k in ("action_kind", "desktop_id", "semantic", "command", "command_shell",
+                  "appearance", "glyph", "label"):
+            out.pop(k, None)
     for k in ("pos", "face", "roll"):
         if k in entry:
             out[k] = entry[k]
@@ -728,8 +962,20 @@ def spatial_instrument(entry):
         "active_opacity": round(float(inst["active_opacity"]), 3),
         "idle_opacity": round(float(inst["idle_opacity"]), 3),
     }
-    if inst["type"] in ("clock", "battery", "date"):
+    if inst["type"] in ("clock", "battery", "date", "media"):
         out["color"] = normalize_instrument_color(inst.get("color"), DEFAULT_INSTRUMENT_COLOR)
+    if inst["type"] in ("image", "launcher") and inst.get("path"):
+        out["path"] = str(inst["path"])
+    if inst["type"] == "launcher":
+        out["action_kind"] = inst.get("action_kind") or "application"
+        out["desktop_id"] = str(inst.get("desktop_id") or "")
+        out["semantic"] = str(inst.get("semantic") or "")
+        out["command"] = list(inst.get("command") or [])
+        out["command_shell"] = bool(inst.get("command_shell"))
+        out["appearance"] = inst.get("appearance") or "app"
+        out["glyph"] = inst.get("glyph") or "star"
+        if inst.get("label"):
+            out["label"] = str(inst["label"])
     for k in ("pos", "face", "roll"):
         if k in inst:
             out[k] = inst[k]
@@ -746,6 +992,29 @@ def instrument_entry(layout, iid):
         if inst["id"] == iid:
             return inst
     return None
+
+
+def remove_instrument(layout, iid):
+    """Drop one instrument by id from the layout dict; return updated layout."""
+    items = [i for i in instruments_from_layout(layout) if i["id"] != iid]
+    layout = dict(layout)
+    layout["instruments"] = items
+    return layout
+
+
+def known_instrument_id(iid):
+    """True if iid is a singleton type or an image/launcher multi-instance id."""
+    iid = str(iid or "").strip().lower()
+    return iid in KNOWN_INSTRUMENT_TYPES or is_image_instrument_id(iid) or is_launcher_instrument_id(iid)
+
+
+def instrument_type_for_id(iid):
+    iid = str(iid or "").strip().lower()
+    if is_image_instrument_id(iid):
+        return "image"
+    if is_launcher_instrument_id(iid):
+        return "launcher"
+    return iid if iid in KNOWN_INSTRUMENT_TYPES else None
 
 
 def upsert_instrument(layout, inst):
@@ -1294,6 +1563,74 @@ def apply_screens(wait=0, duration_ms=0):
     return results
 
 
+def push_instrument(sock, inst, eye, heading):
+    """Push one layout instrument to ft-screens (no clear)."""
+    iid = inst["id"]
+    if not inst["enabled"]:
+        sock.ask(f"instrument disable {iid}")
+        return
+    sock.ask(f"instrument enable {iid}")
+    sock.ask(f"instrument width {iid} {float(inst['metres']):.4f}")
+    active, idle = inst["active_opacity"], inst["idle_opacity"]
+    sock.ask(f"instrument opacity {iid} {active:.3f} {idle:.3f}")
+    if inst["type"] in ("clock", "battery", "date", "media"):
+        sock.ask(f"instrument color {iid} {normalize_instrument_color(inst.get('color'))}")
+    if inst["type"] in ("image", "launcher"):
+        path = str(inst.get("path") or "").strip()
+        if path:
+            sock.ask(f"instrument file {iid} {path}")
+    if inst["type"] == "launcher":
+        push_launcher_config(sock, inst)
+    att = inst.get("attention") or {}
+    if att.get("enabled"):
+        sock.ask(f"instrument attention {iid} on")
+    else:
+        sock.ask(f"instrument attention {iid} off")
+    pin = inst.get("pin")
+    anchor = pin_anchor(pin)
+    if "pos" in inst and "face" in inst:
+        pos = inst["pos"]
+        face = inst["face"]
+        roll = float(inst.get("roll", 0))
+        world = turn_yaw(tuple(pos), heading)
+        center = tuple(e + v for e, v in zip(eye, world))
+        sock.ask("instrument place %s %.4f %.4f %.4f %.3f %.3f %.3f" % (
+            iid, center[0], center[1], center[2],
+            float(face[0]) + heading, float(face[1]) if len(face) > 1 else 0.0, roll))
+    else:
+        sock.ask(f"instrument recenter {iid}")
+    if anchor and anchor != "world" and pin and len(pin.get("rel", [])) == 12:
+        rel = " ".join(f"{float(v):.6f}" for v in pin["rel"])
+        sock.ask(f"instrument pin {iid} {anchor} {rel}")
+    else:
+        sock.ask(f"instrument unpin {iid}")
+
+
+def push_launcher_config(sock, inst):
+    """Push Launcher action + appearance to ft-screens (after enable/file)."""
+    iid = inst["id"]
+    kind = inst.get("action_kind") or "application"
+    if kind == "application":
+        desk = str(inst.get("desktop_id") or "").strip() or "-"
+        sock.ask(f"instrument launcher {iid} application {desk}")
+    elif kind == "action":
+        sem = str(inst.get("semantic") or "").strip() or "-"
+        sock.ask(f"instrument launcher {iid} action {sem}")
+    elif kind == "command" and inst.get("command_shell"):
+        script = ""
+        cmd = inst.get("command") or []
+        if cmd:
+            script = str(cmd[0])
+        # Encode spaces as a single token via JSON so the socket line stays one message.
+        sock.ask(f"instrument launcher {iid} shell {json.dumps(script)}")
+    else:
+        argv = [str(a) for a in (inst.get("command") or [])]
+        sock.ask(f"instrument launcher {iid} command {json.dumps(argv)}")
+    appear = inst.get("appearance") or "app"
+    glyph = inst.get("glyph") or "star"
+    sock.ask(f"instrument launcher {iid} appear {appear} {glyph}")
+
+
 def apply_instruments(sock, layout=None):
     """Push Spatial Instruments from layout to ft-screens (instant; no transition yet)."""
     layout = layout or load_layout()
@@ -1311,43 +1648,23 @@ def apply_instruments(sock, layout=None):
     f = sock.ask("head").split()
     eye = tuple(map(float, f[1:4]))
     heading = float(f[4])
-    for inst in instruments_from_layout(layout):
-        iid = inst["id"]
+    items = instruments_from_layout(layout)
+    # Non-image/launcher first: heavy texture loads after clear must not wipe everything.
+    deferred = ("image", "launcher")
+    for inst in items:
+        if inst.get("type") in deferred:
+            continue
         try:
-            if not inst["enabled"]:
-                sock.ask(f"instrument disable {iid}")
-                continue
-            sock.ask(f"instrument enable {iid}")
-            sock.ask(f"instrument width {iid} {float(inst['metres']):.4f}")
-            active, idle = inst["active_opacity"], inst["idle_opacity"]
-            sock.ask(f"instrument opacity {iid} {active:.3f} {idle:.3f}")
-            if inst["type"] in ("clock", "battery", "date"):
-                sock.ask(f"instrument color {iid} {normalize_instrument_color(inst.get('color'))}")
-            att = inst.get("attention") or {}
-            if att.get("enabled"):
-                sock.ask(f"instrument attention {iid} on")
-            else:
-                sock.ask(f"instrument attention {iid} off")
-            pin = inst.get("pin")
-            anchor = pin_anchor(pin)
-            if "pos" in inst and "face" in inst:
-                pos = inst["pos"]
-                face = inst["face"]
-                roll = float(inst.get("roll", 0))
-                world = turn_yaw(tuple(pos), heading)
-                center = tuple(e + v for e, v in zip(eye, world))
-                sock.ask("instrument place %s %.4f %.4f %.4f %.3f %.3f %.3f" % (
-                    iid, center[0], center[1], center[2],
-                    float(face[0]) + heading, float(face[1]) if len(face) > 1 else 0.0, roll))
-            else:
-                sock.ask(f"instrument recenter {iid}")
-            if anchor and anchor != "world" and pin and len(pin.get("rel", [])) == 12:
-                rel = " ".join(f"{float(v):.6f}" for v in pin["rel"])
-                sock.ask(f"instrument pin {iid} {anchor} {rel}")
-            else:
-                sock.ask(f"instrument unpin {iid}")
+            push_instrument(sock, inst, eye, heading)
         except RuntimeError as e:
-            log(f"warning: instrument {iid}: {e}", file=sys.stderr)
+            log(f"warning: instrument {inst.get('id')}: {e}", file=sys.stderr)
+    for inst in items:
+        if inst.get("type") not in deferred:
+            continue
+        try:
+            push_instrument(sock, inst, eye, heading)
+        except RuntimeError as e:
+            log(f"warning: instrument {inst.get('id')}: {e}", file=sys.stderr)
 
 
 def capture_screens():
@@ -1381,6 +1698,7 @@ def capture_screens():
 def capture_instruments(sock, eye, heading):
     """Read live instrument state into layout entries."""
     out = []
+    prev_by_id = {i["id"]: i for i in instruments_from_layout(load_layout())}
     try:
         reply = sock.ask("instrument list")
     except RuntimeError:
@@ -1407,6 +1725,16 @@ def capture_instruments(sock, eye, heading):
             "idle_opacity": float(g.get("idle_opacity", g.get("active_opacity", 1.0))),
         }
         entry["opacity"] = entry["active_opacity"]
+        prev = prev_by_id.get(iid) or {}
+        if itype in ("clock", "battery", "date", "media") and prev.get("color"):
+            entry["color"] = prev["color"]
+        if itype in ("image", "launcher") and prev.get("path"):
+            entry["path"] = prev["path"]
+        if itype == "launcher":
+            for k in ("action_kind", "desktop_id", "semantic", "command", "command_shell",
+                      "appearance", "glyph", "label"):
+                if k in prev:
+                    entry[k] = prev[k]
         if "center" in g and "x" in g:
             entry.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
             entry["roll"] = float(g.get("roll", 0))
@@ -1449,11 +1777,94 @@ def parse_instrument_get(reply):
     return out
 
 
+def ask_launch_bridge(cmd, timeout=2.0):
+    """Send one command to @frametop_launch; return reply string or raise RuntimeError."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    local = f"\0ft-layout-launch-{os.getpid()}"
+    try:
+        sock.bind(local)
+        sock.settimeout(timeout)
+        sock.sendto(cmd.encode("utf-8", errors="replace"), LAUNCH_BRIDGE)
+        data, _ = sock.recvfrom(65535)
+        return data.decode("utf-8", errors="replace")
+    except OSError as e:
+        raise RuntimeError(f"@frametop_launch not reachable ({e})") from e
+    finally:
+        sock.close()
+
+
+def resolve_and_install_app_icon(desktop_id, iid):
+    """Resolve .desktop Icon= to a PNG under INSTRUMENTS_DIR; return path or ''.
+
+    Most SteamOS/KDE icons are SVG-only; those are rasterized (rsvg-convert / magick)
+    into ~/.config/frametop-instruments/{iid}.png so ft-screens can upload them.
+    """
+    if not ft_desktop:
+        return ""
+    path = ft_desktop.find_desktop_by_id(desktop_id)
+    if not path:
+        return ""
+    info = ft_desktop.parse_desktop_file(path)
+    if not info:
+        return ""
+    os.makedirs(INSTRUMENTS_DIR, exist_ok=True)
+    dest_png = os.path.join(INSTRUMENTS_DIR, f"{iid}.png")
+    raster = ft_desktop.ensure_raster_icon(info.get("icon") or "", dest_png, prefer_size=128)
+    if not raster:
+        return ""
+    try:
+        # ensure_raster_icon may return an existing PNG elsewhere — install into our dir.
+        if os.path.abspath(raster) != os.path.abspath(dest_png):
+            return install_instrument_image(raster, iid)
+        return dest_png
+    except (OSError, ValueError):
+        return ""
+
+
+def activate_launcher_instrument(inst):
+    """Fire a Launcher's action via @frametop_launch (preferred) or local nested_env fallback."""
+    kind = inst.get("action_kind") or "application"
+    if kind == "application":
+        desk = str(inst.get("desktop_id") or "").strip()
+        if not desk:
+            raise RuntimeError("launcher has no desktop_id")
+        cmd = f"desktop {desk}"
+    elif kind == "action":
+        sem = str(inst.get("semantic") or "").strip()
+        if not sem:
+            raise RuntimeError("launcher has no semantic action")
+        if normalize_action(sem) is None:
+            raise RuntimeError(f"unknown semantic action {sem!r}")
+        cmd = f"action {sem}"
+    elif kind == "command" and inst.get("command_shell"):
+        script = (inst.get("command") or [""])[0] if inst.get("command") else ""
+        if not str(script).strip():
+            raise RuntimeError("launcher has empty shell command")
+        cmd = f"shell {script}"
+    else:
+        argv = [str(a) for a in (inst.get("command") or [])]
+        if not argv:
+            raise RuntimeError("launcher has empty command argv")
+        cmd = f"command {json.dumps(argv)}"
+    try:
+        reply = ask_launch_bridge(cmd)
+        if not reply.startswith("ok"):
+            raise RuntimeError(reply)
+        return reply
+    except RuntimeError as bridge_err:
+        # Fallback when desktop isn't up / bridge missing: only for semantic actions via
+        # in-process run_action; apps need the nested session.
+        if kind == "action":
+            run_action(inst.get("semantic") or "")
+            return "ok (local action)"
+        raise bridge_err
+
+
 def instrument_cmd(argv):
-    """ft-layout instrument list|state|enable|disable|recenter [id] [--json]."""
+    """ft-layout instrument list|state|enable|disable|recenter|file|add|remove|activate|…"""
     if len(argv) < 3:
-        print("usage: ft-layout instrument list|state|enable|disable|recenter "
-              "[clock|battery|storage|sd|date] [--json]", file=sys.stderr)
+        print("usage: ft-layout instrument list|state|enable|disable|recenter|file|add|remove|"
+              "activate|desktop|semantic|command|appearance … [--json]", file=sys.stderr)
         return 2
     sub = argv[2]
     as_json = "--json" in argv
@@ -1470,21 +1881,327 @@ def instrument_cmd(argv):
                 print("(no instruments)")
             for inst in items:
                 pin = pin_anchor(inst.get("pin")) or "world"
+                extra = ""
+                if inst["type"] in ("image", "launcher") and inst.get("path"):
+                    extra += f"\tpath={inst['path']}"
+                if inst["type"] == "launcher":
+                    extra += f"\taction={inst.get('action_kind')}"
+                    if inst.get("desktop_id"):
+                        extra += f"\tdesktop={inst['desktop_id']}"
+                    if inst.get("semantic"):
+                        extra += f"\tsemantic={inst['semantic']}"
+                    extra += f"\tappear={inst.get('appearance')}"
                 print(f"{inst['id']}\ttype={inst['type']}\tenabled={int(inst['enabled'])}\t"
                       f"anchor={pin}\tmetres={inst['metres']}\t"
                       f"active={inst['active_opacity']}\tidle={inst['idle_opacity']}\t"
-                      f"attention={int(bool((inst.get('attention') or {}).get('enabled')))}")
+                      f"attention={int(bool((inst.get('attention') or {}).get('enabled')))}{extra}")
+        return 0
+
+    if sub == "file":
+        if len(args) < 2:
+            print("usage: ft-layout instrument file image|image-N|launcher|launcher-N PATH",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        if not (is_image_instrument_id(iid) or is_launcher_instrument_id(iid)):
+            print("instrument file is only for Image/Launcher ids", file=sys.stderr)
+            return 2
+        src = " ".join(args[1:])
+        try:
+            dest = install_instrument_image(src, iid)
+        except (OSError, ValueError) as e:
+            print(f"instrument file: {e}", file=sys.stderr)
+            return 1
+        layout = load_layout()
+        itype = instrument_type_for_id(iid)
+        inst = instrument_entry(layout, iid) or (
+            default_launcher_instrument(iid) if itype == "launcher" else default_image_instrument(iid))
+        inst["id"] = iid
+        inst["type"] = itype
+        inst["path"] = dest
+        if itype == "launcher":
+            inst["appearance"] = "image"
+            inst["enabled"] = True
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                sock.ask(f"instrument file {iid} {dest}")
+                if itype == "launcher":
+                    push_launcher_config(sock, instrument_entry(load_layout(), iid) or inst)
+            except RuntimeError as e:
+                log(f"warning: instrument file push: {e}", file=sys.stderr)
+        log(f"instrument {iid}: file {dest}")
+        return 0
+
+    if sub == "add":
+        kind = (args[0] if args else "image").strip().lower()
+        layout = load_layout()
+        if kind == "launcher":
+            iid = next_launcher_instrument_id(layout)
+            inst = default_launcher_instrument(iid)
+        elif kind == "image" or kind == "":
+            iid = next_image_instrument_id(layout)
+            inst = default_image_instrument(iid)
+        else:
+            print("usage: ft-layout instrument add image|launcher", file=sys.stderr)
+            return 2
+        inst["enabled"] = True
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                apply_instruments(sock, layout)
+                sock.ask(f"instrument recenter {iid}")
+            except RuntimeError as e:
+                log(f"warning: instrument add: {e}", file=sys.stderr)
+        log(f"instrument {iid}: added")
+        if as_json:
+            print(json.dumps({"id": iid}, separators=(",", ":")))
+        else:
+            print(iid)
+        return 0
+
+    if sub == "remove":
+        if not args:
+            print("usage: ft-layout instrument remove image|image-N|launcher|launcher-N",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        if not (is_image_instrument_id(iid) or is_launcher_instrument_id(iid)):
+            print("instrument remove is only for Image/Launcher ids", file=sys.stderr)
+            return 2
+        layout = load_layout()
+        layout = remove_instrument(layout, iid)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                try:
+                    sock.ask(f"instrument disable {iid}")
+                except RuntimeError:
+                    pass
+                apply_instruments(sock, layout)
+            except RuntimeError as e:
+                log(f"warning: instrument remove: {e}", file=sys.stderr)
+        log(f"instrument {iid}: removed")
+        return 0
+
+    if sub == "activate":
+        if not args:
+            print("usage: ft-layout instrument activate launcher|launcher-N", file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        if not is_launcher_instrument_id(iid):
+            print("instrument activate is only for Launcher ids", file=sys.stderr)
+            return 2
+        inst = instrument_entry(load_layout(), iid)
+        if not inst:
+            print(f"no launcher {iid!r} in layout", file=sys.stderr)
+            return 1
+        try:
+            reply = activate_launcher_instrument(inst)
+        except RuntimeError as e:
+            print(f"activate: {e}", file=sys.stderr)
+            return 1
+        log(f"instrument {iid}: activated ({reply})")
+        return 0
+
+    if sub == "desktop":
+        if len(args) < 2:
+            print("usage: ft-layout instrument desktop launcher|launcher-N DESKTOP_ID",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        desk = args[1].strip()
+        if not is_launcher_instrument_id(iid):
+            print("instrument desktop is only for Launcher ids", file=sys.stderr)
+            return 2
+        if ft_desktop and not ft_desktop.find_desktop_by_id(desk):
+            print(f"warning: desktop id not found now: {desk}", file=sys.stderr)
+        layout = load_layout()
+        inst = instrument_entry(layout, iid) or default_launcher_instrument(iid)
+        inst["id"] = iid
+        inst["type"] = "launcher"
+        inst["action_kind"] = "application"
+        desk = args[1].strip()
+        if not desk.endswith(".desktop"):
+            desk = desk + ".desktop"
+        inst["desktop_id"] = desk
+        info = None
+        if ft_desktop:
+            p = ft_desktop.find_desktop_by_id(inst["desktop_id"])
+            info = ft_desktop.parse_desktop_file(p) if p else None
+        if info and not inst.get("label"):
+            inst["label"] = info["name"]
+        # Default appearance: app icon when available.
+        if inst.get("appearance") in ("app", "", None):
+            inst["appearance"] = "app"
+            icon_path = resolve_and_install_app_icon(inst["desktop_id"], iid)
+            if icon_path:
+                inst["path"] = icon_path
+        inst["enabled"] = True
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                push_instrument(sock, instrument_entry(load_layout(), iid) or inst, eye, heading)
+            except RuntimeError as e:
+                log(f"warning: instrument desktop push: {e}", file=sys.stderr)
+        log(f"instrument {iid}: desktop {inst['desktop_id']}")
+        if as_json:
+            print(json.dumps({"id": iid, "desktop_id": inst["desktop_id"],
+                              "path": inst.get("path") or ""}, separators=(",", ":")))
+        return 0
+
+    if sub == "semantic":
+        if len(args) < 2:
+            print("usage: ft-layout instrument semantic launcher|launcher-N ACTION",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        name = args[1].strip()
+        if not is_launcher_instrument_id(iid):
+            print("instrument semantic is only for Launcher ids", file=sys.stderr)
+            return 2
+        canonical = normalize_action(name)
+        if canonical is None:
+            print(f"unknown semantic action {name!r}", file=sys.stderr)
+            return 1
+        layout = load_layout()
+        inst = instrument_entry(layout, iid) or default_launcher_instrument(iid)
+        inst["id"] = iid
+        inst["type"] = "launcher"
+        inst["action_kind"] = "action"
+        inst["semantic"] = canonical
+        if inst.get("appearance") == "app":
+            inst["appearance"] = "glyph"
+            inst["glyph"] = "star"
+        inst["enabled"] = True
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                push_instrument(sock, instrument_entry(load_layout(), iid) or inst, eye, heading)
+            except RuntimeError as e:
+                log(f"warning: instrument semantic push: {e}", file=sys.stderr)
+        log(f"instrument {iid}: semantic {canonical}")
+        return 0
+
+    if sub == "command":
+        if len(args) < 2:
+            print("usage: ft-layout instrument command launcher|launcher-N [--shell] ARG…",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        rest = args[1:]
+        shell = False
+        if rest and rest[0] == "--shell":
+            shell = True
+            rest = rest[1:]
+        if not is_launcher_instrument_id(iid):
+            print("instrument command is only for Launcher ids", file=sys.stderr)
+            return 2
+        if not rest:
+            print("command needs argv or --shell TEXT", file=sys.stderr)
+            return 2
+        layout = load_layout()
+        inst = instrument_entry(layout, iid) or default_launcher_instrument(iid)
+        inst["id"] = iid
+        inst["type"] = "launcher"
+        inst["action_kind"] = "command"
+        inst["command_shell"] = shell
+        inst["command"] = [" ".join(rest)] if shell else list(rest)
+        if inst.get("appearance") == "app":
+            inst["appearance"] = "glyph"
+            inst["glyph"] = "terminal"
+        inst["enabled"] = True
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                push_instrument(sock, instrument_entry(load_layout(), iid) or inst, eye, heading)
+            except RuntimeError as e:
+                log(f"warning: instrument command push: {e}", file=sys.stderr)
+        log(f"instrument {iid}: command ({'shell' if shell else 'argv'})")
+        return 0
+
+    if sub == "appearance":
+        if len(args) < 2:
+            print("usage: ft-layout instrument appearance ID app|glyph|image|fallback [glyph|PATH]",
+                  file=sys.stderr)
+            return 2
+        iid = args[0].strip().lower()
+        mode = args[1].strip().lower()
+        if not is_launcher_instrument_id(iid):
+            print("instrument appearance is only for Launcher ids", file=sys.stderr)
+            return 2
+        if mode not in ("app", "glyph", "image", "fallback"):
+            print("appearance must be app|glyph|image|fallback", file=sys.stderr)
+            return 2
+        layout = load_layout()
+        inst = instrument_entry(layout, iid) or default_launcher_instrument(iid)
+        inst["id"] = iid
+        inst["type"] = "launcher"
+        inst["appearance"] = mode
+        extra = args[2:] if len(args) > 2 else []
+        if mode == "glyph" and extra:
+            g = extra[0].strip().lower()
+            if ft_desktop and g not in ft_desktop.LAUNCHER_GLYPHS:
+                print(f"unknown glyph {g!r}; want {', '.join(ft_desktop.LAUNCHER_GLYPHS)}",
+                      file=sys.stderr)
+                return 2
+            inst["glyph"] = g
+        if mode == "image" and extra:
+            try:
+                dest = install_instrument_image(" ".join(extra), iid)
+            except (OSError, ValueError) as e:
+                print(f"appearance image: {e}", file=sys.stderr)
+                return 1
+            inst["path"] = dest
+        if mode == "app" and inst.get("desktop_id"):
+            icon_path = resolve_and_install_app_icon(inst["desktop_id"], iid)
+            if icon_path:
+                inst["path"] = icon_path
+        layout = upsert_instrument(layout, inst)
+        save_layout(layout)
+        if backend() == "screens":
+            try:
+                sock = screens_socket()
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                push_instrument(sock, instrument_entry(load_layout(), iid) or inst, eye, heading)
+            except RuntimeError as e:
+                log(f"warning: instrument appearance push: {e}", file=sys.stderr)
+        log(f"instrument {iid}: appearance {mode}")
         return 0
 
     if sub in ("enable", "disable", "recenter"):
-        if iid not in KNOWN_INSTRUMENT_TYPES:
-            print(f"unknown instrument {iid!r} (known: {', '.join(KNOWN_INSTRUMENT_TYPES)})",
-                  file=sys.stderr)
+        if not known_instrument_id(iid):
+            print(f"unknown instrument {iid!r} (known: {', '.join(KNOWN_INSTRUMENT_TYPES)}, "
+                  "image-N, launcher-N)", file=sys.stderr)
             return 2
+        itype = instrument_type_for_id(iid)
         layout = load_layout()
-        inst = instrument_entry(layout, iid) or default_instrument(iid)
+        if itype == "image":
+            inst = instrument_entry(layout, iid) or default_image_instrument(iid)
+        elif itype == "launcher":
+            inst = instrument_entry(layout, iid) or default_launcher_instrument(iid)
+        else:
+            inst = instrument_entry(layout, iid) or default_instrument(itype)
         inst["id"] = iid
-        inst["type"] = iid
+        inst["type"] = itype
         if sub == "enable":
             inst["enabled"] = True
         elif sub == "disable":
@@ -1494,20 +2211,20 @@ def instrument_cmd(argv):
         if backend() == "screens":
             sock = screens_socket()
             if sub == "enable":
-                sock.ask(f"instrument enable {iid}")
-                if "pos" not in inst:
-                    sock.ask(f"instrument recenter {iid}")
-                apply_instruments(sock, layout)
+                f = sock.ask("head").split()
+                eye, heading = tuple(map(float, f[1:4])), float(f[4])
+                try:
+                    push_instrument(sock, instrument_entry(load_layout(), iid) or inst, eye, heading)
+                except RuntimeError as e:
+                    log(f"warning: instrument enable {iid}: {e}", file=sys.stderr)
             elif sub == "disable":
                 sock.ask(f"instrument disable {iid}")
             else:
                 sock.ask(f"instrument enable {iid}")
                 sock.ask(f"instrument recenter {iid}")
-                # Persist new pose
                 f = sock.ask("head").split()
                 eye, heading = tuple(map(float, f[1:4])), float(f[4])
                 layout["instruments"] = capture_instruments(sock, eye, heading)
-                # Keep enabled true after recenter
                 for e in layout["instruments"]:
                     if e["id"] == iid:
                         e["enabled"] = True
@@ -1517,6 +2234,32 @@ def instrument_cmd(argv):
 
     print(f"unknown instrument command {sub!r}", file=sys.stderr)
     return 2
+
+
+def apps_cmd(argv):
+    """ft-layout apps list [--json] [--search Q]"""
+    if not ft_desktop:
+        print("ft_desktop module unavailable", file=sys.stderr)
+        return 1
+    as_json = "--json" in argv
+    search = None
+    if "--search" in argv:
+        i = argv.index("--search")
+        if i + 1 >= len(argv):
+            print("usage: ft-layout apps list [--json] [--search Q]", file=sys.stderr)
+            return 2
+        search = argv[i + 1]
+    sub = argv[2] if len(argv) > 2 else "list"
+    if sub != "list":
+        print("usage: ft-layout apps list [--json] [--search Q]", file=sys.stderr)
+        return 2
+    apps = ft_desktop.list_applications(search=search)
+    if as_json:
+        print(json.dumps({"apps": apps}, separators=(",", ":")))
+    else:
+        for a in apps:
+            print(f"{a['id']}\t{a['name']}\ticon={a.get('icon') or '-'}")
+    return 0
 
 
 # ---------------------------------------------------------------- gamescope (dashboard panels)
@@ -2271,6 +3014,8 @@ def main(argv):
             return gaze_cmd(argv)
         elif cmd == "instrument":
             return instrument_cmd(argv)
+        elif cmd == "apps":
+            return apps_cmd(argv)
         elif cmd == "action":
             if len(argv) < 3:
                 print("usage: ft-layout action NAME|--list [--json] [--duration MS]", file=sys.stderr)
