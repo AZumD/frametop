@@ -498,53 +498,53 @@ Kirigami.ApplicationWindow {
                         }
 
                         Controls.Switch {
-                    Kirigami.FormData.label: "Enabled:"
-                    checked: clock.enabled === true
-                    onToggled: backend.setClockEnabled(checked)
-                }
-                Controls.ComboBox {
-                    Kirigami.FormData.label: "Anchor:"
-                    model: [
-                        { text: "World", value: "world" },
-                        { text: "Position-follow", value: "position-follow" },
-                        { text: "Yaw-follow", value: "yaw-follow" },
-                        { text: "Head (soft)", value: "head" },
-                        { text: "Head (rigid)", value: "head-rigid" }
-                    ]
-                    textRole: "text"
-                    valueRole: "value"
-                    Component.onCompleted: currentIndex = Math.max(0, indexOfValue(clock.anchor || "world"))
-                    onActivated: backend.setClockAnchor(currentValue)
-                }
-                Controls.SpinBox {
-                    Kirigami.FormData.label: "Size (metres):"
-                    from: 8; to: 200; stepSize: 5
-                    value: Math.round((clock.metres !== undefined ? clock.metres : 0.35) * 100)
-                    textFromValue: (v) => (v / 100).toFixed(2)
-                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                    onValueModified: backend.setClockMetres(value / 100)
-                }
-                Controls.SpinBox {
-                    Kirigami.FormData.label: "Idle opacity:"
-                    from: 0; to: 100; stepSize: 5
-                    value: Math.round((clock.idleOpacity !== undefined ? clock.idleOpacity : 0.35) * 100)
-                    textFromValue: (v) => (v / 100).toFixed(2)
-                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                    onValueModified: backend.setClockIdleOpacity(value / 100)
-                }
-                Controls.SpinBox {
-                    Kirigami.FormData.label: "Active opacity:"
-                    from: 0; to: 100; stepSize: 5
-                    value: Math.round((clock.activeOpacity !== undefined ? clock.activeOpacity : 1.0) * 100)
-                    textFromValue: (v) => (v / 100).toFixed(2)
-                    valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                    onValueModified: backend.setClockActiveOpacity(value / 100)
-                }
-                Controls.Switch {
-                    Kirigami.FormData.label: "Gaze attention:"
-                    checked: clock.attentionEnabled !== false
-                    onToggled: backend.setClockAttention(checked)
-                }
+                            Kirigami.FormData.label: "Enabled:"
+                            checked: clock.enabled === true
+                            onToggled: backend.setClockEnabled(checked)
+                        }
+                        Controls.ComboBox {
+                            Kirigami.FormData.label: "Anchor:"
+                            model: [
+                                { text: "World", value: "world" },
+                                { text: "Position-follow", value: "position-follow" },
+                                { text: "Yaw-follow", value: "yaw-follow" },
+                                { text: "Head (soft)", value: "head" },
+                                { text: "Head (rigid)", value: "head-rigid" }
+                            ]
+                            textRole: "text"
+                            valueRole: "value"
+                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue(clock.anchor || "world"))
+                            onActivated: backend.setClockAnchor(currentValue)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Size (metres):"
+                            from: 8; to: 200; stepSize: 5
+                            value: Math.round((clock.metres !== undefined ? clock.metres : 0.35) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: backend.setClockMetres(value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Idle opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round((clock.idleOpacity !== undefined ? clock.idleOpacity : 0.35) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: backend.setClockIdleOpacity(value / 100)
+                        }
+                        Controls.SpinBox {
+                            Kirigami.FormData.label: "Active opacity:"
+                            from: 0; to: 100; stepSize: 5
+                            value: Math.round((clock.activeOpacity !== undefined ? clock.activeOpacity : 1.0) * 100)
+                            textFromValue: (v) => (v / 100).toFixed(2)
+                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                            onValueModified: backend.setClockActiveOpacity(value / 100)
+                        }
+                        Controls.Switch {
+                            Kirigami.FormData.label: "Gaze attention:"
+                            checked: clock.attentionEnabled !== false
+                            onToggled: backend.setClockAttention(checked)
+                        }
                         Controls.Button {
                             Kirigami.FormData.label: ""
                             text: "Place in front of me"
@@ -993,10 +993,10 @@ Kirigami.ApplicationWindow {
                             onMoved: backend.setVisibility("gesture_angle", value)
                         }
                         Controls.Label {
-                                        text: Math.round(gesture.value) + "° of it"
-                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-                                        horizontalAlignment: Text.AlignRight
-                                    }
+                            text: Math.round(gesture.value) + "° of it"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                            horizontalAlignment: Text.AlignRight
+                        }
                     }
 
                     Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "During VR games" }
@@ -1073,10 +1073,10 @@ Kirigami.ApplicationWindow {
                             onMoved: backend.setVisibility("wrist_angle", value)
                         }
                         Controls.Label {
-                                        text: Math.round(wrist.value) + "°"
-                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-                                        horizontalAlignment: Text.AlignRight
-                                    }
+                            text: Math.round(wrist.value) + "°"
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                            horizontalAlignment: Text.AlignRight
+                        }
                     }
                     GridLayout {
                         Kirigami.FormData.label: "All screens:"
