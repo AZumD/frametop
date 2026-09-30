@@ -130,13 +130,22 @@ Kirigami.ApplicationWindow {
                         property int customIndex: backend.screenResolutions.length
                         contentItem: ColumnLayout {
                             RowLayout {
-                                Kirigami.Heading { level: 3; text: "Screen " + (card.modelData.index + 1) }
-                                Controls.Label {
-                                    text: card.modelData.width + " × " + card.modelData.height
-                                          + (card.modelData.scale !== 1 ? ", works like " + card.modelData.effective : "")
-                                    opacity: 0.7
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.largeSpacing
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Kirigami.Heading {
+                                        level: 3
+                                        text: "Screen " + (card.modelData.index + 1)
+                                    }
+                                    Controls.Label {
+                                        text: card.modelData.width + " × " + card.modelData.height
+                                              + (card.modelData.scale !== 1 ? " · works like " + card.modelData.effective : "")
+                                        opacity: 0.7
+                                        font: Kirigami.Theme.smallFont
+                                    }
                                 }
-                                Item { Layout.fillWidth: true }
                                 Controls.RadioButton {
                                     text: "Taskbar here"
                                     checked: card.modelData.primary
@@ -154,6 +163,11 @@ Kirigami.ApplicationWindow {
                             }
                             Kirigami.FormLayout {
                                 Layout.fillWidth: true
+                                wideMode: true
+                                Kirigami.Separator {
+                                    Kirigami.FormData.isSection: true
+                                    Kirigami.FormData.label: "Display"
+                                }
                                 RowLayout {
                                     Kirigami.FormData.label: "Resolution:"
                                     Controls.ComboBox {
@@ -202,6 +216,10 @@ Kirigami.ApplicationWindow {
                                               + (metres.value * card.modelData.height / card.modelData.width).toFixed(2) + " m tall"
                                     }
                                 }
+                                Kirigami.Separator {
+                                    Kirigami.FormData.isSection: true
+                                    Kirigami.FormData.label: "Opacity & attention"
+                                }
                                 RowLayout {
                                     Kirigami.FormData.label: "Active opacity:"
                                     Controls.Slider {
@@ -213,7 +231,11 @@ Kirigami.ApplicationWindow {
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                                         onMoved: backend.setScreenOpacities(card.modelData.index, value, idleOpacitySlider.value)
                                     }
-                                    Controls.Label { text: Math.round(activeOpacitySlider.value * 100) + "%" }
+                                    Controls.Label {
+                                        text: Math.round(activeOpacitySlider.value * 100) + "%"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
                                 }
                                 RowLayout {
                                     Kirigami.FormData.label: "Idle opacity:"
@@ -226,7 +248,11 @@ Kirigami.ApplicationWindow {
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                                         onMoved: backend.setScreenOpacities(card.modelData.index, activeOpacitySlider.value, value)
                                     }
-                                    Controls.Label { text: Math.round(idleOpacitySlider.value * 100) + "%" }
+                                    Controls.Label {
+                                        text: Math.round(idleOpacitySlider.value * 100) + "%"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
                                 }
                                 Controls.Switch {
                                     id: attentionSwitch
@@ -246,7 +272,11 @@ Kirigami.ApplicationWindow {
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                                         onMoved: backend.setScreenAttentionInMs(card.modelData.index, value)
                                     }
-                                    Controls.Label { text: Math.round(fadeInSlider.value) + " ms" }
+                                    Controls.Label {
+                                        text: Math.round(fadeInSlider.value) + " ms"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
                                 }
                                 RowLayout {
                                     visible: attentionSwitch.checked
@@ -259,7 +289,15 @@ Kirigami.ApplicationWindow {
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                                         onMoved: backend.setScreenAttentionOutMs(card.modelData.index, value)
                                     }
-                                    Controls.Label { text: Math.round(fadeOutSlider.value) + " ms" }
+                                    Controls.Label {
+                                        text: Math.round(fadeOutSlider.value) + " ms"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                                Kirigami.Separator {
+                                    Kirigami.FormData.isSection: true
+                                    Kirigami.FormData.label: "Placement & follow"
                                 }
                                 Controls.ComboBox {
                                     Kirigami.FormData.label: "Anchor:"
@@ -294,7 +332,15 @@ Kirigami.ApplicationWindow {
                                         Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                                         onMoved: backend.setScreenFollowDeadzoneDeg(card.modelData.index, value)
                                     }
-                                    Controls.Label { text: Math.round(deadzoneSlider.value) + "°" }
+                                    Controls.Label {
+                                        text: Math.round(deadzoneSlider.value) + "°"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                                Kirigami.Separator {
+                                    Kirigami.FormData.isSection: true
+                                    Kirigami.FormData.label: "Rendering"
                                 }
                                 Controls.ComboBox {
                                     Kirigami.FormData.label: "Scale:"
@@ -430,8 +476,8 @@ Kirigami.ApplicationWindow {
             title: "Spatial Instruments"
             property var clock: backend.clockInstrument
 
-            Kirigami.FormLayout {
-                wideMode: true
+            ColumnLayout {
+                spacing: Kirigami.Units.largeSpacing
 
                 Controls.Label {
                     Layout.fillWidth: true
@@ -441,9 +487,17 @@ Kirigami.ApplicationWindow {
                           + "not KDE windows or virtual monitors. Clock is the first experimental instrument."
                 }
 
-                Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Clock" }
+                Kirigami.AbstractCard {
+                    Layout.fillWidth: true
+                    contentItem: Kirigami.FormLayout {
+                        wideMode: true
 
-                Controls.Switch {
+                        Kirigami.Separator {
+                            Kirigami.FormData.isSection: true
+                            Kirigami.FormData.label: "Clock"
+                        }
+
+                        Controls.Switch {
                     Kirigami.FormData.label: "Enabled:"
                     checked: clock.enabled === true
                     onToggled: backend.setClockEnabled(checked)
@@ -491,17 +545,21 @@ Kirigami.ApplicationWindow {
                     checked: clock.attentionEnabled !== false
                     onToggled: backend.setClockAttention(checked)
                 }
-                Controls.Button {
-                    text: "Place in front of me"
-                    enabled: backend.desktopRunning && backend.busy === ""
-                    onClicked: backend.recenterClock()
-                }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    opacity: 0.7
-                    text: "In VR, aim a controller laser at the clock to reveal its move bar; drag to reposition; "
-                          + "scroll to push/pull. Content is read-only (no desktop clicks)."
+                        Controls.Button {
+                            Kirigami.FormData.label: ""
+                            text: "Place in front of me"
+                            enabled: backend.desktopRunning && backend.busy === ""
+                            onClicked: backend.recenterClock()
+                        }
+                        Controls.Label {
+                            Kirigami.FormData.label: ""
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            opacity: 0.7
+                            text: "In VR, aim a controller laser at the clock to reveal its move bar; drag to reposition; "
+                                  + "scroll to push/pull. Content is read-only (no desktop clicks)."
+                        }
+                    }
                 }
             }
         }
@@ -546,9 +604,15 @@ Kirigami.ApplicationWindow {
 
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
+                    wideMode: true
+
+                    Kirigami.Separator {
+                        Kirigami.FormData.isSection: true
+                        Kirigami.FormData.label: "Arrangement"
+                    }
 
                     Controls.ComboBox {
-                        Kirigami.FormData.label: "Arrangement:"
+                        Kirigami.FormData.label: "Preset:"
                         model: [
                             { text: "Curved around you", value: "arc" },
                             { text: "Flat wall", value: "flat" },
@@ -616,6 +680,7 @@ Kirigami.ApplicationWindow {
 
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
+                    wideMode: true
                     visible: backend.backend === "screens"
                     Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Named profiles" }
 
@@ -647,24 +712,32 @@ Kirigami.ApplicationWindow {
                         placeholderText: "Desk, Cinema, HUD…"
                     }
 
-                    RowLayout {
+                    GridLayout {
                         Kirigami.FormData.label: ""
+                        columns: 2
+                        columnSpacing: Kirigami.Units.smallSpacing
+                        rowSpacing: Kirigami.Units.smallSpacing
+                        Layout.fillWidth: true
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Apply"
                             enabled: backend.desktopRunning && backend.busy === "" && (backend.profiles.names || []).length > 0
                             onClicked: backend.applyProfile(profilePick.currentText)
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Save current as…"
                             enabled: backend.desktopRunning && backend.busy === "" && profileName.text.trim() !== ""
                             onClicked: backend.saveProfile(profileName.text.trim())
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Update selected"
                             enabled: backend.desktopRunning && backend.busy === "" && (backend.profiles.names || []).length > 0
                             onClicked: backend.saveProfile(profilePick.currentText)
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Delete"
                             enabled: backend.busy === "" && (backend.profiles.names || []).length > 0
                             onClicked: backend.deleteProfile(profilePick.currentText)
@@ -868,6 +941,7 @@ Kirigami.ApplicationWindow {
 
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
+                    wideMode: true
 
                     Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "When the screens show" }
 
@@ -918,7 +992,11 @@ Kirigami.ApplicationWindow {
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                             onMoved: backend.setVisibility("gesture_angle", value)
                         }
-                        Controls.Label { text: Math.round(gesture.value) + "° of it" }
+                        Controls.Label {
+                                        text: Math.round(gesture.value) + "° of it"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
                     }
 
                     Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "During VR games" }
@@ -994,36 +1072,50 @@ Kirigami.ApplicationWindow {
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 12
                             onMoved: backend.setVisibility("wrist_angle", value)
                         }
-                        Controls.Label { text: Math.round(wrist.value) + "°" }
+                        Controls.Label {
+                                        text: Math.round(wrist.value) + "°"
+                                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                                        horizontalAlignment: Text.AlignRight
+                                    }
                     }
-                    RowLayout {
+                    GridLayout {
                         Kirigami.FormData.label: "All screens:"
+                        columns: 3
+                        columnSpacing: Kirigami.Units.smallSpacing
+                        rowSpacing: Kirigami.Units.smallSpacing
+                        Layout.fillWidth: true
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Pin to left wrist"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("left")
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Pin to right wrist"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("right")
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Pin to head (soft)"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("head")
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Yaw follow"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("yaw-follow")
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Position follow"
                             enabled: backend.desktopRunning
                             onClicked: backend.pinAll("position-follow")
                         }
                         Controls.Button {
+                            Layout.fillWidth: true
                             text: "Unpin"
                             enabled: backend.desktopRunning
                             onClicked: backend.unpinAll()
