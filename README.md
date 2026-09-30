@@ -14,8 +14,10 @@ Compared with upstream Frametop, this fork currently adds:
 - Head-soft, head-rigid, yaw-follow, and position-follow anchors
 - Direct profile-slot controls and shared semantic layout actions
 - Steam Frame eye-gaze attention with configurable opacity transitions
-- A soft-follow glance dead zone
+- Soft-follow glance dead zone; gaze freezes only head-soft (yaw/position keep moving)
+- Spatial Instruments (clock, media, image, launcher, …) and a SteamVR Background tab
 - Plasma shell watchdog and recovery without restarting the whole desktop
+- Safer desktop restart: SIGTERM `ft-screens` before tearing down the unit so SteamVR does not crash-loop
 - Correct pointer mapping across fractional KDE display scales
 - Safer opt-in handling and recovery for the optional SteamVR pointer driver
 
@@ -43,7 +45,7 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
    ./install.sh
    ```
 
-   The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and the multi-screen desktop plus input relay. The optional 3D-mouse OpenVR driver (`ft_pointer`) is **off by default** (pass `--with-pointer` to enable it); a broken external driver can black-screen SteamVR. The first run downloads 1–2 GB. It asks you along the way. The Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. If SteamVR ever black-screens after enabling optional VR pieces, from SSH run `./scripts/recover-vr.sh --yes`, then reboot. SteamVR has to restart once when you enable the pointer or first install the relay; that closes everything open in VR, including the terminal. Rebooting the headset works too.
+   The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and the multi-screen desktop plus input relay. The optional 3D-mouse OpenVR driver (`ft_pointer`) is **off by default** (pass `--with-pointer` to enable it); a broken external driver can black-screen SteamVR. The first run downloads 1–2 GB. It asks you along the way. The Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. If SteamVR ever black-screens or crash-loops after optional VR pieces or a bad desktop restart, from SSH run `./scripts/recover-vr.sh --yes`, put the headset on, then `systemctl --user start steamvr.service` (or reboot). See [docs/README/RECOVER-VR.md](docs/README/RECOVER-VR.md). SteamVR has to restart once when you enable the pointer or first install the relay; that closes everything open in VR, including the terminal.
 
 After the restart, Launch a program → Desktop opens the multi-screen desktop, with its screens arranged around where you're facing. Frametop Display Settings and Frametop Input Settings are in the desktop's application menu, under Settings.
 
@@ -71,12 +73,12 @@ If you work in the desktop for long stretches, stop Steam from putting the heads
 | `ft-layout pin 1 head` (or Pin to head in Display Settings) | Anchors that screen to the headset as a HUD; it follows shared visibility rules (not the wrist fade) |
 | `ft-layout profile save Desk` / `profile apply Desk` | Named spatial arrangements for the same screen count (also on the Layout page) |
 | Meta+Shift+R in the desktop | Puts the screens back in their layout (also in the menu as Reset Screen Layout, and mappable to a mouse button) |
-| Meta+Shift+H in the desktop | Hides or shows all screens (also in the menu as Hide/Show Screens, and mappable). The Visibility & wrist tab of Frametop Display Settings can instead show them only with the dashboard open, or while you look at your wrist |
-| Play a VR game | The screens hide and your controllers stay in the game. Open the SteamVR dashboard, or press Meta+Shift+H, to see and use them. To keep them visible over games, change During VR games on the Visibility & wrist tab; the controllers still stay in the game, and you use the screens with the mouse or the dashboard |
+| Meta+Shift+H in the desktop | Hides or shows all screens (also in the menu as Hide/Show Screens, and mappable). The Visibility tab of Frametop Display Settings can instead show them only with the dashboard open, hide whenever the dashboard opens, or while you look at your wrist |
+| Play a VR game | The screens hide and your controllers stay in the game. Open the SteamVR dashboard, or press Meta+Shift+H, to see and use them. To keep them visible over games, change During VR games on the Visibility tab; the controllers still stay in the game, and you use the screens with the mouse or the dashboard |
 
 You can map the mouse's extra buttons to actions such as Toggle SteamVR dashboard, Recenter pointer, or Head follow on/off on the Buttons page of Frametop Input Settings, and the Frame controllers' buttons on its Controllers page. Pointer speed, dot size, and the rest are on its Pointer page and take effect immediately. Head follow, which is experimental and off by default, makes the pointer come along when you turn your head: it stays put until your head turns past the leash angle, then glides back to its place in your view, and a leash of 0 keeps it fixed in your view. It's only lightly tested and not polished; tuning its settings, or improving how it feels, is open to anyone who wants to take it further.
 
-Restarting the desktop (Restart desktop in Frametop Display Settings) closes its windows, but background work you started in it, such as servers, tmux sessions, or builds, keeps running.
+Restarting the desktop (Restart desktop in Frametop Display Settings, or `./desktops.sh restart`) closes its windows, but background work you started in it, such as servers, tmux sessions, or builds, keeps running. Start/stop require a healthy SteamVR (`vrserver` + `vrcompositor`); `desktops.sh` SIGTERMs `ft-screens` before tearing down the session so OpenVR can shut down cleanly.
 
 ## Known limitations
 
@@ -85,7 +87,7 @@ This is an early release, tested on one Steam Frame (SteamOS 0.3.0 build 2026092
 - A SteamOS or SteamVR update can break parts of it until Frametop catches up. If something stops working after an update, please report it.
 - The first install downloads 1–2 GB for the build container and compiles everything on the headset, which takes several minutes.
 - During a VR game you can't show the screens with a controller button, because the game owns the buttons. Open the SteamVR dashboard, press Meta+Shift+H, or use a mapped mouse button instead.
-- Flatscreen games aren't detected as games. If your controllers end up working the screens instead of the game, set Controllers on the screens to "Only with the SteamVR dashboard open" (Frametop Display Settings, Visibility & wrist tab).
+- Flatscreen games aren't detected as games. If your controllers end up working the screens instead of the game, set Controllers on the screens to "Only with the SteamVR dashboard open" (Frametop Display Settings, Visibility tab).
 - Typing follows your last click. A controller click on a panel other than the screens (the dashboard, a Steam app) doesn't move typing there; click it with the mouse, or click a screen to bring typing back.
 - The screens don't draw a mouse cursor of their own. The 3D mouse's dot or SteamVR's laser shows where you're pointing.
 - On SteamVR's Settings page, the 3D mouse shows a laser beam and a larger hit dot, like a controller. SteamVR doesn't tell other programs where that page is (unlike Steam's pages, such as Library), so the mouse used to miss most of it: clicks went through to a desktop screen behind, and the dot disappeared. As a workaround, on that page only, the laser starts near your eye and SteamVR finds the page itself. See docs/design.md.
@@ -123,20 +125,20 @@ setup/bluetooth/install.sh uninstall   # if you installed the Bluetooth fixes
 
 ## How it works
 
-A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland compositor. KWin opens one window per screen, ft-screens sets each window's size, and each frame goes to SteamVR as an overlay without being copied. An input relay (`input/`) keeps Bluetooth mice working in SteamVR and feeds the mouse to the 3D pointer, which drives a virtual SteamVR controller (`pointer/`). [docs/reference.md](docs/reference.md) covers each piece, and [docs/design.md](docs/design.md) explains the design and what we learned about SteamVR on the Frame. [docs/hazards.md](docs/hazards.md) lists known ways the input handling can go wrong.
+A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland compositor. KWin opens one window per screen, ft-screens sets each window's size, and each frame goes to SteamVR as an overlay without being copied. An input relay (`input/`) keeps Bluetooth mice working in SteamVR and feeds the mouse to the 3D pointer, which drives a virtual SteamVR controller (`pointer/`). [docs/reference.md](docs/reference.md) covers each piece, and [docs/design.md](docs/design.md) explains the design and what we learned about SteamVR on the Frame. [docs/hazards.md](docs/hazards.md) lists known ways the input handling can go wrong. Script-level notes live under [docs/README/OVERVIEW.md](docs/README/OVERVIEW.md).
 
 | Folder | What it is |
 | --- | --- |
 | `install.sh` | The one-step installer. Safe to re-run. |
 | `desktops.sh` | Start, stop, and configure the desktop, and install the input relay. |
 | `screens/` | ft-screens, the compositor (wlroots and OpenVR). |
-| `session/` | The desktop session script and its config example. |
-| `layout/` | ft-layout: where the screens float, and their sizes. |
+| `session/` | The desktop session script, launcher/MPRIS bridges, and config example. |
+| `layout/` | ft-layout: where the screens float, instruments, and their sizes. |
 | `input/` | The input relay (Bluetooth mice and keyboards, button maps). |
 | `pointer/` | The 3D mouse: SteamVR driver, helper service, and a probe tool. |
 | `display-settings/`, `input-settings/` | The two settings apps (Kirigami, Python). |
 | `setup/` | The build container and the Bluetooth fixes. See [setup/README.md](setup/README.md). |
-| `scripts/` | Helpers the installers use. They run commands locally on the Frame, or over SSH from a PC. |
+| `scripts/` | Helpers the installers use (`recover-vr`, `frame-background`, sync/SSH). They run locally on the Frame, or over SSH from a PC. |
 
 ## Developing from a PC
 
