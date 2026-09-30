@@ -43,7 +43,12 @@
 
 #include <openvr.h>
 
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
+#include <limits.h>
+#include <spawn.h>
+
+extern char **environ;  // for posix_spawn
 
 #include <algorithm>
 #include <chrono>
@@ -1728,6 +1733,33 @@ void EndDrag(Screen &s) {
     ApplyAlpha(s);
 }
 
+// KWin's outputs follow where the screens are, so the pointer and dragged windows cross
+// to the screen you see next to this one: `ft-layout scale` runs once a move has settled.
+long g_arrangeAt = -1;  // g_tick to run it at, -1 = not pending
+
+void ArrangeDesktopSoon() { g_arrangeAt = g_tick + 45; }  // about half a second
+
+void UpdateArrange() {
+    if (g_arrangeAt < 0 || g_tick < g_arrangeAt) return;
+    g_arrangeAt = -1;
+    char exe[PATH_MAX];
+    if (!realpath("/proc/self/exe", exe)) return;
+    std::string layout(exe);  // <repo>/screens/build/ft-screens -> <repo>/layout/ft-layout
+    for (int up = 0; up < 3 && layout.rfind('/') != std::string::npos; ++up) layout.resize(layout.rfind('/'));
+    layout += "/layout/ft-layout";
+    posix_spawn_file_actions_t io;
+    posix_spawn_file_actions_init(&io);
+    posix_spawn_file_actions_addopen(&io, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&io, 1, "/tmp/frametop-layout.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    posix_spawn_file_actions_adddup2(&io, 1, 2);
+    char scale[] = "scale";
+    char *argv[] = {layout.data(), scale, nullptr};
+    pid_t pid;  // reaped by the compositor's SIGCHLD handler
+    if (posix_spawn(&pid, layout.c_str(), &io, nullptr, argv, environ) != 0)
+        std::printf("can't run %s\n", layout.c_str());
+    posix_spawn_file_actions_destroy(&io);
+}
+
 // Let go: pin to the armed wrist, as the screen is now.
 void FinishDrag(Screen &s, int index) {
     const bool moved = s.drag == Drag::Move;
@@ -1737,6 +1769,7 @@ void FinishDrag(Screen &s, int index) {
     s.dragRestore = AnchorMode::World;
     Mat c, p;
     if (!moved) return;
+    ArrangeDesktopSoon();
     if (target != kNone && DevicePose(target, &c) && ScreenPose(s, &p)) {
         Pin(s, target, Mul(Inverse(c), p));
         std::printf("screen %d: pinned to %s\n", index + 1, AnchorName(target));
@@ -2502,7 +2535,7 @@ int ft_vr_modifiers(uint32_t format, uint64_t *out, int max) {
     return int(n < uint32_t(max) ? n : uint32_t(max));
 }
 
-bool ft_vr_dashboard_visible(void) { return vr::VROverlay()->IsDashboardVisible(); }
+bool ft_vr_screens_shown(void) { return ModeVisible(); }
 
 void ft_vr_screen_create(int index, double metres, int count) {
     Screen &s = g_screens[index];
@@ -2774,6 +2807,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     }
     ++g_tick;
     UpdateGame();
+    UpdateArrange();
     UpdateVisibility();
     UpdateLasers();
     UpdateControls();

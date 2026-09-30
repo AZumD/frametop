@@ -37,8 +37,12 @@
 // second kept SteamVR from going to standby.
 //
 // Last used wins: when a real controller moves (picked up), the pointer is released
-// at once (driver "hide", which also drops its hand role hint), so the controller gets
+// (driver "hide", which also drops its hand role hint), so the controller gets
 // its role and laser back. The next mouse input reconnects and claims the laser again.
+// Moving means faster than 0.35 m/s or 2 rad/s, both times POINTER_CONTROLLER_PICKUP,
+// for 100 ms in a row with the controller tracked normally: a single sample over the
+// limit was enough before, and controllers resting on a desk released the pointer on a
+// knock or a tracking jump.
 // SteamVR gives a contested hand role to the most recently used device, and a held
 // Frame controller counts as used (touch sensors). If our device hasn't got the hand
 // role within a second of waking, the pointer is released (no orphan white dot) and
@@ -74,6 +78,20 @@
 // desktops) also report 0x0, but they're placed as dashboard tabs, stay up when the
 // dashboard closes, and ComputeOverlayIntersection hits them normally.
 //
+// SteamVR Settings (a workaround for that page only): Steam's pages (Library and the rest)
+// are drawn in valve.steam.gamepadui.main, a dashboard overlay ComputeOverlayIntersection hits
+// exactly. SteamVR's Settings page isn't: the main overlay is hidden, and the page is drawn by
+// the scene-graph panel (valve.steam.gamepadui.frame.menu.N), whose shape OpenVR doesn't give
+// out. Its transform's plane isn't the page's surface, which is nearer, so the laser, starting
+// a few cm in front of where we thought the page was, started behind it: most of the page
+// took no clicks, which went through to a desktop screen behind, and the page covered our
+// dot. So while the cursor is on that page (OnSettingsPage), the laser starts near the eye
+// (SETTINGS_ORIGIN) and SteamVR's own hit test finds the page; our dot is drawn close in front
+// (SETTINGS_DOT), and the laser-catching dot sits far behind everything (SETTINGS_CATCHER),
+// invisible and with SteamVR's hit dot hidden, so it can't cover the page. The beam and
+// SteamVR's hit dot on the page then look like a controller's. Everywhere else nothing
+// changes.
+//
 // Panel edges: off a panel, the cursor stays on that panel's plane while it's within
 // POINTER_EDGE_REACH (0.3 m) of the last point it touched, instead of jumping to
 // POINTER_DISTANCE. A floating panel's resize margins and the window controls under it
@@ -85,6 +103,58 @@
 // press and collision is frozen, so dragging past a panel's edge (resizing, moving)
 // doesn't jump the cursor to free space or swap in the laser-catching dot, which made
 // SteamVR's resize snap back.
+//
+// Head follow (experimental, off by default; POINTER_FOLLOW=1, or the relay's "follow toggle"): the cursor
+// is carried by a reference direction, where the head faced when it last settled, and turns
+// with it, keeping its offset (mouse movement changes the offset, up to POINTER_FOLLOW_REACH,
+// 70 deg, so the cursor can sit in a corner of the view). While the head stays within
+// POINTER_LEASH_DEG (10) of the reference, nothing moves on its own: the cursor stays put in
+// the room. Once the head has been past the leash for POINTER_LEASH_DELAY (0.2 s; a glance
+// out and back doesn't count), the reference follows: it eases toward the head's facing with a
+// time constant of POINTER_LEASH_RETURN (0.2 s), never falling further behind than the leash
+// (or than it already was), until it lands on the facing, and the cursor is back where it was
+// in the view. Then it waits for the leash again. Earlier tries: dragging the reference only at
+// the leash's end left it up to the leash off after turning back (getting it centred took an
+// overshoot), and easing it all the time moved the cursor on every small head movement. At 0
+// the reference is the head's facing, so the cursor is head-locked. Head roll is ignored (the
+// frames have no roll), so tilting the head doesn't swing the cursor. The ray origin (the
+// anchor) moves to the eye with the reference, so leaning inside the leash doesn't move the
+// cursor either. While the left
+// button is held (and the drop hold after it), the leash still moves the reference but the
+// cursor stays put in the room, so a click or a drag can't be nudged by the head; the offset
+// is taken up from where the cursor is when the hold ends, so it doesn't jump.
+//
+// Gaze mode (experimental, off by default; POINTER_GAZE=1, "gaze on|off|toggle", or the
+// relay's gaze_toggle): the pointer goes where you look, and the mouse does the last bit
+// (MAGIC pointing: Zhai, Morimoto and Ihde, CHI 1999). The gaze service (gaze/ft-gazed)
+// sends the corrected gaze 90 times a second, "gz <yaw> <pitch> <raw yaw> <raw pitch>"
+// (head-relative degrees), and while the gaze has the pointer, the cursor ray is simply
+// that gaze from the eye: nothing is steered, so nothing can pile up. Moving the mouse takes
+// the pointer from the gaze, and it moves from where the gaze left it, as usual. Looking
+// well away from it (more than POINTER_GAZE_RETAKE, 5 deg, for 120 ms, with the mouse still
+// for 300 ms) gives it back to the gaze; small eye movements around the pointer don't.
+//   A left press while the gaze has the pointer isn't sent yet: the pointer stops where the
+// gaze put it, and if the gaze is off, you drag it onto what you meant with the mouse
+// (still holding the button; panels only see it hover). The release clicks there, a press
+// and a release 40 ms apart. Held still for POINTER_GAZE_HOLD (0.5 s) instead, it becomes
+// a real press where the pointer is, so drags work: hold, then move. After a click that
+// didn't need correcting, and after a drag, the gaze has the pointer again.
+//   Outside games (no scene application), gaze mode keeps the pointer: the relay doesn't
+// release it when the mouse is idle ("gazeawake 1|0" tells it). A controller that moves
+// still releases it (the mouse is gaze mode's only pointer device), and in games the mouse
+// wakes it and idling releases it, as without gaze.
+//   The dot only shows while the mouse moves it (within POINTER_GAZE_SHOW, 1 s), while a
+// press is held, and briefly for each click (a pulse);
+// otherwise it's transparent (still there for the laser to land on). The gaze moving it
+// doesn't show it: you know where you're looking.
+//   When the mouse took the pointer and you then click, the nudge was probably onto what
+// you were looking at: from the raw gaze when the mouse took over to where you clicked is
+// the tracker's error there. The helper sends it to ft-gazed as a lesson ("lesson <raw yaw>
+// <raw pitch> <true yaw> <true pitch>", the true direction relative to the head as it was
+// when the mouse took over) if the mouse moved between 0.2 deg and POINTER_GAZE_NUDGE_MAX
+// (8 deg) and the click came within 10 s; more is using the mouse, not a nudge. A held
+// press dragged onto the target is the same: from the raw gaze at the press to the release. With no
+// fresh gaze (a blink, the service stopped, the headset off), the pointer stays put.
 //
 // Placement (for layout): SteamVR keeps a floating panel's position inside the
 // dashboard, where nothing outside can set it, so the helper carries panels like a user
@@ -100,7 +170,10 @@
 // twice while it's more than 1.5 cm or 1 deg off.
 //
 // Commands (datagrams on @ft_pointer_helper): show, hide, recenter, move <dyaw> <dpitch>,
+// follow on|off|toggle (head follow, until the next restart or a change to POINTER_FOLLOW),
+// gaze on|off|toggle|? (gaze mode, likewise with POINTER_GAZE; ? only asks), gz ... (the gaze, from ft-gazed),
 // reload (re-read the settings below), debug (toggle a twice-a-second state log),
+// vrbind/vrglobal/vrstatus (Frame controller buttons, see vrbuttons.h),
 // and btn/scroll lines, which are forwarded to the driver unchanged. For layouts, with a
 // reply datagram to the sender's (abstract) address:
 //   place <overlay> <x> <y> <z> <yaw> <pitch> [roll [grab]]: centre in the standing
@@ -117,9 +190,15 @@
 // POINTER_ORIGIN_FRACTION (0.95): the laser starts this far along the eye-to-cursor line,
 // but never closer than POINTER_ORIGIN_MARGIN (0.15 m) to the cursor point: SteamVR's
 // small controls (undock, frame buttons) float a few centimetres in front of their
-// panel, and a laser that starts behind them can't hit them.
+// panel, and a laser that starts behind them can't hit them. POINTER_FOLLOW (0) and
+// POINTER_LEASH_DEG (10), POINTER_LEASH_DELAY (0.2 s), POINTER_LEASH_RETURN (0.2 s),
+// POINTER_FOLLOW_REACH (70 deg): head follow, above. POINTER_GAZE (0), POINTER_GAZE_RETAKE
+// (5 deg), POINTER_GAZE_NUDGE_MAX (8 deg), POINTER_GAZE_HOLD (0.5 s), POINTER_GAZE_SHOW (1 s):
+// gaze mode, above. POINTER_CONTROLLER_PICKUP (1, 0.5 to 5): how hard a controller must
+// move to take the laser back, above.
 #include <openvr.h>
 
+#include "vrbuttons.h"
 #include "vrmath.h"
 
 #include <algorithm>
@@ -136,6 +215,8 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+
+#include <climits>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -182,6 +263,15 @@ int AbstractSocket(const char *name, bool bindIt) {
         }
     }
     return fd;
+}
+
+std::string ExeDir() {
+    char buf[PATH_MAX];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n <= 0) return ".";
+    buf[n] = 0;
+    std::string p(buf);
+    return p.substr(0, p.rfind('/'));
 }
 
 void SendTo(int fd, const char *name, const std::string &msg) {
@@ -290,6 +380,42 @@ std::vector<uint8_t> DotTexture(int size) {
     return px;
 }
 
+// Unit vector v, turned toward unit vector `center` until it's at most maxRad from it.
+Vec3 PullWithin(Vec3 v, Vec3 center, double maxRad) {
+    if (std::acos(std::clamp(Dot(v, center), -1.0, 1.0)) <= maxRad) return v;
+    Vec3 axis = Cross(center, v);
+    if (Length(axis) < 1e-9) axis = Cross(center, {0, 1, 0});  // opposite: any perpendicular
+    return RotateAbout(center, Normalize(axis), maxRad);
+}
+
+// Unit direction with its pitch limited to +-maxDeg (AimBasis needs it off vertical).
+Vec3 LimitPitch(Vec3 d, double maxDeg) {
+    const double pitch = std::clamp(std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI, -maxDeg, maxDeg);
+    return Direction(std::atan2(-d.x, -d.z) * 180 / M_PI, pitch);
+}
+
+// SteamVR Settings page (see the top): the laser starts this far from the eye, the dot is
+// drawn this far out, and the laser-catching dot sits this far out (metres).
+constexpr double SETTINGS_ORIGIN = 0.25, SETTINGS_DOT = 0.6, SETTINGS_CATCHER = 8.0;
+
+// Whether the line of sight from `eye` along `d` crosses the SteamVR Settings page, drawn by
+// the dashboard's scene-graph panel (valve.steam.gamepadui.frame.menu.N, transform t); see
+// "SteamVR Settings" at the top. The page has no size in OpenVR, so this is its area as
+// measured on the Frame, generously: in metres from the panel's origin, which is near the
+// page's left edge, it ran from about -0.35 (the sidebar) to 1.15 across and +-0.4 up and
+// down, with the transform scaled 0.369. Kept in the transform's units so it scales with it.
+bool OnSettingsPage(const vr::HmdMatrix34_t &t, Vec3 eye, Vec3 d) {
+    const Vec3 c = Position(t), x{t.m[0][0], t.m[1][0], t.m[2][0]}, y{t.m[0][1], t.m[1][1], t.m[2][1]},
+               z{t.m[0][2], t.m[1][2], t.m[2][2]};
+    const double sx = Dot(x, x), sy = Dot(y, y), denom = Dot(d, z);
+    if (sx < 1e-9 || sy < 1e-9 || std::fabs(denom) < 1e-6) return false;
+    const double along = Dot(c - eye, z) / denom;
+    if (along <= 0) return false;
+    const Vec3 off = eye + d * along - c;
+    const double u = Dot(off, x) / sx, v = Dot(off, y) / sy;  // in the transform's units
+    return u >= -1.35 && u <= 3.4 && std::fabs(v) <= 1.25;
+}
+
 }  // namespace
 
 // Placement speeds (see "Placement" at the top).
@@ -298,7 +424,14 @@ constexpr double kPlaceDegPerSec = 60;      // tested: 40 deg/s is applied exact
 int main() {
     double freeDistance = 1.5, cursorDeg = 0.4, originFraction = 0.95, originMargin = 0.15, sceneRadius = 0.5,
            edgeReach = 0.3, grabOffset = 0.075,
-           slideSpeed = 0.5;
+           slideSpeed = 0.5, leashDeg = 10, leashReturn = 0.2, leashDelay = 0.2, followReach = 70;
+    // Head follow (see the top). followConf is POINTER_FOLLOW as last read: a reload only
+    // overrides a "follow" command when the setting itself changed.
+    bool follow = false, followConf = false, followReset = true;
+    // Gaze mode (see the top); gazeConf is POINTER_GAZE as last read, like followConf.
+    bool gazeOn = false, gazeConf = false;
+    double gazeRetake = 5, gazeNudgeMax = 8, gazeHold = 0.5, gazeShow = 1;
+    double pickupScale = 1;  // POINTER_CONTROLLER_PICKUP: scales the controller-moved limits
     auto loadConfig = [&] {
         const auto conf = ReadConfig();
         freeDistance = std::clamp(ConfDouble(conf, "POINTER_DISTANCE", 1.5), 0.3, 10.0);
@@ -309,6 +442,19 @@ int main() {
         edgeReach = std::clamp(ConfDouble(conf, "POINTER_EDGE_REACH", 0.3), 0.0, 2.0);
         grabOffset = std::clamp(ConfDouble(conf, "LAYOUT_GRAB_OFFSET", 0.075), 0.0, 1.0);
         slideSpeed = std::clamp(ConfDouble(conf, "LAYOUT_SLIDE_SPEED", 0.5), 0.02, 2.0);
+        leashDeg = std::clamp(ConfDouble(conf, "POINTER_LEASH_DEG", 10), 0.0, 90.0);
+        leashReturn = std::clamp(ConfDouble(conf, "POINTER_LEASH_RETURN", 0.2), 0.0, 5.0);
+        leashDelay = std::clamp(ConfDouble(conf, "POINTER_LEASH_DELAY", 0.2), 0.0, 5.0);
+        followReach = std::clamp(ConfDouble(conf, "POINTER_FOLLOW_REACH", 70), 10.0, 89.0);
+        const bool wantFollow = ConfDouble(conf, "POINTER_FOLLOW", 0) != 0;
+        if (wantFollow != followConf) follow = followConf = wantFollow, followReset = true;
+        gazeRetake = std::clamp(ConfDouble(conf, "POINTER_GAZE_RETAKE", 5), 1.0, 45.0);
+        gazeNudgeMax = std::clamp(ConfDouble(conf, "POINTER_GAZE_NUDGE_MAX", 8), 1.0, 30.0);
+        gazeHold = std::clamp(ConfDouble(conf, "POINTER_GAZE_HOLD", 0.5), 0.1, 5.0);
+        gazeShow = std::clamp(ConfDouble(conf, "POINTER_GAZE_SHOW", 1), 0.0, 30.0);
+        const bool wantGaze = ConfDouble(conf, "POINTER_GAZE", 0) != 0;
+        if (wantGaze != gazeConf) gazeOn = gazeConf = wantGaze;
+        pickupScale = std::clamp(ConfDouble(conf, "POINTER_CONTROLLER_PICKUP", 1), 0.5, 5.0);
     };
     loadConfig();
     const float laserWidth = float(ConfDouble(ReadConfig(), "POINTER_LASER_WIDTH", 0.8));
@@ -354,6 +500,14 @@ int main() {
 
     const int in = AbstractSocket("ft_pointer_helper", true);
     const int out = AbstractSocket(nullptr, false);
+    // Frame controller buttons (vrbuttons.h). The build puts the binary in pointer/helper/build.
+    ControllerButtons controllerButtons;
+    {
+        const std::string manifest = ExeDir() + "/../actions/ft_pointer_actions.json";
+        char real[PATH_MAX];
+        controllerButtons.Init(realpath(manifest.c_str(), real) ? real : manifest);
+    }
+    SendTo(out, "frametop_relay", "vrhello");  // the relay answers with the mapped buttons
     OverlayList overlays;
     overlays.Start();
     std::map<std::string, vr::VROverlayHandle_t> handles;
@@ -368,10 +522,14 @@ int main() {
     using Clock = std::chrono::steady_clock;
     Clock::time_point lastMouse{}, claimAt{}, claimRelease{}, wokeAt{}, noWakeUntil{};
     bool claimPending = false, claimHeld = false;
+    // Last used wins: since when each controller has been moving (zero: it isn't).
+    Clock::time_point movingSince[vr::k_unMaxTrackedDeviceCount] = {};
     // Tilt mode (see top of file).
     bool leftHeld = false, tilting = false, tiltStart = false, swallowedRight = false;
     double tiltYaw = 0, tiltPitch = 0;
     double dragDistance = 0, lastDistance = 1.5;  // drag lock: distance from the anchor at the press
+    bool onVrSettings = false;       // the cursor is on the SteamVR Settings page (kept while dragging)
+    bool catcherHidesHit = false;    // the laser-catching dot hides SteamVR's hit dot (Settings page)
     Clock::time_point dropHoldUntil{};  // after a left release: keep the drag pose this long
     bool debug = false;
     std::string lastHit;
@@ -392,7 +550,88 @@ int main() {
     };
     Vec3 anchor;
     double yaw = 0, pitch = 0;
+    Vec3 followRef{0, 0, -1};  // head follow's reference direction (see the top)
+    auto followAt = std::chrono::steady_clock::now();  // its last update, for the easing
+    bool following = false;                           // past the leash: easing toward the head
+    double followLag = 0;                             // radians the reference trails the head
+    std::chrono::steady_clock::time_point leashOutSince{};  // head past the leash since (delay)
+    // Gaze mode (see the top).
+    struct Gaze {
+        double hy = 0, hp = 0, rhy = 0, rhp = 0;  // corrected, and raw
+        Clock::time_point at{};
+    } gz;
+    bool gazeOwns = true;  // the pointer follows the gaze; false: the mouse has it
+    bool nudging = false;  // the mouse took it from the gaze: the next click may be a lesson
+    double nudgeRawHy = 0, nudgeRawHp = 0, nudgeMoved = 0;
+    vr::HmdMatrix34_t nudgeHead{}, lastHead{};
+    bool haveHead = false, havePoint = false;
+    Clock::time_point nudgeAt{}, retakeSince{};
+    // A held-back press (see the top): aimHeld while the button is down; then the click
+    // (clickPress at the end of the next frame, clickRelease 40 ms later). gazeBack: give
+    // the gaze the pointer again when the press or click is over.
     vr::TrackedDeviceIndex_t ours = vr::k_unTrackedDeviceIndexInvalid;
+    bool aimHeld = false, clickPress = false, clickRelease = false, gazeBack = false;
+    Clock::time_point aimSince{}, clickReleaseAt{};
+    // Gaze mode outside games, and its dot (see the top): lastMove/lastHeld/pulseAt.
+    bool inGame = false, gazeAwake = false;
+    Clock::time_point inGameAt{}, gazeAwakeAt{};
+    Clock::time_point lastMove{}, lastHeld{}, pulseAt{};
+    // The left button, as sent to the driver.
+    auto pressLeft = [&] {
+        // ft-screens sends the keyboard to the panel clicked last; it sees clicks on
+        // its own screens, but only we know when one lands on another panel.
+        SendTo(out, "ft_screens", "click " + (lastHit.empty() ? std::string("-") : lastHit));
+        // A click after nudging the gaze-placed pointer: the nudge is a lesson (see the top).
+        if (gazeOn && nudging && !gazeOwns && havePoint && Clock::now() - nudgeAt < std::chrono::seconds(10) &&
+            nudgeMoved >= 0.2 && nudgeMoved <= gazeNudgeMax) {
+            const Vec3 d = RotateInverse(nudgeHead, Normalize(lastPoint - Position(nudgeHead)));
+            char msg[160];
+            std::snprintf(msg, sizeof msg, "lesson %.3f %.3f %.3f %.3f", nudgeRawHy, nudgeRawHp,
+                          std::atan2(-d.x, -d.z) * 180 / M_PI, std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI);
+            SendTo(out, "ft_gazed", msg);
+            if (debug) std::printf("gaze %s (nudged %.2f deg)\n", msg, nudgeMoved);
+            if (debug) std::fflush(stdout);
+        }
+        nudging = false;
+        leftHeld = true;
+        dragDistance = lastDistance;
+        tiltYaw = tiltPitch = 0;  // a new drag starts untilted
+        dropHoldUntil = {};
+        pulseAt = Clock::now();
+        SendTo(out, "ft_pointer", "btn trigger 1");
+    };
+    auto releaseLeft = [&] {
+        leftHeld = false;
+        tilting = false;
+        // Hold the drag pose (tilt, frozen distance) while SteamVR finishes the drop.
+        dropHoldUntil = Clock::now() + std::chrono::milliseconds(500);
+        SendTo(out, "ft_pointer", "btn trigger 0");
+        if (gazeBack) gazeOwns = true, gazeBack = false;
+    };
+    // The left button, from the relay's "btn trigger", with gaze mode's held-back press (see
+    // the top).
+    auto leftButton = [&](bool down) {
+        if (down) {
+            if (gazeOn && gazeOwns && !aimHeld && !clickPress && !clickRelease) {
+                // Hold the press back: the pointer stops where the gaze put it.
+                gazeOwns = false;
+                nudging = haveHead && Clock::now() - gz.at < std::chrono::milliseconds(200);
+                nudgeRawHy = gz.rhy, nudgeRawHp = gz.rhp, nudgeHead = lastHead;
+                nudgeAt = aimSince = Clock::now(), nudgeMoved = 0;
+                aimHeld = true;
+                return;
+            }
+            pressLeft();
+            return;
+        }
+        if (aimHeld) {
+            aimHeld = false;
+            clickPress = true;  // after this frame's pose, so it lands where the pointer was moved to
+            gazeBack = nudgeMoved < 0.2;
+            return;
+        }
+        if (leftHeld) releaseLeft();
+    };
     auto lastSlow = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     // --- Panel placement (see "Placement" at the top of the file) ---
@@ -570,6 +809,23 @@ int main() {
             std::fflush(stdout);
         }
 
+        // Outside games, gaze mode keeps the pointer (see the top); the relay needs to know.
+        {
+            const auto t = Clock::now();
+            if (t - inGameAt > std::chrono::milliseconds(500)) {
+                inGameAt = t;
+                inGame = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
+            }
+            const bool awake = gazeOn && !inGame && !headsetOff;
+            if (awake != gazeAwake || t - gazeAwakeAt > std::chrono::seconds(5)) {
+                if (awake != gazeAwake) std::printf("gaze keeps the pointer: %s\n", awake ? "yes" : "no (off, in a game, or headset off)");
+                if (awake != gazeAwake) std::fflush(stdout);
+                gazeAwake = awake;
+                gazeAwakeAt = t;
+                SendTo(out, "frametop_relay", awake ? "gazeawake 1" : "gazeawake 0");
+            }
+        }
+
         // Commands from the relay.
         char buf[256];
         ssize_t n;
@@ -585,6 +841,42 @@ int main() {
                 if (senderLen > offsetof(sockaddr_un, sun_path))
                     sendto(out, msg.data(), msg.size(), 0, reinterpret_cast<const sockaddr *>(&sender), senderLen);
             };
+            // The gaze, from ft-gazed: not mouse input, it never wakes the pointer.
+            double g[4];
+            if (std::sscanf(buf, "gz %lf %lf %lf %lf", &g[0], &g[1], &g[2], &g[3]) == 4) {
+                gz = {g[0], g[1], g[2], g[3], Clock::now()};
+                continue;
+            }
+            if (std::strncmp(buf, "vrbind", 6) == 0) {
+                std::printf("controller buttons: %s\n", controllerButtons.Bind(buf + 6).c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            if (std::strncmp(buf, "vrglobal", 8) == 0) {
+                const char *arg = buf + 8;
+                while (*arg == ' ') ++arg;
+                ControllerButtons::SetGlobal(std::strncmp(arg, "off", 3) != 0);
+                reply(controllerButtons.Status());
+                continue;
+            }
+            if (std::strncmp(buf, "vrstatus", 8) == 0) {
+                reply(controllerButtons.Status());
+                continue;
+            }
+            if (std::strncmp(buf, "gaze", 4) == 0) {
+                const char *arg = buf + 4;
+                while (*arg == ' ') ++arg;
+                if (*arg != '?') {  // "gaze ?" only asks
+                    gazeOn = std::strncmp(arg, "on", 2) == 0    ? true
+                             : std::strncmp(arg, "off", 3) == 0 ? false
+                                                                : !gazeOn;
+                    gazeOwns = true, nudging = false;
+                    std::printf("gaze mode %s\n", gazeOn ? "on" : "off");
+                    std::fflush(stdout);
+                }
+                reply(gazeOn ? "ok on" : "ok off");
+                continue;
+            }
             const bool mouseInput = std::strncmp(buf, "move", 4) == 0 || std::strncmp(buf, "btn", 3) == 0 ||
                                     std::strncmp(buf, "scroll", 6) == 0;
             if (mouseInput) lastMouse = Clock::now();
@@ -633,15 +925,11 @@ int main() {
                 continue;
             }
             if (std::strncmp(buf, "btn trigger 1", 13) == 0) {
-                leftHeld = true;
-                dragDistance = lastDistance;
-                tiltYaw = tiltPitch = 0;  // a new drag starts untilted
-                dropHoldUntil = {};
+                leftButton(true);
+                continue;
             } else if (std::strncmp(buf, "btn trigger 0", 13) == 0) {
-                leftHeld = false;
-                tilting = false;
-                // Hold the drag pose (tilt, frozen distance) while SteamVR finishes the drop.
-                dropHoldUntil = Clock::now() + std::chrono::milliseconds(500);
+                leftButton(false);
+                continue;
             } else if (std::strncmp(buf, "btn b 1", 7) == 0 && leftHeld) {
                 tilting = tiltStart = swallowedRight = true;  // right press while dragging: tilt, no right-click
                 continue;
@@ -655,6 +943,15 @@ int main() {
                 continue;
             }
             if (std::sscanf(buf, "move %lf %lf", &a, &b) == 2) {
+                lastMove = Clock::now();  // the dot shows while the mouse moves it (gaze mode)
+                if (gazeOn && gazeOwns) {
+                    // The mouse takes the pointer from the gaze, from where the gaze left it.
+                    gazeOwns = false;
+                    nudging = haveHead && Clock::now() - gz.at < std::chrono::milliseconds(200);
+                    nudgeRawHy = gz.rhy, nudgeRawHp = gz.rhp, nudgeHead = lastHead;
+                    nudgeAt = Clock::now(), nudgeMoved = 0;
+                }
+                if (nudging || aimHeld) nudgeMoved += std::hypot(a, b);
                 if (!anchored) recenter = true;
                 yaw += a;
                 while (yaw > 180) yaw -= 360;
@@ -664,8 +961,17 @@ int main() {
                 recenter = true;
             } else if (std::strncmp(buf, "reload", 6) == 0) {
                 loadConfig();
-                std::printf("reloaded: free distance %.2f m, dot %.2f deg, origin %.2f\n", freeDistance, cursorDeg,
-                            originFraction);
+                std::printf("reloaded: free distance %.2f m, dot %.2f deg, origin %.2f, head follow %s, leash %.0f deg, "
+                            "controller pickup %.1fx\n",
+                            freeDistance, cursorDeg, originFraction, follow ? "on" : "off", leashDeg, pickupScale);
+                std::fflush(stdout);
+            } else if (std::strncmp(buf, "follow", 6) == 0) {
+                const char *arg = buf + 6;
+                while (*arg == ' ') ++arg;
+                const bool was = follow;
+                follow = std::strncmp(arg, "on", 2) == 0 ? true : std::strncmp(arg, "off", 3) == 0 ? false : !follow;
+                if (follow && !was) followReset = true;
+                std::printf("head follow %s (leash %.0f deg)\n", follow ? "on" : "off", leashDeg);
                 std::fflush(stdout);
             } else if (std::strncmp(buf, "show", 4) == 0) {
                 if (!active) wake(Clock::now());
@@ -723,26 +1029,36 @@ int main() {
             std::fflush(stdout);
         }
 
-        // Last used wins: a real controller being moved releases the pointer.
+        // Last used wins: a real controller being moved releases the pointer (see the top).
         if (active && tnow - lastMouse > std::chrono::milliseconds(500)) {
             for (vr::TrackedDeviceIndex_t i = 1; i < vr::k_unMaxTrackedDeviceCount; ++i) {
-                if (i == ours || !all[i].bPoseIsValid) continue;
-                if (sys->GetTrackedDeviceClass(i) != vr::TrackedDeviceClass_Controller) continue;
+                if (i == ours || !all[i].bPoseIsValid || all[i].eTrackingResult != vr::TrackingResult_Running_OK ||
+                    sys->GetTrackedDeviceClass(i) != vr::TrackedDeviceClass_Controller) {
+                    movingSince[i] = {};
+                    continue;
+                }
                 const auto &v = all[i].vVelocity.v, &w = all[i].vAngularVelocity.v;
                 const double speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
                 const double spin = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
-                if (speed > 0.35 || spin > 2.0) {
+                if (speed <= 0.35 * pickupScale && spin <= 2.0 * pickupScale) {
+                    movingSince[i] = {};
+                    continue;
+                }
+                if (movingSince[i] == Clock::time_point{}) movingSince[i] = tnow;
+                if (tnow - movingSince[i] >= std::chrono::milliseconds(100)) {
                     active = false;
                     claimPending = claimHeld = false;
                     overlay->HideOverlay(cursor);
                     overlay->HideOverlay(marker);
                     SendTo(out, "ft_pointer", "btn a 0");
                     SendTo(out, "ft_pointer", "hide");
-                    std::printf("controller %u moved: pointer released\n", i);
+                    std::printf("controller %u moved (%.2f m/s, %.1f rad/s): pointer released\n", i, speed, spin);
                     std::fflush(stdout);
                     break;
                 }
             }
+        } else {
+            std::fill(std::begin(movingSince), std::end(movingSince), Clock::time_point{});
         }
         const auto &hm = hmd.mDeviceToAbsoluteTracking.m;
         const Vec3 eye{hm[0][3], hm[1][3], hm[2][3]};
@@ -754,7 +1070,77 @@ int main() {
             pitch = std::asin(std::clamp(f.y, -1.0, 1.0)) * 180 / M_PI;
             anchored = true;
             recenter = false;
+            followReset = true;
         }
+
+        // Gaze mode (see the top): the gaze has the pointer, or takes it back when you look
+        // well away from it. Not while a press holds the pointer, and only on fresh gaze.
+        if (hmd.bPoseIsValid) lastHead = hmd.mDeviceToAbsoluteTracking, haveHead = true;
+        if (gazeOn && active && hmd.bPoseIsValid && !tilting && !leftHeld && !aimHeld && !clickPress && !clickRelease &&
+            tnow >= dropHoldUntil &&
+            tnow - gz.at < std::chrono::milliseconds(150)) {
+            const Vec3 g = Rotate(hmd.mDeviceToAbsoluteTracking, Direction(gz.hy, gz.hp));
+            if (!gazeOwns && havePoint) {
+                const double off = std::acos(std::clamp(Dot(g, Normalize(lastPoint - eye)), -1.0, 1.0)) * 180 / M_PI;
+                if (off > gazeRetake && tnow - lastMouse > std::chrono::milliseconds(300)) {
+                    if (retakeSince == Clock::time_point{}) retakeSince = tnow;
+                    if (tnow - retakeSince >= std::chrono::milliseconds(120)) gazeOwns = true, nudging = false;
+                } else {
+                    retakeSince = {};
+                }
+            }
+            if (gazeOwns) {
+                retakeSince = {};
+                anchor = eye;
+                anchored = true;
+                yaw = std::atan2(-g.x, -g.z) * 180 / M_PI;
+                pitch = std::clamp(std::asin(std::clamp(g.y, -1.0, 1.0)) * 180 / M_PI, -85.0, 85.0);
+            }
+        }
+
+        if (aimHeld || leftHeld || clickPress || clickRelease) lastHeld = tnow;
+
+        // Head follow (see the top): past the leash (for the delay), ease the reference to the
+        // head's facing, and turn the cursor with it. Not in gaze mode: the gaze places it.
+        if (follow && !gazeOn && active && anchored && hmd.bPoseIsValid) {
+            const Vec3 head = LimitPitch(Vec3{-hm[0][2], -hm[1][2], -hm[2][2]}, 85);
+            if (followReset) {
+                followRef = head, followLag = 0, leashOutSince = {};
+                followReset = following = false;
+            }
+            const double dt = std::min(0.1, std::chrono::duration<double>(tnow - followAt).count());
+            const double leash = leashDeg * M_PI / 180;
+            const double lag = std::acos(std::clamp(Dot(followRef, head), -1.0, 1.0));
+            double keep = lag;  // how far the reference stays behind the head after this frame
+            if (leash <= 0) {
+                keep = 0;  // head-locked
+            } else if (following) {
+                keep = lag * (leashReturn > 0 ? std::exp(-dt / leashReturn) : 0.0);
+                // A fast turn drags it at the leash's end; past it already (after the delay), it
+                // can't fall further behind, and it closes in from there without a jump.
+                keep = std::min(keep, std::max(leash, followLag));
+                if (keep < 0.05 * M_PI / 180) keep = 0, following = false;  // landed on the facing
+            } else if (lag > leash) {
+                if (leashOutSince == decltype(leashOutSince){}) leashOutSince = tnow;
+                if (std::chrono::duration<double>(tnow - leashOutSince).count() >= leashDelay)
+                    following = true, leashOutSince = {};
+            } else {
+                leashOutSince = {};  // back inside before the delay: a glance
+            }
+            followLag = keep;
+            const Vec3 ref = LimitPitch(PullWithin(followRef, head, keep), 85);
+            if (!leftHeld && tnow >= dropHoldUntil) {
+                // The cursor keeps its offset from the reference (frames without roll).
+                Vec3 d = FromBasis(AimBasis(ref), ToBasis(AimBasis(followRef), Direction(yaw, pitch)));
+                d = PullWithin(Normalize(d), ref, followReach * M_PI / 180);
+                yaw = std::atan2(-d.x, -d.z) * 180 / M_PI;
+                pitch = std::clamp(std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI, -85.0, 85.0);
+                // The ray origin closes in on the eye as the reference does on the facing.
+                anchor = eye + (anchor - eye) * (leash <= 0 ? 0.0 : lag > 1e-6 ? keep / lag : following ? 0.0 : 1.0);
+            }
+            followRef = ref;
+        }
+        followAt = tnow;
 
         // Slow work, once a second: overlay handles, our device index, laser width.
         const auto now = std::chrono::steady_clock::now();
@@ -907,14 +1293,68 @@ int main() {
             }
             const bool onScene = !dragging && ((bestScene && best < 1e8) || onEdge);
             const bool onPanel = dragging || (best < 1e8 && !onScene);
+            const Vec3 sight = Normalize(point - eye);
+            if (!dragging) {
+                // SteamVR Settings (see the top): the dashboard's main panel is hidden and its
+                // scene-graph panel shows the page.
+                onVrSettings = false;
+                const auto mainIt = visible.find("valve.steam.gamepadui.main");
+                if (overlay->IsDashboardVisible() && !(mainIt != visible.end() && mainIt->second)) {
+                    for (const auto &[key, handle] : handles) {
+                        if (!visible[key] || key.rfind("valve.steam.gamepadui.frame.menu.", 0) != 0) continue;
+                        vr::ETrackingUniverseOrigin uo;
+                        vr::HmdMatrix34_t t{};
+                        if (overlay->GetOverlayTransformAbsolute(handle, &uo, &t) == vr::VROverlayError_None &&
+                            OnSettingsPage(t, eye, sight))
+                            onVrSettings = true;
+                    }
+                }
+            }
+            if (onVrSettings != catcherHidesHit) {
+                overlay->SetOverlayFlag(cursor, vr::VROverlayFlags_HideLaserIntersection, onVrSettings);
+                catcherHidesHit = onVrSettings;
+            }
 
-            {
+            if (onVrSettings) {
+                // The dot close in front of the page, which is nearer than any guess of ours;
+                // the laser-catching dot far behind everything, invisible, so it never covers
+                // the page, with SteamVR's hit dot hidden on it.
+                const Vec3 near = eye + sight * SETTINGS_DOT, far = eye + sight * SETTINGS_CATCHER;
+                double alpha = 1;
+                if (gazeOn) {
+                    auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
+                    alpha = std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
+                }
+                overlay->SetOverlayAlpha(marker, float(alpha));
+                overlay->SetOverlayWidthInMeters(marker, float(2 * SETTINGS_DOT * std::tan(cursorDeg * M_PI / 360)));
+                auto mm = Billboard(near, eye);
+                overlay->SetOverlayTransformAbsolute(marker, vr::TrackingUniverseStanding, &mm);
+                overlay->SetOverlayAlpha(cursor, 0);
+                overlay->SetOverlayWidthInMeters(cursor, float(2 * SETTINGS_CATCHER * std::tan(cursorDeg * M_PI / 360)));
+                auto mc = Billboard(far, eye);
+                overlay->SetOverlayTransformAbsolute(cursor, vr::TrackingUniverseStanding, &mc);
+                overlay->ShowOverlay(marker);
+                overlay->ShowOverlay(cursor);
+            } else {
                 // On a panel: the non-interactive marker, pulled 5 mm toward the eye so it
                 // draws on top. In free space: the interactive dot the laser lands on.
                 const vr::VROverlayHandle_t show = onPanel ? marker : cursor, hide = onPanel ? cursor : marker;
                 const Vec3 at = onPanel ? point + Normalize(eye - point) * 0.005 : onScene ? point + dir * 0.05 : point;
                 const double dist = std::sqrt(Dot(at - eye, at - eye));
-                overlay->SetOverlayWidthInMeters(show, float(2 * dist * std::tan(cursorDeg * M_PI / 360)));
+                // Gaze mode: shown only while something moves it or a press holds it, and a pulse
+                // for each click (see the top); transparent otherwise, the laser still lands on it.
+                double scale = 1, alpha = 1;
+                if (gazeOn) {
+                    auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
+                    alpha = std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
+                    const double pulse = secs(pulseAt);
+                    if (pulse < 0.6) {
+                        scale = 1 + 1.5 * std::max(0.0, 1 - pulse / 0.3);
+                        alpha = std::max(alpha, std::clamp((0.6 - pulse) / 0.3, 0.0, 1.0));
+                    }
+                }
+                overlay->SetOverlayAlpha(show, float(alpha));
+                overlay->SetOverlayWidthInMeters(show, float(2 * dist * std::tan(scale * cursorDeg * M_PI / 360)));
                 auto m = Billboard(at, eye);
                 overlay->SetOverlayTransformAbsolute(show, vr::TrackingUniverseStanding, &m);
                 overlay->ShowOverlay(show);
@@ -928,16 +1368,19 @@ int main() {
             const Vec3 aim = Rotate(R, RotateInverse(S, aimStanding));  // raw <- head <- standing
             // Origin partway along the line of sight to the cursor (smaller hit dot).
             const double toPoint = std::sqrt(Dot(point - eye, point - eye));
-            const double originDist = std::max(0.0, std::min(toPoint * originFraction, toPoint - originMargin));
+            double originDist = std::max(0.0, std::min(toPoint * originFraction, toPoint - originMargin));
+            if (onVrSettings) originDist = std::min(originDist, SETTINGS_ORIGIN);  // SteamVR finds the page
             const Vec3 originStanding = eye + Normalize(point - eye) * originDist;
             const Vec3 eyeRaw = Position(R) + Rotate(R, RotateInverse(S, originStanding - eye));
             lastPoint = point, lastOrigin = originStanding, lastAim = aimStanding;  // tilt starts from here
+            havePoint = true;
             if (debug && tnow - lastDebug > std::chrono::milliseconds(500)) {
                 lastDebug = tnow;
                 if (systemPointer == vr::k_ulOverlayHandleInvalid) overlay->FindOverlay("system.pointer", &systemPointer);
-                std::printf("dbg %s hit=%s dist=%.2f eye->point=%.2f origin=%.2f yaw=%.1f pitch=%.1f steamvr_dot=%d primary=%u\n",
+                std::printf("dbg %s hit=%s dist=%.2f eye->point=%.2f origin=%.2f vrsettings=%d yaw=%.1f pitch=%.1f gaze=%s steamvr_dot=%d primary=%u\n",
                             dragging ? "DRAG" : occluded ? "INFRONT" : onEdge ? "EDGE" : onScene ? "SCENE" : (best < 1e8 ? "PANEL" : "FREE"), lastHit.empty() ? "-" : lastHit.c_str(),
-                            distance, toPoint, originDist, yaw, pitch,
+                            distance, toPoint, originDist, onVrSettings, yaw, pitch,
+                            !gazeOn ? "off" : tnow - gz.at > std::chrono::milliseconds(150) ? "stale" : gazeOwns ? "owns" : "mouse",
                             systemPointer != vr::k_ulOverlayHandleInvalid && overlay->IsOverlayVisible(systemPointer),
                             overlay->GetPrimaryDashboardDevice());
                 std::fflush(stdout);
@@ -966,6 +1409,30 @@ int main() {
                 SendTo(out, "ft_pointer", msg);
             }
         }
+
+        // A held-back press (see the top): held still long enough, it's a real press (a drag);
+        // released, it's a click where the pointer is now (this frame's pose has gone out).
+        if (!active) aimHeld = clickPress = false;  // released meanwhile: nothing to click
+        if (aimHeld && nudgeMoved < 0.2 && tnow - aimSince >= std::chrono::duration<double>(gazeHold)) {
+            aimHeld = false;
+            gazeBack = true;
+            pressLeft();
+        }
+        if (clickPress) {
+            clickPress = false;
+            pressLeft();
+            clickRelease = true;
+            clickReleaseAt = tnow + std::chrono::milliseconds(40);
+        } else if (clickRelease && tnow >= clickReleaseAt) {
+            clickRelease = false;
+            releaseLeft();
+        }
+
+        controllerButtons.Poll(
+            [&](const char *button, bool down) {
+                SendTo(out, "frametop_relay", std::string("vrbtn ") + button + (down ? " 1" : " 0"));
+            },
+            inGame);
 
         vr::VREvent_t ev;
         while (sys->PollNextEvent(&ev, sizeof ev)) {

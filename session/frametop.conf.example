@@ -11,6 +11,7 @@ POINTER=0          # 1 = the mouse drives the universal 3D pointer (ft_pointer d
 POINTER_SENSITIVITY=0.03   # degrees per mouse count
 POINTER_IDLE=30    # seconds without mouse use before the controllers get their laser back
 POINTER_WAKE_COUNTS=40     # mouse counts within 1 s needed to wake or re-claim the laser (ignores desk jitter)
+POINTER_CONTROLLER_PICKUP=1 # how hard a controller must move (x 0.35 m/s or 2 rad/s, for 100 ms) to take the laser back; raise it if resting controllers do (0.5 to 5)
 POINTER_DISTANCE=1.5       # metres to the cursor when it isn't on a panel
 POINTER_CURSOR_DEG=0.4     # size of the free-space dot, in degrees
 POINTER_ORIGIN_FRACTION=0.95 # laser starts this far along eye->cursor: its beam is a few cm, SteamVR's hit dot tiny
@@ -18,5 +19,17 @@ POINTER_LASER_WIDTH=0.8    # controller beam width (dashboard.laserRayWidthScale
 POINTER_ORIGIN_MARGIN=0.15   # the laser starts at least this far (m) in front of its target, so small floating controls stay hittable
 POINTER_SCENE_RADIUS=0.5   # texture-less dashboard overlays (dock, window controls): hit radius (m) around their origin
 POINTER_EDGE_REACH=0.3     # just off a panel, the cursor stays on its plane this far (m), to reach its resize edges and window controls
+POINTER_FOLLOW=0           # 1 = the cursor follows your head on a leash (a mouse button mapped to Head follow on/off toggles it)
+POINTER_LEASH_DEG=10       # head follow: how far (degrees) your head can turn before the cursor comes along; 0 locks it to your view
+POINTER_LEASH_DELAY=0.2    # head follow: how long (s) your head has to stay past the leash, so a glance doesn't move the cursor
+POINTER_LEASH_RETURN=0.2   # head follow: once it comes along, how quickly (s) the cursor settles back to its place in your view
+POINTER_FOLLOW_REACH=70    # head follow: how far (degrees) from the middle of your view the mouse can move the cursor
+POINTER_GAZE=0             # 1 = the pointer goes where you look, the mouse does the last bit (needs the gaze service: gaze/run.sh install)
+POINTER_GAZE_RETAKE=5      # gaze mode: how far (degrees) you look away from the pointer before the gaze takes it back from the mouse
+POINTER_GAZE_NUDGE_MAX=8   # gaze mode: a mouse nudge up to this far (degrees) before a click is learned as the eye tracker's error
+POINTER_GAZE_HOLD=0.5      # gaze mode: a press held this long (s) without moving becomes a real press (to drag); moved or released sooner, it clicks where you let go
+POINTER_GAZE_SHOW=1        # gaze mode: the dot shows this long (s) after the mouse moves it; also while a press is held, and a pulse per click
+META_DASHBOARD=0   # 1 = a Meta tap on a pass-through keyboard toggles the SteamVR dashboard (pointer mode only)
+SHARE_KEYS=0       # 1 = keys of keyboards grabbed for the desktop also go to @frametop_keys, for hotkey tools (any local process can listen)
 LAYOUT_GRAB_OFFSET=0.075   # arranging screens: where the floating window's grab bar is, in metres below the screen
 LAYOUT_SLIDE_SPEED=0.5     # arranging screens: how fast the invisible controller slides a grabbed screen (m/s)

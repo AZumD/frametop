@@ -7,7 +7,10 @@
 //   - KWin renders into DMA-BUFs and hands them to us (linux-dmabuf). We draw nothing:
 //     each buffer goes to SteamVR as the panel's texture (vr.cpp, ImportDmabuf).
 //   - Pointer input from the panels (controller lasers, the 3D mouse) goes to KWin through
-//     our seat, as if we were a normal desktop.
+//     our seat, as if we were a normal desktop. KWin's nested backend adds our surface
+//     coordinates to its output's logical position without undoing its own scale, and its
+//     buffers are in pixels, so a panel position in pixels is divided by the screen's KWin
+//     scale first ("scale <screen> <s>", from ft-layout).
 //
 // Usage: ft-screens [--socket NAME] [--screen WxH@METRES]... [-- COMMAND ARGS...]
 //   --socket    Wayland socket name in $XDG_RUNTIME_DIR (default ft-screens-0)
@@ -87,11 +90,19 @@ struct server {
     struct wl_listener new_toplevel, new_decoration;
     struct screen *screens[MAX_SCREENS];
     struct config config[MAX_SCREENS];
+    double scale[MAX_SCREENS];  // KWin's scale for each screen (panel pixels per logical unit)
     int n_config, n_screens;
     struct wl_list buffers;  // tracked_buffer
     struct wl_event_source *tick;
     struct screen *pointer_focus;
     pid_t child;
+    // Where typing goes: the screens after a click on one, Steam after a click on another
+    // panel. The input relay grabs the keyboards while it's the screens (see keys_update).
+    bool keys_clicked;    // the last click was on a screen
+    bool keys_desktop;    // ...and the screens are showing: typing goes to the desktop
+    int relay_fd;         // unbound, so the relay can't reply into our control socket
+    uint32_t relay_sent;  // when the relay last heard from us (ms)
+    unsigned ticks;
 };
 
 static uint32_t now_ms(void) {
@@ -247,19 +258,23 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
     struct screen *sc = s->screens[e->screen];
     struct wlr_surface *surface = sc->toplevel->base->surface;
     const uint32_t t = now_ms();
+    const double x = e->x / s->scale[e->screen], y = e->y / s->scale[e->screen];  // KWin's units
     switch (e->type) {
         case FT_MOTION:
         case FT_BUTTON:
             if (s->pointer_focus != sc) {
-                wlr_seat_pointer_notify_enter(s->seat, surface, e->x, e->y);
+                wlr_seat_pointer_notify_enter(s->seat, surface, x, y);
                 s->pointer_focus = sc;
             }
-            wlr_seat_pointer_notify_motion(s->seat, t, e->x, e->y);
+            wlr_seat_pointer_notify_motion(s->seat, t, x, y);
             if (e->type == FT_BUTTON) {
                 wlr_seat_pointer_notify_button(s->seat, t, e->button,
                                                e->pressed ? WL_POINTER_BUTTON_STATE_PRESSED
                                                           : WL_POINTER_BUTTON_STATE_RELEASED);
-                if (e->pressed) wlr_seat_keyboard_notify_enter(s->seat, surface, NULL, 0, NULL);
+                if (e->pressed) {
+                    wlr_seat_keyboard_notify_enter(s->seat, surface, NULL, 0, NULL);
+                    s->keys_clicked = true;
+                }
             }
             break;
         case FT_SCROLL:
@@ -285,10 +300,30 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
+// Tell the input relay where typing goes, on a change and every second: while it's the
+// desktop, the relay grabs pass-through keyboards so SteamVR (and the Steam app with
+// gamescope's focus) doesn't get the keys too. Without word from us for a few seconds,
+// the relay gives the keyboards back, so a closed desktop doesn't keep them.
+static void keys_update(struct server *s) {
+    const bool desktop = s->keys_clicked && ft_vr_screens_shown();
+    const uint32_t t = now_ms();
+    if (desktop == s->keys_desktop && t - s->relay_sent < 1000) return;
+    if (desktop != s->keys_desktop) wlr_log(WLR_INFO, "typing goes to %s", desktop ? "the desktop" : "Steam");
+    s->keys_desktop = desktop;
+    s->relay_sent = t;
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    const char name[] = "frametop_relay";
+    memcpy(addr.sun_path + 1, name, sizeof name - 1);
+    const char *msg = desktop ? "keyboard desktop" : "keyboard steam";
+    sendto(s->relay_fd, msg, strlen(msg), MSG_DONTWAIT, (struct sockaddr *)&addr,
+           offsetof(struct sockaddr_un, sun_path) + 1 + sizeof name - 1);
+}
+
 // Every ~11 ms (90 Hz): SteamVR events, and frame callbacks for screens that committed.
 static int tick(void *data) {
     struct server *s = data;
     ft_vr_poll(handle_vr_event, s);
+    if (++s->ticks % 9 == 0) keys_update(s);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     for (int i = 0; i < MAX_SCREENS; ++i) {
@@ -314,13 +349,23 @@ static int child_exited(int sig, void *data) {
     return 0;
 }
 
+static bool key_held(const struct wlr_keyboard *kb, uint32_t code) {
+    for (size_t i = 0; i < kb->num_keycodes; i++)
+        if (kb->keycodes[i] == code) return true;
+    return false;
+}
+
 // Keys from the input relay (physical keyboards): "key <evdev code> <1 press|0 release>".
-// They go to the screen KWin has keyboard focus on (the last one clicked), but not while
-// the SteamVR dashboard is open: typing belongs to Steam then.
+// They go to the screen KWin has keyboard focus on (the last one clicked), while typing
+// goes to the desktop (keys_update). The release of a key the desktop got the press for
+// always goes through, or the key stays held there (a modifier held as typing moves to
+// Steam would otherwise modify every key typed after it).
 static void handle_key(struct server *s, uint32_t code, int value, char *reply, int size) {
     if (value == 2) return (void)snprintf(reply, size, "ok repeat ignored");  // KWin repeats itself
-    if (!s->seat->keyboard_state.focused_surface) return (void)snprintf(reply, size, "ok no focus");
-    if (ft_vr_dashboard_visible()) return (void)snprintf(reply, size, "ok dashboard open");
+    if (value || !key_held(&s->keyboard, code)) {
+        if (!s->seat->keyboard_state.focused_surface) return (void)snprintf(reply, size, "ok no focus");
+        if (!s->keys_desktop) return (void)snprintf(reply, size, "ok typing goes to Steam");
+    }
     struct wlr_keyboard_key_event ev = {
         .time_msec = now_ms(), .keycode = code, .update_state = true,
         .state = value ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED};
@@ -331,7 +376,10 @@ static void handle_key(struct server *s, uint32_t code, int value, char *reply, 
 }
 
 // Control socket: abstract datagram @ft_screens. Here: "size <screen> <w> <h>" (a new
-// resolution, live) and "key <code> <value>"; the rest is in vr.cpp (ft_vr_command).
+// resolution, live), "scale <screen> <s>" (KWin's scale for it, from ft-layout),
+// "key <code> <value>", and "click <overlay key>" (from the pointer
+// helper: a mouse click landed on that panel, "-" for none); the rest is in vr.cpp
+// (ft_vr_command).
 static int control_readable(int fd, uint32_t mask, void *data) {
     struct server *s = data;
     char buf[512], reply[2048];
@@ -342,6 +390,7 @@ static int control_readable(int fd, uint32_t mask, void *data) {
         buf[n] = 0;
         unsigned code;
         int value, index, w, h;
+        double scale;
         if (sscanf(buf, "size %d %d %d", &index, &w, &h) == 3) {
             // A new resolution for a screen, live: KWin resizes the screen to match.
             if (index < 1 || index > MAX_SCREENS || !s->screens[index - 1] || w < 320 || h < 200 || w > 16384 ||
@@ -352,10 +401,24 @@ static int control_readable(int fd, uint32_t mask, void *data) {
                 wlr_xdg_toplevel_set_size(s->screens[index - 1]->toplevel, w, h);
                 snprintf(reply, sizeof reply, "ok");
             }
+        } else if (sscanf(buf, "scale %d %lf", &index, &scale) == 2) {
+            if (index < 1 || index > MAX_SCREENS || !(scale >= 0.25 && scale <= 8)) {
+                snprintf(reply, sizeof reply, "error bad screen or scale");
+            } else {
+                if (s->scale[index - 1] != scale) wlr_log(WLR_INFO, "screen %d: KWin scale %g", index, scale);
+                s->scale[index - 1] = scale;
+                snprintf(reply, sizeof reply, "ok");
+            }
         } else if (sscanf(buf, "key %u %d", &code, &value) == 2) {
             handle_key(s, code, value, reply, sizeof reply);
             len = sizeof from;
             continue;  // no reply: keys are fire-and-forget
+        } else if (strncmp(buf, "click ", 6) == 0) {
+            // A click on another panel takes typing to Steam. Our own panels (the screens,
+            // their controls) leave it: a click on a screen arrives as a panel event.
+            if (strcmp(buf + 6, "-") != 0 && strncmp(buf + 6, "frametop.", 9) != 0) s->keys_clicked = false;
+            len = sizeof from;
+            continue;
         } else {
             ft_vr_command(buf, reply, sizeof reply);
         }
@@ -414,6 +477,7 @@ static bool setup_dmabuf(struct server *s) {
 
 int main(int argc, char **argv) {
     struct server s = {0};
+    for (int i = 0; i < MAX_SCREENS; ++i) s.scale[i] = 1;
     const char *socket_name = "ft-screens-0";
     char **command = NULL;
     for (int i = 1; i < argc; ++i) {
@@ -481,6 +545,7 @@ int main(int argc, char **argv) {
 
     const int control = open_control_socket();
     if (control < 0) return 1;
+    s.relay_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     wl_event_loop_add_fd(s.loop, control, WL_EVENT_READABLE, control_readable, &s);
 
     s.tick = wl_event_loop_add_timer(s.loop, tick, &s);

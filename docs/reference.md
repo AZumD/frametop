@@ -57,14 +57,16 @@ In the last three modes the hotkey shows the screens anyway. Two more settings o
 - During VR games, the Always mode hides the screens unless the dashboard is open (the default), or leaves them up.
 - Controllers on the screens. Visible screens can keep SteamVR's laser mouse on, so controllers work them with the dashboard closed, but that also takes the controllers away from a game. By default this is off while a VR game runs, and the 3D mouse or the dashboard works the screens. The other choices are always on, or only with the dashboard open, which also suits flatscreen games since they aren't scene apps.
 
-Input from the lasers reaches KWin through ft-screens' own seat. OpenVR reports hits in DMA-BUF (buffer) pixels; ft-screens maps those through UV onto the committed Wayland surface-local size (`screens/coords.h`) before `wlr_seat_pointer_notify_*`. That keeps the laser aligned with the KDE cursor at 100%, 125%, 150%, and mixed per-screen scales without changing the panel's width in metres. Keys come from the input relay, from any keyboard it doesn't grab and any key a pointer device passes through, and go to the screen you clicked last, except while the SteamVR dashboard is open.
+Input from the lasers reaches KWin through ft-screens' own seat. OpenVR reports hits in DMA-BUF (buffer) pixels; ft-screens maps those through UV onto the committed Wayland surface-local size (`screens/coords.h`) before `wlr_seat_pointer_notify_*`, and also divides panel positions by each screen's scale (`scale N s` from `ft-layout`). That keeps the laser aligned with the KDE cursor at 100%, 125%, 150%, and mixed per-screen scales without changing the panel's width in metres. Keys come from the input relay, from pass-through keyboards and any key a pointer device passes through. Typing follows your last click: after a click on a screen it goes to the desktop, even with the SteamVR dashboard open, and after a mouse click on any other panel (the dashboard, Steam, an app like Spotify) it goes there instead. While it goes to the desktop, the relay grabs pass-through keyboards so gamescope, which reads every keyboard itself, doesn't type them into the Steam app too. A program that watches every keyboard for a hotkey loses a grabbed one; with `SHARE_KEYS=1` in `~/.config/frametop.conf`, their keys also go to `@frametop_keys` for it. That's off by default, since any local process that binds the name first would get everything typed into the desktop. Hidden screens don't take typing.
+
+KWin's nested backend doesn't undo a screen's scale on pointer input, so ft-screens divides panel positions (in pixels) by it. `ft-layout` sends it each screen's scale as KWin reports it (`scale N s`) whenever it applies scales: at desktop start and from Frametop Display Settings. A scale changed only in Plasma's own display settings is put back to the Frametop layout's the next time `ft-layout` runs.
 
 ft-screens listens for datagrams on the abstract socket `@ft_screens` and replies to the sender:
 
 ```
 place N x y z yaw pitch roll     width N metres          curve N radius|on|off
 pin N|all left|right [matrix]    unpin N|all             size N w h
-get N    screens    head    state    key code value
+get N    screens    head    state    key code value    scale N s
 visibility always|dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
 hide | show | toggle    controllers always|outside_games|dashboard    ingames hide|visible
 ```
@@ -74,6 +76,8 @@ hide | show | toggle    controllers always|outside_games|dashboard    ingames hi
 SteamVR opens input devices only when it starts. A Bluetooth mouse that sleeps and reconnects gets new device nodes, SteamVR keeps reading the dead ones, and the mouse stops working until SteamVR restarts. `input/input-relay.py` avoids this. It creates two virtual devices, `frametop virtual mouse` and `frametop virtual keyboard`, through `/dev/uinput` before SteamVR starts. It then grabs USB and Bluetooth mice and keyboards as they come and go and forwards their events, so SteamVR only ever sees the virtual devices, which never go away.
 
 It runs as the user service `frametop-input-relay.service`, ordered before `steamvr.service` (`Before=`, not `Requires=`), with `TimeoutStartSec=20` so a hung READY cannot block SteamVR forever. It is `WantedBy=steamvr.service` only (not `default.target`).
+
+The relay also owns the volume keys, on every device that has them, the headset's buttons included. It changes the volume itself (`wpctl`, 5% a step, repeating while held), and nothing else sees a volume key, gamescope and SteamVR included: on devices with a keymap (the headset's `gpio-keys`, USB and Bluetooth keyboards) it remaps just the volume entries to unused codes (`KEY_MACRO29`, `KEY_MACRO30`), so the headset's click button and the other keys still work, and it grabs `pmic_resin`, which has only volume down. The keymaps go back when the relay stops. With `--no-grab` it leaves the volume keys alone.
 
 ```
 desktops.sh relay install     # enable it (starts with the next reboot or SteamVR start)
@@ -104,15 +108,17 @@ pointer/driver/install.sh probe     # devices, hand roles, who owns the dashboar
 scripts/recover-vr.sh --yes        # if SteamVR black-screens after enabling the pointer
 ```
 
-The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `POINTER_IDLE`, `POINTER_WAKE_COUNTS`, `POINTER_DISTANCE`, `POINTER_CURSOR_DEG`, `POINTER_ORIGIN_FRACTION`, `POINTER_ORIGIN_MARGIN`, `POINTER_SCENE_RADIUS`, `POINTER_EDGE_REACH`, and `POINTER_LASER_WIDTH`. The example config explains each. Frametop Input Settings changes them live; after editing the file by hand, restart the relay or the helper.
+The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `POINTER_IDLE`, `POINTER_WAKE_COUNTS`, `POINTER_CONTROLLER_PICKUP`, `POINTER_DISTANCE`, `POINTER_CURSOR_DEG`, `POINTER_ORIGIN_FRACTION`, `POINTER_ORIGIN_MARGIN`, `POINTER_SCENE_RADIUS`, `POINTER_EDGE_REACH`, `POINTER_LASER_WIDTH`, the head follow settings `POINTER_FOLLOW`, `POINTER_LEASH_DEG`, `POINTER_LEASH_DELAY`, `POINTER_LEASH_RETURN`, and `POINTER_FOLLOW_REACH`, and the gaze mode settings `POINTER_GAZE`, `POINTER_GAZE_RETAKE`, `POINTER_GAZE_NUDGE_MAX`, `POINTER_GAZE_HOLD`, and `POINTER_GAZE_SHOW`. The example config explains each. Frametop Input Settings changes them live; after editing the file by hand, restart the relay or the helper.
 
 ## Frametop Input Settings
 
-A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs in the `dev` container and talks to the relay over its control socket, `@frametop_relay`. It has four pages:
+A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs in the `dev` container and talks to the relay over its control socket, `@frametop_relay`. It has six pages:
 
-- Devices lists every USB and Bluetooth mouse and keyboard, with a light that flashes when the device is used. Each device gets a role: 3D pointer (grabbed, drives the pointer; the default for anything with a mouse), Pass through (not grabbed; the default for keyboards, where a Meta tap still toggles the dashboard), or Ignore. A device is identified by its Bluetooth address, or its USB ids and name, so all of its input nodes share one role. Forget drops everything saved for a device.
-- Buttons maps a pointer device's buttons. Choose Capture a button, press the button or key, then pick an action: a click, back, scroll, toggle dashboard, recenter, pointer on or off, faster or slower, pass the key through, or nothing. Devices with saved mappings are listed even while they're asleep.
-- Pointer has sliders for the pointer settings, which apply immediately, and a Recenter button.
+- Devices lists every USB and Bluetooth mouse and keyboard, with a light that flashes when the device is used. Each device gets a role: 3D pointer (grabbed, drives the pointer; the default for anything with a mouse), Pass through (grabbed only while typing goes to the desktop; the default for keyboards, where a Meta tap toggles the dashboard if `META_DASHBOARD=1` is in `~/.config/frametop.conf`), or Ignore. A device is identified by its Bluetooth address, or its USB ids and name, so all of its input nodes share one role. Forget drops everything saved for a device.
+- Buttons maps a pointer device's buttons. Choose Capture a button, press the button or key, then pick an action: a click, back, scroll, toggle dashboard, recenter, pointer on or off, head follow on or off, gaze pointer on or off, faster or slower, reset or hide/show screens, profile slot 1–6 / next / previous, pass the key through, or nothing. Devices with saved mappings are listed even while they're asleep.
+- Controllers maps the Frame controllers' buttons (every button but the system button) to the same actions, except passing a key through. Capture a button and press it on a controller, or pick it from the list. The controllers aren't input devices on the host; only SteamVR sees them. So the pointer helper reads them with SteamVR input (`pointer/helper/vrbuttons.h`, `pointer/helper/actions/`) and sends presses to the relay (`vrbtn right/a 1`), which does the mapped action. The helper only takes the buttons that are mapped (the relay tells it with `vrbind`), at an overlay-global priority, and only while no game (scene application) runs, so games keep every button; with In games on (`controller_in_games`), a mapped button is taken from games too. That needs SteamVR's "Enable global input from overlays (Experimental)" setting (`steamvr/globalActionSetPriority`), which the page's Global input switch turns on and off. Mappings are saved as `controller_buttons` in `~/.config/frametop-input.json`.
+- Pointer has a Head follow switch and sliders for the pointer settings, which apply immediately, and a Recenter button.
+- Gaze has the gaze pointer switch (on now and from now on; a mapped button toggles it until the helper restarts), the gaze mode sliders, the gaze service's state (headset, samples per second, whether only one eye is tracked, the calibration, the nudges learned), and Calibrate (opens the gaze probe), Reload calibration, and Forget nudges.
 - Bluetooth lists paired devices and has Apply Bluetooth fixes, which runs `/etc/steamframe/bt-fixups.sh` through `pkexec`. Pair new devices in Steam.
 
 Device rules are saved in `~/.config/frametop-input.json`. `input-settings/install.sh` installs the menu entry. Its launcher hands podman the real `XDG_RUNTIME_DIR` and user bus and gives the app the session's Wayland socket, because the desktop session runs on a private D-Bus and podman fails on it.
@@ -120,6 +126,8 @@ Device rules are saved in `~/.config/frametop-input.json`. `input-settings/insta
 ## Frametop Display Settings and ft-layout
 
 When the desktop starts, its screens arrange themselves around where you're facing. You can move them by hand at any time and put them back with Meta+Shift+R, the Reset Screen Layout menu entry, Arrange now in the app, or a mouse button mapped to Reset desktop screen layout.
+
+The desktop's own screen arrangement follows where the screens are around you, whatever their numbers: a screen you see to the left of another is to its left in Plasma too, so the pointer and dragged windows cross straight to it. Screens one above the other stack, and screens pinned to a wrist come last. It's updated at startup, after arranging or saving the layout, and half a second after you let go of a screen you moved. With the headset off there's no head pose to go by, and the arrangement stays as it was.
 
 Frametop Display Settings has three tabs:
 
@@ -133,9 +141,9 @@ Frametop Display Settings has three tabs:
 layout/ft-layout apply [--duration MS]   # arrange every screen (optional ease-in/out move)
 layout/ft-layout capture                 # save the current arrangement and sizes as the layout
 layout/ft-layout plan                    # print the arrangement as JSON (no VR needed)
-layout/ft-layout scale                   # per-screen scale, positions, and taskbar screen, to KWin
+layout/ft-layout scale                   # per-screen scale, positions (as the screens are around you), and taskbar screen, to KWin
 layout/ft-layout screen state --json     # per-screen anchor/opacity + slot info
-layout/ft-layout gaze state              # true eye tracking + current GazeTarget
+layout/ft-layout gaze state              # eye tracking + GazeTarget (attention path in ft-screens)
 layout/ft-layout gaze debug on|off
 layout/ft-layout gaze fallback head|off  # explicit head fallback (debug only)
 layout/ft-layout instrument list|state [--json]

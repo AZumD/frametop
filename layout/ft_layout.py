@@ -48,7 +48,8 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout apply [--wait SECONDS] [--duration MS]
   ft-layout capture                  save the current arrangement as the custom layout
   ft-layout plan                     print the arrangement as JSON (no VR needed)
-  ft-layout scale                    per-screen scale, positions, and primary to KWin
+  ft-layout scale                    per-screen scale, positions (as the screens are around
+                                     you), and primary to KWin
   ft-layout screen-args              ft-screens' --screen arguments for the session script
   ft-layout screen state --json      per-screen anchor/opacity + slot info
   ft-layout gaze state               true eye-tracking status + current gaze target
@@ -1785,6 +1786,54 @@ def outputs(env):
 KSCREEN_ROTATION = {1: "normal", 2: "left", 4: "inverted", 8: "right"}  # kscreen-doctor -j "rotation"
 
 
+def arrangement(count):
+    """The screens as you see them from where you are: columns left to right, each top to
+    bottom (0-based screen indices), for KWin's output positions. Screens pinned to a
+    wrist come last. None when there's nothing to go by (gamescope, no ft-screens)."""
+    if backend() != "screens":
+        return None
+    try:
+        sock = screens_socket()
+        f = sock.ask("head").split()
+        eye, heading = tuple(map(float, f[1:4])), float(f[4])
+        gets = [parse_get(sock.ask(f"get {i + 1}")) for i in range(count)]
+    except (RuntimeError, ValueError, IndexError):
+        return None
+    seen, pinned = [], []
+    for i, g in enumerate(gets):
+        if g["hand"] != "none":
+            pinned.append(i)
+            continue
+        rel = turn_yaw(tuple(c - e for c, e in zip(g["center"], eye)), -heading)
+        yaw, pitch = yaw_pitch(rel)
+        half = math.degrees(math.atan2(g["metres"] / 2, max(0.1, math.sqrt(dot(rel, rel)))))
+        seen.append({"i": i, "x": -yaw, "pitch": pitch, "half": half})  # x grows to the right
+    seen.sort(key=lambda b: b["x"])
+    columns = []
+    for b in seen:
+        # One above the other: centres closer sideways than half the narrower screen.
+        if columns and abs(b["x"] - columns[-1][-1]["x"]) < min(b["half"], columns[-1][-1]["half"]):
+            columns[-1].append(b)
+        else:
+            columns.append([b])
+    return [[b["i"] for b in sorted(c, key=lambda b: -b["pitch"])] for c in columns] + [[i] for i in pinned]
+
+
+def send_scales(outs):
+    """KWin's scale for each screen, as it is now, to ft-screens: KWin's nested backend
+    doesn't undo its scale on pointer input, so ft-screens does (panel pixels / scale)."""
+    if backend() != "screens":
+        return
+    try:
+        sock = screens_socket()
+        for i, o in enumerate(outs):
+            reply = sock.ask(f"scale {i + 1} {float(o.get('scale', 1)):g}")
+            if not reply.startswith("ok"):
+                log(f"screen {i + 1}: scale: {reply}")
+    except RuntimeError as e:
+        log(f"scale: {e}")
+
+
 def apply_scales():
     """Per-screen scale and rotation, positions side by side, and the primary screen (the
     taskbar goes there) to KWin, which keeps them in the session's config."""
@@ -1807,21 +1856,33 @@ def apply_scales():
             args.append(f"output.{p['id']}.priority.1")
     if args:
         subprocess.run(["kscreen-doctor", *args], capture_output=True, env=env, timeout=20)
-    # Side by side in screen order, centred vertically, so the pointer and dragged windows
-    # cross between neighbours.
+    # Laid out as you see the screens around you (arrangement), centred on one line, so
+    # the pointer and dragged windows cross to the screen you see next to this one.
     outs = outputs(env)
+    send_scales(outs)
     # kscreen's "size" is in pixels (already turned for a rotation); positions are in
     # logical units, the pixels divided by the scale (KWin rounds up).
     sizes = [(math.ceil(o["size"]["width"] / float(o.get("scale", 1)) - 1e-6),
               math.ceil(o["size"]["height"] / float(o.get("scale", 1)) - 1e-6))
              for o in outs if o.get("size")]
     if len(sizes) == len(outs) and outs:
-        tallest, x, moves = max(h for _, h in sizes), 0, []
-        for o, (w, h) in zip(outs, sizes):
-            want = (x, (tallest - h) // 2)
-            if (o.get("pos", {}).get("x"), o.get("pos", {}).get("y")) != want:
-                moves.append(f"output.{o['id']}.position.{want[0]},{want[1]}")
-            x += w
+        columns = arrangement(len(outs))
+        if not columns or sorted(i for c in columns for i in c) != list(range(len(outs))):
+            # Nothing to go by (no head pose with the headset off, say): keep KWin's order.
+            columns = [[i] for i in sorted(range(len(outs)), key=lambda i: (outs[i].get("pos", {}).get("x", 0),
+                                                                            outs[i].get("pos", {}).get("y", 0)))]
+        widths = [max(sizes[i][0] for i in c) for c in columns]
+        heights = [sum(sizes[i][1] for i in c) for c in columns]
+        tallest, x, moves = max(heights), 0, []
+        for c, cw, ch in zip(columns, widths, heights):
+            y = (tallest - ch) // 2
+            for i in c:
+                want = (x + (cw - sizes[i][0]) // 2, y)
+                y += sizes[i][1]
+                o = outs[i]
+                if (o.get("pos", {}).get("x"), o.get("pos", {}).get("y")) != want:
+                    moves.append(f"output.{o['id']}.position.{want[0]},{want[1]}")
+            x += cw
         if moves:
             subprocess.run(["kscreen-doctor", *moves], capture_output=True, env=env, timeout=20)
             args += moves
@@ -1839,6 +1900,15 @@ def apply_scales():
     return args
 
 
+def kwin_follow():
+    """KWin's outputs after the screens moved, if the desktop is up."""
+    try:
+        changes = apply_scales()
+        log("kwin: " + (" ".join(changes) if changes else "unchanged"))
+    except RuntimeError as e:
+        log(f"kwin: {e}")
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__.split("Usage")[1].split("\n", 1)[1])
@@ -1854,6 +1924,7 @@ def main(argv):
             log(screens_socket().ask("toggle"))
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
+            kwin_follow()  # pinned screens go last
         elif cmd == "opacity" and len(argv) >= 4:
             # Recovery / live tweak: ft-layout opacity N ACTIVE [IDLE]
             index = int(argv[2])
@@ -1967,6 +2038,8 @@ def main(argv):
                                 log(f"visibility: {e}")
                     else:
                         apply(wait, duration_ms=duration)
+                    if not wait:
+                        kwin_follow()
                     if wait:
                         # KWin keeps these, but new screens or a changed layout need them once.
                         for _ in range(30):  # Plasma may still be starting
@@ -1981,6 +2054,7 @@ def main(argv):
                 elif cmd == "capture":
                     for i, s in enumerate(capture()):
                         log(f"screen {i + 1}: {s}")
+                    kwin_follow()
                 else:
                     changes = apply_scales()
                     log("kwin: " + (" ".join(changes) if changes else "unchanged"))
