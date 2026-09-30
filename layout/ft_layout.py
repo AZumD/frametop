@@ -2138,8 +2138,7 @@ def arrangement(count):
 
 
 def send_scales(outs):
-    """KWin's scale for each screen, as it is now, to ft-screens: KWin's nested backend
-    doesn't undo its scale on pointer input, so ft-screens does (panel pixels / scale)."""
+    """Tell ft-screens each output's KWin scale (for vr.cpp seat mapping / fractional-scale)."""
     if backend() != "screens":
         return
     try:

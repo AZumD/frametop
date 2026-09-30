@@ -122,6 +122,18 @@ class PointerCoordMapping(unittest.TestCase):
         # No surface → treat as identity path through ft_buffer_to_surface fallback
         self.assertEqual((sx, sy), (100, 200))
 
+    def test_compositor_must_not_divide_again(self):
+        # Regression: after merging upstream's divide-by-scale in compositor.c with
+        # vr.cpp's ft_buffer_to_seat, clicks were scaled twice. Seat events handed to
+        # wlr_seat_pointer_notify_* must already be final — no e.x / kwin_scale.
+        phys_w, phys_h = 5120, 1440
+        scale = 1.25
+        surf_w, surf_h = phys_w // 2, phys_h // 2
+        seat_x, seat_y = ft_buffer_to_seat(phys_w / 2, phys_h / 2, phys_w, phys_h, surf_w, surf_h, scale)
+        double = (seat_x / scale, seat_y / scale)
+        self.assertAlmostEqual(seat_x, (phys_w / 2) / scale)
+        self.assertNotAlmostEqual(double[0], seat_x)
+
 
 if __name__ == "__main__":
     unittest.main()

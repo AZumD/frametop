@@ -7,10 +7,11 @@
 //   - KWin renders into DMA-BUFs and hands them to us (linux-dmabuf). We draw nothing:
 //     each buffer goes to SteamVR as the panel's texture (vr.cpp, ImportDmabuf).
 //   - Pointer input from the panels (controller lasers, the 3D mouse) goes to KWin through
-//     our seat, as if we were a normal desktop. KWin's nested backend adds our surface
-//     coordinates to its output's logical position without undoing its own scale, and its
-//     buffers are in pixels, so a panel position in pixels is divided by the screen's KWin
-//     scale first ("scale <screen> <s>", from ft-layout).
+//     our seat, as if we were a normal desktop. OpenVR reports buffer pixels; vr.cpp maps
+//     them to seat coords (`screens/coords.h`, including the ceil(dpr) vs output-scale case).
+//     This compositor must not divide by KWin scale again. `scale <screen> <s>` from
+//     ft-layout is forwarded to vr.cpp so that mapping (and fractional-scale notify) stay
+//     in sync.
 //
 // Usage: ft-screens [--socket NAME] [--screen WxH@METRES]... [-- COMMAND ARGS...]
 //   --socket    Wayland socket name in $XDG_RUNTIME_DIR (default ft-screens-0)
@@ -245,8 +246,8 @@ static void new_decoration(struct wl_listener *l, void *data) {
 
 // ---------------------------------------------------------------- input from the panels
 //
-// ft_event x/y are already Wayland surface-local (vr.cpp maps OpenVR buffer pixels through
-// ft_buffer_to_surface using the committed surface size). Do not scale them again here.
+// ft_event x/y are already seat coords (vr.cpp maps OpenVR buffer pixels through
+// ft_buffer_to_seat / coords.h). Do not divide by KWin scale again here.
 
 static void handle_vr_event(const struct ft_event *e, void *data) {
     struct server *s = data;
@@ -258,7 +259,7 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
     struct screen *sc = s->screens[e->screen];
     struct wlr_surface *surface = sc->toplevel->base->surface;
     const uint32_t t = now_ms();
-    const double x = e->x / s->scale[e->screen], y = e->y / s->scale[e->screen];  // KWin's units
+    const double x = e->x, y = e->y;
     switch (e->type) {
         case FT_MOTION:
         case FT_BUTTON:
@@ -402,12 +403,14 @@ static int control_readable(int fd, uint32_t mask, void *data) {
                 snprintf(reply, sizeof reply, "ok");
             }
         } else if (sscanf(buf, "scale %d %lf", &index, &scale) == 2) {
+            // Keep a copy for logging; vr.cpp owns the seat-mapping scale (coords.h) and
+            // fractional-scale notify. Swallowing the command here left outputScale at 1.0.
             if (index < 1 || index > MAX_SCREENS || !(scale >= 0.25 && scale <= 8)) {
                 snprintf(reply, sizeof reply, "error bad screen or scale");
             } else {
                 if (s->scale[index - 1] != scale) wlr_log(WLR_INFO, "screen %d: KWin scale %g", index, scale);
                 s->scale[index - 1] = scale;
-                snprintf(reply, sizeof reply, "ok");
+                ft_vr_command(buf, reply, sizeof reply);
             }
         } else if (sscanf(buf, "key %u %d", &code, &value) == 2) {
             handle_key(s, code, value, reply, sizeof reply);
