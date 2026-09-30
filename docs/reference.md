@@ -143,6 +143,8 @@ Frametop Display Settings has tabs for:
 
 ```
 layout/ft-layout apply [--duration MS]   # arrange every screen (optional ease-in/out move)
+                                         # still pushes visibility, instruments, and (with --wait) KWin
+                                         # scales if the HMD pose is not ready yet
 layout/ft-layout capture                 # save the current arrangement and sizes as the layout
 layout/ft-layout plan                    # print the arrangement as JSON (no VR needed)
 layout/ft-layout scale                   # per-screen scale, positions (as the screens are around you), and taskbar screen, to KWin

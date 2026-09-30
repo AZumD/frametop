@@ -22,6 +22,14 @@ Kirigami.ApplicationWindow {
            { text: "Layout", icon: "view-grid", page: layoutPage },
            { text: "Background", icon: "wallpaper", page: backgroundPage }]
 
+    // Edit state for Spatial Instruments configure page (not a Dialog — Kirigami.Dialog
+    // was opening with an empty body on the Frame).
+    property string instrumentEditKey: ""
+    property var instrumentEditImage: null
+    property var instrumentEditLauncher: null
+    property var instrumentEditAnchors: []
+    property var instrumentEditColors: []
+
     header: Controls.TabBar {
         id: tabs
         Repeater {
@@ -445,13 +453,13 @@ Kirigami.ApplicationWindow {
             property var images: backend.imageInstruments
             property var launchers: backend.launcherInstruments
             property var apps: backend.installedApps
-            property var actions: backend.semanticActions
+            property var semanticActions: backend.semanticActions
             property var glyphs: backend.launcherGlyphs
             property var colorPresets: backend.instrumentColorPresets
             property string pendingImageId: "image"
             property string pendingLauncherFileId: "launcher"
 
-            // Which card's settings sheet is open: "clock"|"date"|… or "image:<id>"|"launcher:<id>"
+            // Which instrument is being edited (pushed settings page reads root.*).
             property string editKey: ""
             property var editImage: null
             property var editLauncher: null
@@ -464,10 +472,37 @@ Kirigami.ApplicationWindow {
                 { text: "Head (rigid)", value: "head-rigid" }
             ]
 
-            function openBuiltin(key) { editImage = null; editLauncher = null; editKey = key }
-            function openImage(img) { editLauncher = null; editImage = img; editKey = "image:" + img.id }
-            function openLauncher(ln) { editImage = null; editLauncher = ln; editKey = "launcher:" + ln.id }
-            function closeEdit() { editKey = ""; editImage = null; editLauncher = null }
+            function openBuiltin(key) {
+                root.instrumentEditImage = null
+                root.instrumentEditLauncher = null
+                root.instrumentEditKey = key
+                root.instrumentEditAnchors = anchorChoices
+                root.instrumentEditColors = colorPresets
+                root.pageStack.push(instrumentEditPage)
+            }
+            function openImage(img) {
+                root.instrumentEditLauncher = null
+                root.instrumentEditImage = img
+                root.instrumentEditKey = "image:" + img.id
+                root.instrumentEditAnchors = anchorChoices
+                root.instrumentEditColors = colorPresets
+                root.pageStack.push(instrumentEditPage)
+            }
+            function openLauncher(ln) {
+                root.instrumentEditImage = null
+                root.instrumentEditLauncher = ln
+                root.instrumentEditKey = "launcher:" + ln.id
+                root.instrumentEditAnchors = anchorChoices
+                root.instrumentEditColors = colorPresets
+                root.pageStack.push(instrumentEditPage)
+            }
+            function closeEdit() {
+                root.instrumentEditKey = ""
+                root.instrumentEditImage = null
+                root.instrumentEditLauncher = null
+                if (root.pageStack.currentItem && root.pageStack.currentItem.objectName === "instrumentEditPage")
+                    root.pageStack.pop()
+            }
 
             // Quiet plate behind instrument previews (VR textures are transparent overlays).
             component PreviewPlate: Rectangle {
@@ -1126,476 +1161,6 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            // -------- settings dialog (one shared)
-            Kirigami.Dialog {
-                id: editSheet
-                title: editKey.indexOf("launcher:") === 0 ? ((editLauncher && editLauncher.title) || "Launcher")
-                     : editKey.indexOf("image:") === 0 ? ((editImage && editImage.label) || "Image")
-                     : editKey === "clock" ? "Clock"
-                     : editKey === "date" ? "Date"
-                     : editKey === "battery" ? "Battery"
-                     : editKey === "media" ? "Media"
-                     : editKey === "storage" ? "Device storage"
-                     : editKey === "sd" ? "SD card"
-                     : "Instrument"
-                standardButtons: Kirigami.Dialog.Close
-                preferredWidth: Math.min(Kirigami.Units.gridUnit * 30, ipage.width * 0.92)
-                onClosed: ipage.closeEdit()
-
-                // Open/close when editKey changes
-                Connections {
-                    target: ipage
-                    function onEditKeyChanged() {
-                        if (ipage.editKey !== "")
-                            editSheet.open()
-                        else if (editSheet.opened)
-                            editSheet.close()
-                    }
-                }
-
-                ColumnLayout {
-                    spacing: Kirigami.Units.largeSpacing
-                    width: Math.min(Kirigami.Units.gridUnit * 28, ipage.width * 0.9)
-
-                    // Shared controls for built-ins (clock/date/battery/media/storage/sd)
-                    Kirigami.FormLayout {
-                        Layout.fillWidth: true
-                        visible: ["clock", "date", "battery", "media", "storage", "sd"].indexOf(editKey) >= 0
-
-                        Controls.ComboBox {
-                            id: builtinAnchor
-                            Kirigami.FormData.label: "Anchor:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: ipage.anchorChoices
-                            textRole: "text"
-                            valueRole: "value"
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : editKey === "media" ? media
-                                        : editKey === "storage" ? storage
-                                        : sd
-                                currentIndex = Math.max(0, indexOfValue((d && d.anchor) || "world"))
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinAnchor.syncFrom() } }
-                            onActivated: {
-                                if (editKey === "clock") backend.setClockAnchor(currentValue)
-                                else if (editKey === "date") backend.setDateAnchor(currentValue)
-                                else if (editKey === "battery") backend.setBatteryAnchor(currentValue)
-                                else if (editKey === "media") backend.setMediaAnchor(currentValue)
-                                else if (editKey === "storage") backend.setStorageAnchor(currentValue)
-                                else if (editKey === "sd") backend.setSdAnchor(currentValue)
-                            }
-                        }
-                        Controls.SpinBox {
-                            id: builtinMetres
-                            Kirigami.FormData.label: "Size (metres):"
-                            from: 8; to: 200; stepSize: 5
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : editKey === "media" ? media
-                                        : editKey === "storage" ? storage
-                                        : sd
-                                const def = editKey === "clock" ? 0.35
-                                          : editKey === "date" ? 0.38
-                                          : editKey === "battery" ? 0.32
-                                          : editKey === "media" ? 0.42
-                                          : 0.34
-                                value = Math.round(((d && d.metres !== undefined) ? d.metres : def) * 100)
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinMetres.syncFrom() } }
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: {
-                                const m = value / 100
-                                if (editKey === "clock") backend.setClockMetres(m)
-                                else if (editKey === "date") backend.setDateMetres(m)
-                                else if (editKey === "battery") backend.setBatteryMetres(m)
-                                else if (editKey === "media") backend.setMediaMetres(m)
-                                else if (editKey === "storage") backend.setStorageMetres(m)
-                                else if (editKey === "sd") backend.setSdMetres(m)
-                            }
-                        }
-                        Controls.SpinBox {
-                            id: builtinIdle
-                            Kirigami.FormData.label: "Idle opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : editKey === "media" ? media
-                                        : editKey === "storage" ? storage
-                                        : sd
-                                value = Math.round(((d && d.idleOpacity !== undefined) ? d.idleOpacity : 0.35) * 100)
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinIdle.syncFrom() } }
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: {
-                                const v = value / 100
-                                if (editKey === "clock") backend.setClockIdleOpacity(v)
-                                else if (editKey === "date") backend.setDateIdleOpacity(v)
-                                else if (editKey === "battery") backend.setBatteryIdleOpacity(v)
-                                else if (editKey === "media") backend.setMediaIdleOpacity(v)
-                                else if (editKey === "storage") backend.setStorageIdleOpacity(v)
-                                else if (editKey === "sd") backend.setSdIdleOpacity(v)
-                            }
-                        }
-                        Controls.SpinBox {
-                            id: builtinActive
-                            Kirigami.FormData.label: "Active opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : editKey === "media" ? media
-                                        : editKey === "storage" ? storage
-                                        : sd
-                                value = Math.round(((d && d.activeOpacity !== undefined) ? d.activeOpacity : 1.0) * 100)
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinActive.syncFrom() } }
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: {
-                                const v = value / 100
-                                if (editKey === "clock") backend.setClockActiveOpacity(v)
-                                else if (editKey === "date") backend.setDateActiveOpacity(v)
-                                else if (editKey === "battery") backend.setBatteryActiveOpacity(v)
-                                else if (editKey === "media") backend.setMediaActiveOpacity(v)
-                                else if (editKey === "storage") backend.setStorageActiveOpacity(v)
-                                else if (editKey === "sd") backend.setSdActiveOpacity(v)
-                            }
-                        }
-                        Controls.Switch {
-                            id: builtinAttn
-                            Kirigami.FormData.label: "Gaze attention:"
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : editKey === "media" ? media
-                                        : editKey === "storage" ? storage
-                                        : sd
-                                checked = !(d && d.attentionEnabled === false)
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinAttn.syncFrom() } }
-                            onToggled: {
-                                if (editKey === "clock") backend.setClockAttention(checked)
-                                else if (editKey === "date") backend.setDateAttention(checked)
-                                else if (editKey === "battery") backend.setBatteryAttention(checked)
-                                else if (editKey === "media") backend.setMediaAttention(checked)
-                                else if (editKey === "storage") backend.setStorageAttention(checked)
-                                else if (editKey === "sd") backend.setSdAttention(checked)
-                            }
-                        }
-                        Controls.ComboBox {
-                            id: builtinColor
-                            visible: ["clock", "date", "battery", "media"].indexOf(editKey) >= 0
-                            Kirigami.FormData.label: "Colour:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: colorPresets
-                            textRole: "text"
-                            valueRole: "value"
-                            function syncFrom() {
-                                const d = editKey === "clock" ? clock
-                                        : editKey === "date" ? date
-                                        : editKey === "battery" ? battery
-                                        : media
-                                currentIndex = Math.max(0, indexOfValue((d && d.color) || "#39FF14"))
-                            }
-                            Component.onCompleted: syncFrom()
-                            Connections { target: ipage; function onEditKeyChanged() { builtinColor.syncFrom() } }
-                            onActivated: {
-                                if (editKey === "clock") backend.setClockColor(currentValue)
-                                else if (editKey === "date") backend.setDateColor(currentValue)
-                                else if (editKey === "battery") backend.setBatteryColor(currentValue)
-                                else if (editKey === "media") backend.setMediaColor(currentValue)
-                            }
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Place in front of me"
-                            enabled: backend.desktopRunning && backend.busy === ""
-                            onClicked: {
-                                if (editKey === "clock") backend.recenterClock()
-                                else if (editKey === "date") backend.recenterDate()
-                                else if (editKey === "battery") backend.recenterBattery()
-                                else if (editKey === "media") backend.recenterMedia()
-                                else if (editKey === "storage") backend.recenterStorage()
-                                else if (editKey === "sd") backend.recenterSd()
-                            }
-                        }
-                    }
-
-                    // Image settings
-                    Kirigami.FormLayout {
-                        Layout.fillWidth: true
-                        visible: editKey.indexOf("image:") === 0 && editImage
-                        readonly property var img: editImage
-
-                        Controls.ComboBox {
-                            Kirigami.FormData.label: "Anchor:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: ipage.anchorChoices
-                            textRole: "text"
-                            valueRole: "value"
-                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((img && img.anchor) || "world"))
-                            onActivated: if (img) backend.setImageAnchor(img.id, currentValue)
-                        }
-                        Controls.Label {
-                            Kirigami.FormData.label: "File:"
-                            Layout.fillWidth: true
-                            elide: Text.ElideMiddle
-                            text: (img && img.fileName) ? img.fileName : "(none — pick a PNG or GIF)"
-                            opacity: (img && img.fileName) ? 1.0 : 0.6
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Choose image…"
-                            enabled: backend.busy === ""
-                            onClicked: {
-                                pendingImageId = img.id
-                                imageFileDialog.open()
-                            }
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Size (metres):"
-                            from: 8; to: 200; stepSize: 5
-                            value: Math.round(((img && img.metres !== undefined) ? img.metres : 0.50) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (img) backend.setImageMetres(img.id, value / 100)
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Idle opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            value: Math.round(((img && img.idleOpacity !== undefined) ? img.idleOpacity : 0.35) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (img) backend.setImageIdleOpacity(img.id, value / 100)
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Active opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            value: Math.round(((img && img.activeOpacity !== undefined) ? img.activeOpacity : 1.0) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (img) backend.setImageActiveOpacity(img.id, value / 100)
-                        }
-                        Controls.Switch {
-                            Kirigami.FormData.label: "Gaze attention:"
-                            checked: !(img && img.attentionEnabled === false)
-                            onToggled: if (img) backend.setImageAttention(img.id, checked)
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Place in front of me"
-                            enabled: backend.desktopRunning && backend.busy === ""
-                            onClicked: if (img) backend.recenterImage(img.id)
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Remove"
-                            enabled: backend.busy === "" && images.length > 1
-                            onClicked: {
-                                if (img) backend.removeImageInstrument(img.id)
-                                ipage.closeEdit()
-                            }
-                        }
-                    }
-
-                    // Launcher settings
-                    Kirigami.FormLayout {
-                        Layout.fillWidth: true
-                        visible: editKey.indexOf("launcher:") === 0 && editLauncher
-                        readonly property var ln: editLauncher
-
-                        Controls.Label {
-                            visible: !!(ln && ln.actionKind === "application" && ln.desktopId && ln.appAvailable === false)
-                            Kirigami.FormData.label: " "
-                            Layout.fillWidth: true
-                            wrapMode: Text.Wrap
-                            color: Kirigami.Theme.negativeTextColor
-                            text: "Configured application is not available on this system."
-                        }
-                        Controls.ComboBox {
-                            Kirigami.FormData.label: "Action type:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: [
-                                { text: "Application", value: "application" },
-                                { text: "Frametop action", value: "action" },
-                                { text: "Custom command", value: "command" }
-                            ]
-                            textRole: "text"
-                            valueRole: "value"
-                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.actionKind) || "application"))
-                            onActivated: {
-                                if (!ln) return
-                                if (currentValue === "application" && apps.length)
-                                    backend.setLauncherDesktop(ln.id, apps[0].id)
-                                else if (currentValue === "action" && actions.length)
-                                    backend.setLauncherSemantic(ln.id, actions[0].id)
-                            }
-                        }
-                        Controls.ComboBox {
-                            visible: !ln || ln.actionKind === "application" || ln.actionKind === undefined
-                            Kirigami.FormData.label: "Application:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 18
-                            model: apps
-                            textRole: "name"
-                            valueRole: "id"
-                            Component.onCompleted: {
-                                const want = (ln && ln.desktopId) || ""
-                                const i = indexOfValue(want)
-                                currentIndex = i >= 0 ? i : 0
-                            }
-                            onActivated: if (ln) backend.setLauncherDesktop(ln.id, currentValue)
-                        }
-                        Controls.ComboBox {
-                            visible: !!(ln && ln.actionKind === "action")
-                            Kirigami.FormData.label: "Action:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                            model: actions
-                            textRole: "label"
-                            valueRole: "id"
-                            Component.onCompleted: {
-                                const want = (ln && ln.semantic) || ""
-                                const i = indexOfValue(want)
-                                currentIndex = i >= 0 ? i : 0
-                            }
-                            onActivated: if (ln) backend.setLauncherSemantic(ln.id, currentValue)
-                        }
-                        Controls.TextField {
-                            visible: !!(ln && ln.actionKind === "command")
-                            Kirigami.FormData.label: "Command:"
-                            Layout.fillWidth: true
-                            placeholderText: ln && ln.commandShell ? "shell command" : "argv words"
-                            text: (ln && ln.commandText) ? ln.commandText : ""
-                            onEditingFinished: if (ln) backend.setLauncherCommand(ln.id, text, !!(ln && ln.commandShell))
-                        }
-                        Controls.Switch {
-                            visible: !!(ln && ln.actionKind === "command")
-                            Kirigami.FormData.label: "Run via shell:"
-                            checked: !!(ln && ln.commandShell)
-                            onToggled: if (ln) backend.setLauncherCommand(ln.id, (ln && ln.commandText) || "", checked)
-                        }
-                        Controls.ComboBox {
-                            Kirigami.FormData.label: "Appearance:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: [
-                                { text: "App icon", value: "app" },
-                                { text: "Glyph", value: "glyph" },
-                                { text: "Custom image", value: "image" },
-                                { text: "Fallback", value: "fallback" }
-                            ]
-                            textRole: "text"
-                            valueRole: "value"
-                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.appearance) || "app"))
-                            onActivated: {
-                                if (!ln) return
-                                if (currentValue === "glyph")
-                                    backend.setLauncherAppearance(ln.id, "glyph", (ln && ln.glyph) || "star")
-                                else if (currentValue === "app")
-                                    backend.setLauncherAppearance(ln.id, "app", "")
-                                else if (currentValue === "fallback")
-                                    backend.setLauncherAppearance(ln.id, "fallback", "")
-                            }
-                        }
-                        Controls.ComboBox {
-                            visible: !!(ln && ln.appearance === "glyph")
-                            Kirigami.FormData.label: "Glyph:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                            model: glyphs
-                            Component.onCompleted: {
-                                const want = (ln && ln.glyph) || "star"
-                                const i = model.indexOf(want)
-                                currentIndex = i >= 0 ? i : 0
-                            }
-                            onActivated: if (ln) backend.setLauncherAppearance(ln.id, "glyph", currentText)
-                        }
-                        Controls.Button {
-                            visible: !!(ln && ln.appearance === "image")
-                            Kirigami.FormData.label: " "
-                            text: "Choose custom image…"
-                            enabled: backend.busy === ""
-                            onClicked: {
-                                pendingLauncherFileId = ln.id
-                                launcherFileDialog.open()
-                            }
-                        }
-                        Controls.ComboBox {
-                            Kirigami.FormData.label: "Anchor:"
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                            model: ipage.anchorChoices
-                            textRole: "text"
-                            valueRole: "value"
-                            Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.anchor) || "world"))
-                            onActivated: if (ln) backend.setLauncherAnchor(ln.id, currentValue)
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Size (metres):"
-                            from: 8; to: 120; stepSize: 2
-                            value: Math.round(((ln && ln.metres !== undefined) ? ln.metres : 0.28) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (ln) backend.setLauncherMetres(ln.id, value / 100)
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Idle opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            value: Math.round(((ln && ln.idleOpacity !== undefined) ? ln.idleOpacity : 0.55) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (ln) backend.setLauncherIdleOpacity(ln.id, value / 100)
-                        }
-                        Controls.SpinBox {
-                            Kirigami.FormData.label: "Active opacity:"
-                            from: 0; to: 100; stepSize: 5
-                            value: Math.round(((ln && ln.activeOpacity !== undefined) ? ln.activeOpacity : 1.0) * 100)
-                            textFromValue: (v) => (v / 100).toFixed(2)
-                            valueFromText: (t) => Math.round(parseFloat(t) * 100)
-                            onValueModified: if (ln) backend.setLauncherActiveOpacity(ln.id, value / 100)
-                        }
-                        Controls.Switch {
-                            Kirigami.FormData.label: "Gaze attention:"
-                            checked: !(ln && ln.attentionEnabled === false)
-                            onToggled: if (ln) backend.setLauncherAttention(ln.id, checked)
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Place in front of me"
-                            enabled: backend.desktopRunning && backend.busy === ""
-                            onClicked: if (ln) backend.recenterLauncher(ln.id)
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Test activate"
-                            enabled: backend.busy === ""
-                            onClicked: if (ln) backend.activateLauncher(ln.id)
-                        }
-                        Controls.Button {
-                            Kirigami.FormData.label: " "
-                            text: "Remove"
-                            enabled: backend.busy === ""
-                            onClicked: {
-                                if (ln) backend.removeLauncherInstrument(ln.id)
-                                ipage.closeEdit()
-                            }
-                        }
-                    }
-                }
-            }
-
             FileDialog {
                 id: imageFileDialog
                 title: "Choose image for Spatial Instrument"
@@ -1615,6 +1180,550 @@ Kirigami.ApplicationWindow {
                     "All files (*)"
                 ]
                 onAccepted: backend.setLauncherImageFile(pendingLauncherFileId || "launcher", selectedFile.toString())
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- Instrument configure (page, not Dialog)
+    Component {
+        id: instrumentEditPage
+        Kirigami.ScrollablePage {
+            id: epage
+            objectName: "instrumentEditPage"
+            title: {
+                const k = root.instrumentEditKey
+                if (k.indexOf("launcher:") === 0) return (root.instrumentEditLauncher && root.instrumentEditLauncher.title) || "Launcher"
+                if (k.indexOf("image:") === 0) return (root.instrumentEditImage && root.instrumentEditImage.label) || "Image"
+                if (k === "clock") return "Clock"
+                if (k === "date") return "Date"
+                if (k === "battery") return "Battery"
+                if (k === "media") return "Media"
+                if (k === "storage") return "Device storage"
+                if (k === "sd") return "SD card"
+                return "Instrument"
+            }
+            property string editKind: root.instrumentEditKey
+            property var editImage: root.instrumentEditImage
+            property var editLauncher: root.instrumentEditLauncher
+            property var clock: backend.clockInstrument
+            property var date: backend.dateInstrument
+            property var battery: backend.batteryInstrument
+            property var media: backend.mediaInstrument
+            property var storage: backend.storageInstrument
+            property var sd: backend.sdInstrument
+            property var apps: backend.installedApps
+            property var semanticActions: backend.semanticActions
+            property var glyphs: backend.launcherGlyphs
+            property var images: backend.imageInstruments
+            property var colorPresets: root.instrumentEditColors.length ? root.instrumentEditColors : backend.instrumentColorPresets
+            property var anchorChoices: root.instrumentEditAnchors.length ? root.instrumentEditAnchors : [
+                { text: "World", value: "world" },
+                { text: "Position-follow", value: "position-follow" },
+                { text: "Yaw-follow", value: "yaw-follow" },
+                { text: "Head (soft)", value: "head" },
+                { text: "Head (rigid)", value: "head-rigid" }
+            ]
+            function builtinData() {
+                const k = editKind
+                if (k === "clock") return clock
+                if (k === "date") return date
+                if (k === "battery") return battery
+                if (k === "media") return media
+                if (k === "storage") return storage
+                return sd
+            }
+
+            actions: [
+                Kirigami.Action {
+                    text: "Back"
+                    icon.name: "go-previous"
+                    onTriggered: {
+                        root.instrumentEditKey = ""
+                        root.instrumentEditImage = null
+                        root.instrumentEditLauncher = null
+                        root.pageStack.pop()
+                    }
+                }
+            ]
+
+            ColumnLayout {
+                spacing: Kirigami.Units.largeSpacing
+                width: epage.width - epage.leftPadding - epage.rightPadding
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: ["clock", "date", "battery", "media", "storage", "sd"].indexOf(epage.editKind) >= 0
+
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: "Anchor:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: epage.anchorChoices
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue((epage.builtinData() && epage.builtinData().anchor) || "world"))
+                        onActivated: {
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockAnchor(currentValue)
+                            else if (k === "date") backend.setDateAnchor(currentValue)
+                            else if (k === "battery") backend.setBatteryAnchor(currentValue)
+                            else if (k === "media") backend.setMediaAnchor(currentValue)
+                            else if (k === "storage") backend.setStorageAnchor(currentValue)
+                            else if (k === "sd") backend.setSdAnchor(currentValue)
+                        }
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Size (metres):"
+                        from: 8; to: 200; stepSize: 5
+                        Component.onCompleted: {
+                            const k = epage.editKind
+                            const d = epage.builtinData()
+                            const def = k === "clock" ? 0.35 : k === "date" ? 0.38 : k === "battery" ? 0.32 : k === "media" ? 0.42 : 0.34
+                            value = Math.round(((d && d.metres !== undefined) ? d.metres : def) * 100)
+                        }
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: {
+                            const m = value / 100
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockMetres(m)
+                            else if (k === "date") backend.setDateMetres(m)
+                            else if (k === "battery") backend.setBatteryMetres(m)
+                            else if (k === "media") backend.setMediaMetres(m)
+                            else if (k === "storage") backend.setStorageMetres(m)
+                            else if (k === "sd") backend.setSdMetres(m)
+                        }
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Idle opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        Component.onCompleted: {
+                            const d = epage.builtinData()
+                            value = Math.round(((d && d.idleOpacity !== undefined) ? d.idleOpacity : 0.35) * 100)
+                        }
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: {
+                            const v = value / 100
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockIdleOpacity(v)
+                            else if (k === "date") backend.setDateIdleOpacity(v)
+                            else if (k === "battery") backend.setBatteryIdleOpacity(v)
+                            else if (k === "media") backend.setMediaIdleOpacity(v)
+                            else if (k === "storage") backend.setStorageIdleOpacity(v)
+                            else if (k === "sd") backend.setSdIdleOpacity(v)
+                        }
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Active opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        Component.onCompleted: {
+                            const d = epage.builtinData()
+                            value = Math.round(((d && d.activeOpacity !== undefined) ? d.activeOpacity : 1.0) * 100)
+                        }
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: {
+                            const v = value / 100
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockActiveOpacity(v)
+                            else if (k === "date") backend.setDateActiveOpacity(v)
+                            else if (k === "battery") backend.setBatteryActiveOpacity(v)
+                            else if (k === "media") backend.setMediaActiveOpacity(v)
+                            else if (k === "storage") backend.setStorageActiveOpacity(v)
+                            else if (k === "sd") backend.setSdActiveOpacity(v)
+                        }
+                    }
+                    Controls.Switch {
+                        Kirigami.FormData.label: "Gaze attention:"
+                        Component.onCompleted: {
+                            const d = epage.builtinData()
+                            checked = !(d && d.attentionEnabled === false)
+                        }
+                        onToggled: {
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockAttention(checked)
+                            else if (k === "date") backend.setDateAttention(checked)
+                            else if (k === "battery") backend.setBatteryAttention(checked)
+                            else if (k === "media") backend.setMediaAttention(checked)
+                            else if (k === "storage") backend.setStorageAttention(checked)
+                            else if (k === "sd") backend.setSdAttention(checked)
+                        }
+                    }
+                    Controls.ComboBox {
+                        visible: ["clock", "date", "battery", "media"].indexOf(epage.editKind) >= 0
+                        Kirigami.FormData.label: "Colour:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: epage.colorPresets
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: {
+                            const d = epage.builtinData()
+                            currentIndex = Math.max(0, indexOfValue((d && d.color) || "#39FF14"))
+                        }
+                        onActivated: {
+                            const k = epage.editKind
+                            if (k === "clock") backend.setClockColor(currentValue)
+                            else if (k === "date") backend.setDateColor(currentValue)
+                            else if (k === "battery") backend.setBatteryColor(currentValue)
+                            else if (k === "media") backend.setMediaColor(currentValue)
+                        }
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Place in front of me"
+                        enabled: backend.desktopRunning && backend.busy === ""
+                        onClicked: {
+                            const k = epage.editKind
+                            if (k === "clock") backend.recenterClock()
+                            else if (k === "date") backend.recenterDate()
+                            else if (k === "battery") backend.recenterBattery()
+                            else if (k === "media") backend.recenterMedia()
+                            else if (k === "storage") backend.recenterStorage()
+                            else if (k === "sd") backend.recenterSd()
+                        }
+                    }
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: epage.editKind.indexOf("image:") === 0 && epage.editImage
+                    readonly property var img: epage.editImage
+
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: "Anchor:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: epage.anchorChoices
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue((img && img.anchor) || "world"))
+                        onActivated: if (img) backend.setImageAnchor(img.id, currentValue)
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: "File:"
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                        text: (img && img.fileName) ? img.fileName : "(none — pick a PNG or GIF)"
+                        opacity: (img && img.fileName) ? 1.0 : 0.6
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Choose image…"
+                        enabled: backend.busy === ""
+                        onClicked: editImageFileDialog.open()
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Size (metres):"
+                        from: 8; to: 200; stepSize: 5
+                        value: Math.round(((img && img.metres !== undefined) ? img.metres : 0.50) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (img) backend.setImageMetres(img.id, value / 100)
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Idle opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        value: Math.round(((img && img.idleOpacity !== undefined) ? img.idleOpacity : 0.35) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (img) backend.setImageIdleOpacity(img.id, value / 100)
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Active opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        value: Math.round(((img && img.activeOpacity !== undefined) ? img.activeOpacity : 1.0) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (img) backend.setImageActiveOpacity(img.id, value / 100)
+                    }
+                    Controls.Switch {
+                        Kirigami.FormData.label: "Gaze attention:"
+                        checked: !(img && img.attentionEnabled === false)
+                        onToggled: if (img) backend.setImageAttention(img.id, checked)
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Place in front of me"
+                        enabled: backend.desktopRunning && backend.busy === ""
+                        onClicked: if (img) backend.recenterImage(img.id)
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Remove"
+                        enabled: backend.busy === "" && epage.images.length > 1
+                        onClicked: {
+                            if (img) backend.removeImageInstrument(img.id)
+                            root.instrumentEditKey = ""
+                            root.instrumentEditImage = null
+                            root.pageStack.pop()
+                        }
+                    }
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: epage.editKind.indexOf("launcher:") === 0 && epage.editLauncher
+                    readonly property var ln: epage.editLauncher
+
+                    Controls.Label {
+                        // Live check against the chooser list — don't rely on a stale
+                        // appAvailable snapshot from when the page was pushed.
+                        visible: {
+                            if (!ln || ln.actionKind !== "application")
+                                return false
+                            const id = (ln && ln.desktopId) || ""
+                            if (!id)
+                                return false
+                            for (let i = 0; i < epage.apps.length; ++i) {
+                                if (epage.apps[i].id === id)
+                                    return false
+                            }
+                            return true
+                        }
+                        Kirigami.FormData.label: " "
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        color: Kirigami.Theme.negativeTextColor
+                        text: "Configured application is not available on this system."
+                    }
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: "Action type:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: [
+                            { text: "Application", value: "application" },
+                            { text: "Frametop action", value: "action" },
+                            { text: "Custom command", value: "command" }
+                        ]
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.actionKind) || "application"))
+                        onActivated: {
+                            if (!ln) return
+                            if (currentValue === "application" && epage.apps.length)
+                                backend.setLauncherDesktop(ln.id, epage.apps[0].id)
+                            else if (currentValue === "action" && epage.semanticActions.length)
+                                backend.setLauncherSemantic(ln.id, epage.semanticActions[0].id)
+                        }
+                    }
+                    Controls.ComboBox {
+                        id: launcherAppCombo
+                        visible: !ln || ln.actionKind === "application" || ln.actionKind === undefined
+                        Kirigami.FormData.label: "Application:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                        model: epage.apps
+                        textRole: "name"
+                        valueRole: "id"
+                        Component.onCompleted: {
+                            const want = (ln && ln.desktopId) || ""
+                            let i = -1
+                            for (let n = 0; n < epage.apps.length; ++n) {
+                                if (epage.apps[n].id === want) { i = n; break }
+                            }
+                            currentIndex = i >= 0 ? i : 0
+                        }
+                        onActivated: {
+                            if (!ln || currentIndex < 0 || currentIndex >= epage.apps.length)
+                                return
+                            const app = epage.apps[currentIndex]
+                            if (app && app.id) {
+                                backend.setLauncherDesktop(ln.id, app.id)
+                                // Keep the open editor in sync so the warning clears.
+                                const list = backend.launcherInstruments
+                                let next = ln
+                                for (let i = 0; i < list.length; ++i) {
+                                    if (list[i].id === ln.id) { next = list[i]; break }
+                                }
+                                root.instrumentEditLauncher = next
+                            }
+                        }
+                    }
+                    Controls.ComboBox {
+                        visible: !!(ln && ln.actionKind === "action")
+                        Kirigami.FormData.label: "Action:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                        model: epage.semanticActions
+                        textRole: "label"
+                        valueRole: "id"
+                        Component.onCompleted: {
+                            const want = (ln && ln.semantic) || ""
+                            const i = indexOfValue(want)
+                            currentIndex = i >= 0 ? i : 0
+                        }
+                        onActivated: if (ln) backend.setLauncherSemantic(ln.id, currentValue)
+                    }
+                    Controls.TextField {
+                        visible: !!(ln && ln.actionKind === "command")
+                        Kirigami.FormData.label: "Command:"
+                        Layout.fillWidth: true
+                        placeholderText: ln && ln.commandShell ? "shell command" : "argv words"
+                        text: (ln && ln.commandText) ? ln.commandText : ""
+                        onEditingFinished: if (ln) backend.setLauncherCommand(ln.id, text, !!(ln && ln.commandShell))
+                    }
+                    Controls.Switch {
+                        visible: !!(ln && ln.actionKind === "command")
+                        Kirigami.FormData.label: "Run via shell:"
+                        checked: !!(ln && ln.commandShell)
+                        onToggled: if (ln) backend.setLauncherCommand(ln.id, (ln && ln.commandText) || "", checked)
+                    }
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: "Appearance:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: [
+                            { text: "App icon", value: "app" },
+                            { text: "Glyph", value: "glyph" },
+                            { text: "Custom image", value: "image" },
+                            { text: "Fallback", value: "fallback" }
+                        ]
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.appearance) || "app"))
+                        onActivated: {
+                            if (!ln) return
+                            if (currentValue === "glyph")
+                                backend.setLauncherAppearance(ln.id, "glyph", (ln && ln.glyph) || "star")
+                            else if (currentValue === "app")
+                                backend.setLauncherAppearance(ln.id, "app", "")
+                            else if (currentValue === "fallback")
+                                backend.setLauncherAppearance(ln.id, "fallback", "")
+                        }
+                    }
+                    Controls.ComboBox {
+                        visible: !!(ln && ln.appearance === "glyph")
+                        Kirigami.FormData.label: "Glyph:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                        model: epage.glyphs
+                        Component.onCompleted: {
+                            const want = (ln && ln.glyph) || "star"
+                            const i = model.indexOf(want)
+                            currentIndex = i >= 0 ? i : 0
+                        }
+                        onActivated: if (ln) backend.setLauncherAppearance(ln.id, "glyph", currentText)
+                    }
+                    Controls.Button {
+                        visible: !!(ln && ln.appearance === "image")
+                        Kirigami.FormData.label: " "
+                        text: "Choose custom image…"
+                        enabled: backend.busy === ""
+                        onClicked: editLauncherFileDialog.open()
+                    }
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: "Anchor:"
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                        model: epage.anchorChoices
+                        textRole: "text"
+                        valueRole: "value"
+                        Component.onCompleted: currentIndex = Math.max(0, indexOfValue((ln && ln.anchor) || "world"))
+                        onActivated: if (ln) backend.setLauncherAnchor(ln.id, currentValue)
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Size (metres):"
+                        from: 8; to: 120; stepSize: 2
+                        value: Math.round(((ln && ln.metres !== undefined) ? ln.metres : 0.28) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (ln) backend.setLauncherMetres(ln.id, value / 100)
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Idle opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        value: Math.round(((ln && ln.idleOpacity !== undefined) ? ln.idleOpacity : 0.55) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (ln) backend.setLauncherIdleOpacity(ln.id, value / 100)
+                    }
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: "Active opacity:"
+                        from: 0; to: 100; stepSize: 5
+                        value: Math.round(((ln && ln.activeOpacity !== undefined) ? ln.activeOpacity : 1.0) * 100)
+                        textFromValue: (v) => (v / 100).toFixed(2)
+                        valueFromText: (t) => Math.round(parseFloat(t) * 100)
+                        onValueModified: if (ln) backend.setLauncherActiveOpacity(ln.id, value / 100)
+                    }
+                    Controls.Switch {
+                        Kirigami.FormData.label: "Gaze attention:"
+                        checked: !(ln && ln.attentionEnabled === false)
+                        onToggled: if (ln) backend.setLauncherAttention(ln.id, checked)
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Place in front of me"
+                        enabled: backend.desktopRunning && backend.busy === ""
+                        onClicked: if (ln) backend.recenterLauncher(ln.id)
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Test activate"
+                        enabled: backend.busy === ""
+                        onClicked: if (ln) backend.activateLauncher(ln.id)
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: " "
+                        text: "Remove"
+                        enabled: backend.busy === ""
+                        onClicked: {
+                            const id = (ln && ln.id)
+                                || (root.instrumentEditKey.indexOf("launcher:") === 0
+                                    ? root.instrumentEditKey.slice("launcher:".length) : "")
+                            if (!id)
+                                return
+                            backend.removeLauncherInstrument(id)
+                            // Stay until ft-layout finishes so a failed remove is visible;
+                            // pop when busy clears after this remove.
+                            epage._pendingRemoveId = id
+                        }
+                    }
+                }
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    visible: ["clock", "date", "battery", "media", "storage", "sd"].indexOf(epage.editKind) < 0
+                             && epage.editKind.indexOf("image:") !== 0
+                             && epage.editKind.indexOf("launcher:") !== 0
+                    wrapMode: Text.Wrap
+                    text: "No settings for this instrument (" + epage.editKind + ")."
+                }
+            }
+
+            property string _pendingRemoveId: ""
+            Connections {
+                target: backend
+                function onBusyChanged() {
+                    if (backend.busy !== "" || !epage._pendingRemoveId)
+                        return
+                    const id = epage._pendingRemoveId
+                    epage._pendingRemoveId = ""
+                    // Confirm it's gone (or leave the page so the error toast is readable).
+                    let still = false
+                    const list = backend.launcherInstruments
+                    for (let i = 0; i < list.length; ++i) {
+                        if (list[i].id === id) { still = true; break }
+                    }
+                    if (still)
+                        return
+                    root.instrumentEditKey = ""
+                    root.instrumentEditLauncher = null
+                    root.pageStack.pop()
+                }
+            }
+
+            FileDialog {
+                id: editImageFileDialog
+                title: "Choose image for Spatial Instrument"
+                fileMode: FileDialog.OpenFile
+                nameFilters: ["Images (*.png *.gif *.jpg *.jpeg)", "All files (*)"]
+                onAccepted: {
+                    const img = epage.editImage
+                    if (img) backend.setImageFile(img.id, selectedFile.toString())
+                }
+            }
+            FileDialog {
+                id: editLauncherFileDialog
+                title: "Choose custom Launcher image"
+                fileMode: FileDialog.OpenFile
+                nameFilters: ["Images (*.png *.gif *.jpg *.jpeg)", "All files (*)"]
+                onAccepted: {
+                    const ln = epage.editLauncher
+                    if (ln) backend.setLauncherImageFile(ln.id, selectedFile.toString())
+                }
             }
         }
     }

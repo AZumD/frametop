@@ -56,6 +56,26 @@ class DesktopDiscovery(unittest.TestCase):
         self.assertNotIn("notapp.desktop", ids)
         self.assertEqual(apps[0]["name"], "Ok App")
 
+    def test_subdir_desktop_id_roundtrip(self):
+        sub = os.path.join(self.apps, "kde")
+        os.makedirs(sub)
+        path = os.path.join(sub, "org.kde.konsole.desktop")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("[Desktop Entry]\nType=Application\nName=Konsole\nExec=konsole\n")
+        with mock.patch.object(ft_desktop, "applications_dirs", return_value=[self.apps]):
+            apps = ft_desktop.list_applications()
+            self.assertEqual(len(apps), 1)
+            did = apps[0]["id"]
+            self.assertEqual(did, "kde-org.kde.konsole.desktop")
+            found = ft_desktop.find_desktop_by_id(did)
+            self.assertEqual(os.path.abspath(found), os.path.abspath(path))
+            self.assertTrue(ft_desktop.application_available(did))
+
+    def test_application_available_missing(self):
+        with mock.patch.object(ft_desktop, "applications_dirs", return_value=[self.apps]):
+            self.assertFalse(ft_desktop.application_available("nope.desktop"))
+            self.assertTrue(ft_desktop.application_available(""))
+
     def test_search_filters_by_name(self):
         self._write(
             "konsole.desktop",

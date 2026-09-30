@@ -838,9 +838,21 @@ std::vector<uint8_t> AnchorTexture(int n, AnchorMode mode) {
         DiscRim);
 }
 
-vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::vector<uint8_t> &px, int w, int h) {
+vr::VROverlayHandle_t CreateOrRecycleOverlay(const char *key, const char *name) {
     vr::VROverlayHandle_t o = vr::k_ulOverlayHandleInvalid;
-    if (vr::VROverlay()->CreateOverlay(key, name, &o) != vr::VROverlayError_None) return o;
+    if (vr::VROverlay()->CreateOverlay(key, name, &o) == vr::VROverlayError_None) return o;
+    // Key left behind after a hard kill (no VR_Shutdown): reclaim and retry.
+    if (vr::VROverlay()->FindOverlay(key, &o) == vr::VROverlayError_None) {
+        vr::VROverlay()->DestroyOverlay(o);
+        o = vr::k_ulOverlayHandleInvalid;
+        if (vr::VROverlay()->CreateOverlay(key, name, &o) == vr::VROverlayError_None) return o;
+    }
+    return vr::k_ulOverlayHandleInvalid;
+}
+
+vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::vector<uint8_t> &px, int w, int h) {
+    vr::VROverlayHandle_t o = CreateOrRecycleOverlay(key, name);
+    if (o == vr::k_ulOverlayHandleInvalid) return o;
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
     // Keep chrome just above its panel (sort 1). Sort 10 sat above SteamVR's own UI
@@ -3655,7 +3667,8 @@ void EnsureInstrumentOverlays(Instrument &inst) {
     char key[64], name[64];
     std::snprintf(key, sizeof key, "frametop.instrument.%s", inst.id.c_str());
     std::snprintf(name, sizeof name, "Instrument %s", inst.id.c_str());
-    if (vr::VROverlay()->CreateOverlay(key, name, &inst.overlay) != vr::VROverlayError_None) {
+    inst.overlay = CreateOrRecycleOverlay(key, name);
+    if (inst.overlay == vr::k_ulOverlayHandleInvalid) {
         std::fprintf(stderr, "openvr: can't create instrument overlay %s\n", key);
         return;
     }
@@ -4120,7 +4133,8 @@ void ft_vr_screen_create(int index, double metres, int count) {
     char key[64], name[64];
     std::snprintf(key, sizeof key, "frametop.screen.%d", index + 1);
     std::snprintf(name, sizeof name, "Screen %d", index + 1);
-    if (vr::VROverlay()->CreateOverlay(key, name, &s.overlay) != vr::VROverlayError_None) {
+    s.overlay = CreateOrRecycleOverlay(key, name);
+    if (s.overlay == vr::k_ulOverlayHandleInvalid) {
         std::fprintf(stderr, "openvr: can't create overlay %s\n", key);
         return;
     }

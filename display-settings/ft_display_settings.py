@@ -389,16 +389,17 @@ class Backend(QObject):
                 name = card["desktopId"].replace(".desktop", "")
             card["label"] = name or (iid if iid != "launcher" else "Launcher")
             card["title"] = "Launcher" if iid == "launcher" else f"Launcher ({iid})"
-            # Stale app hint for Display Settings.
+            # Stale app hint for Display Settings (host + container .desktop dirs).
             available = True
             if card["actionKind"] == "application" and card["desktopId"]:
                 try:
                     import ft_desktop
-                    available = bool(ft_desktop.find_desktop_by_id(card["desktopId"]))
+                    available = ft_desktop.application_available(card["desktopId"])
                 except Exception:
                     available = True
             card["appAvailable"] = available
-        return card
+            # Also expose whether the id is in the chooser list (UI can recompute live).
+            card["appInChooser"] = available        return card
 
     @Property("QVariantList", notify=changed)
     def instrumentColorPresets(self):

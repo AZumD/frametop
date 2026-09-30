@@ -32,12 +32,19 @@ Open a specific tab with `FT_DISPLAY_PAGE=layout|visibility|instruments|backgrou
 
 Built-in types (Clock, Date, Battery, Media, Device storage, SD) show as a 2-column card grid. Previews copy the real ft-screens draw style: seven-segment clock, 5×7 + seven-segment date, five battery blocks (no percent), disk/SD icon + usage bar, media title + transport glyphs. Image/Launcher cards use a transparent-checker / square-icon stand-in. Enable on the card; **Configure…** opens a settings dialog.
 
+**Configure…** pushes a normal settings page (not a `Kirigami.Dialog` — Dialog was opening empty on the Frame). Back returns to the instrument cards.
+
+The menu entry must launch the synced checkout (`~/dev/frametop/...`). Re-run `display-settings/install.sh` **and** `desktops.sh install` after moving the repo; an old `Exec=` pointing at `~/frametop` loads a stale `main.qml` / `ft-screens` (soft-follow and other compositor fixes never appear).
+
 ## Tests
 
 ```
 bash test/test_display_settings_ui.sh
+bash test/probe_configure_dialog.sh
 python3 test/test_display_background_tab.py
 python3 test/test_launcher_settings_api.py
 python3 test/test_instrument_visibility.py
+python3 test/test_instrument_configure_dialog.py
 python3 test/test_gaze_attention_order.py
+python3 test/test_apply_without_head.py
 ```

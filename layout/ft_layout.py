@@ -1264,6 +1264,25 @@ def screens_socket():
     return Socket(SCREENS, "ft-screens (the desktop's compositor) isn't running or")
 
 
+def read_head_pose(sock, retries=0, delay=1.0):
+    """Return ((x, y, z), yaw_deg) from ft-screens, or None if the HMD pose is unavailable.
+
+    Desktop start often races SteamVR: screens are up before the headset reports a pose.
+    Callers should still apply visibility / scales / instruments with a fallback origin.
+    """
+    attempts = max(1, int(retries) + 1)
+    for i in range(attempts):
+        try:
+            f = sock.ask("head").split()
+            if len(f) >= 5:
+                return tuple(map(float, f[1:4])), float(f[4])
+        except RuntimeError:
+            pass
+        if i + 1 < attempts:
+            time.sleep(delay)
+    return None
+
+
 def screen_args(layout=None):
     layout = layout or load_layout()
     return " ".join(f"--screen {w}x{h}@{screen_metres(layout, i):.3f}"
@@ -1539,10 +1558,18 @@ def apply_screens(wait=0, duration_ms=0):
             if time.time() >= deadline:
                 raise
         time.sleep(1)
-    f = sock.ask("head").split()
-    eye, heading = tuple(map(float, f[1:4])), float(f[4])
+    # Visibility / follow lag must land even when the HMD pose is not ready yet —
+    # otherwise except_dashboard and similar stay at defaults (always) after a restart.
     send_visibility(sock, layout)
     push_follow_lag(sock)
+    head_retries = max(5, int(wait)) if wait else 5
+    head = read_head_pose(sock, retries=head_retries, delay=1.0)
+    if head is None:
+        log("warning: no head pose yet (headset off or SteamVR still starting); "
+            "placing from origin — run ft-layout apply again once tracking is up")
+        eye, heading = (0.0, 1.5, 0.0), 0.0
+    else:
+        eye, heading = head
     targets = live_screen_targets(sock, layout, count, eye, heading)
     if duration_ms > 0:
         starts = live_screen_state(sock, count)
@@ -1645,9 +1672,11 @@ def apply_instruments(sock, layout=None):
         sock.ask("instrument clear")
     except RuntimeError:
         pass
-    f = sock.ask("head").split()
-    eye = tuple(map(float, f[1:4]))
-    heading = float(f[4])
+    head = read_head_pose(sock, retries=3, delay=0.5)
+    if head is None:
+        eye, heading = (0.0, 1.5, 0.0), 0.0
+    else:
+        eye, heading = head
     items = instruments_from_layout(layout)
     # Non-image/launcher first: heavy texture loads after clear must not wipe everything.
     deferred = ("image", "launcher")
@@ -3099,7 +3128,12 @@ def main(argv):
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                     else:
-                        apply(wait, duration_ms=duration)
+                        try:
+                            apply(wait, duration_ms=duration)
+                        except RuntimeError as e:
+                            # Still try KWin scales / visibility below — a missing HMD pose
+                            # must not leave pointer scale and except_dashboard unset.
+                            log(f"apply: {e}", file=sys.stderr)
                     if not wait:
                         kwin_follow()
                     if wait:
@@ -3113,6 +3147,17 @@ def main(argv):
                                 time.sleep(1)
                         else:
                             log(f"kwin: {last}")
+                        # Visibility again after scales: covers the auto=off path and a
+                        # failed apply that never reached send_visibility.
+                        if backend() == "screens":
+                            try:
+                                send_visibility(screens_socket(), load_layout())
+                            except RuntimeError as e:
+                                log(f"visibility: {e}")
+                            try:
+                                apply_instruments(screens_socket(), load_layout())
+                            except RuntimeError as e:
+                                log(f"instruments: {e}")
                 elif cmd == "capture":
                     for i, s in enumerate(capture()):
                         log(f"screen {i + 1}: {s}")

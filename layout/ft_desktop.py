@@ -35,7 +35,12 @@ ACTION_KINDS = ("application", "action", "command")
 
 
 def xdg_data_dirs():
-    """XDG data directories (user first), including Flatpak exports when present."""
+    """XDG data directories (user first), including Flatpak exports and distrobox host paths.
+
+    Display Settings / ft-layout often run inside the `dev` container; Frametop launches
+    apps on the SteamOS host. Prefer host `/run/host/usr/share` entries when present so
+    the chooser matches what `ft-launch` can actually start.
+    """
     dirs = []
     home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     dirs.append(home)
@@ -44,6 +49,17 @@ def xdg_data_dirs():
         part = part.strip()
         if part and part not in dirs:
             dirs.append(part)
+    # Distrobox mounts the SteamOS root here; host apps beat container-only .desktop files.
+    host_dirs = []
+    for host in (
+        "/run/host/usr/local/share",
+        "/run/host/usr/share",
+        "/run/host/var/lib/flatpak/exports/share",
+    ):
+        if host not in dirs and os.path.isdir(host):
+            host_dirs.append(host)
+    if host_dirs:
+        dirs[1:1] = host_dirs
     # Flatpak exports often live here even when XDG_DATA_DIRS is incomplete.
     for extra in (
         os.path.expanduser("~/.local/share/flatpak/exports/share"),
@@ -108,7 +124,11 @@ def parse_desktop_file(path):
 
 
 def desktop_id_for_path(path):
-    """Stable desktop-file id: basename, or relative path under an applications/ dir."""
+    """Stable desktop-file id: basename, or relative path under an applications/ dir.
+
+    FreeDesktop desktop-file ids use `/` → `-` for subdirectories
+    (`kde/foo.desktop` → `kde-foo.desktop`).
+    """
     path = os.path.abspath(path)
     base = os.path.basename(path)
     for apps in applications_dirs():
@@ -129,23 +149,43 @@ def find_desktop_by_id(desktop_id):
     # Absolute path passed through.
     if os.path.isabs(desktop_id) and os.path.isfile(desktop_id):
         return desktop_id
-    # Nested subdirs: kde-foo.desktop style id with dashes from path.
-    candidates = [desktop_id]
-    if "-" in desktop_id:
-        # Try slash form: org/kde/konsole.desktop is uncommon; keep basename primary.
-        pass
+
     for apps in applications_dirs():
-        for name in candidates:
-            p = os.path.join(apps, name)
-            if os.path.isfile(p):
-                return os.path.abspath(p)
-        # Recursive for vendor subdirs (kde/, xfce/, …).
         if not os.path.isdir(apps):
             continue
+        # Top-level basename (org.kde.konsole.desktop).
+        p = os.path.join(apps, desktop_id)
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+        # FreeDesktop id with vendor dir: kde-foo.desktop → kde/foo.desktop (one segment).
+        if "-" in desktop_id:
+            vendor, rest = desktop_id.split("-", 1)
+            p = os.path.join(apps, vendor, rest)
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+        # Match list_applications() ids (full / → - rewrite), not only basenames.
         for root, _dirs, files in os.walk(apps):
-            if desktop_id in files:
-                return os.path.abspath(os.path.join(root, desktop_id))
+            for name in files:
+                if not name.endswith(".desktop"):
+                    continue
+                path = os.path.join(root, name)
+                if name == desktop_id or desktop_id_for_path(path) == desktop_id:
+                    return os.path.abspath(path)
     return None
+
+
+def application_available(desktop_id):
+    """True when desktop_id resolves or appears in list_applications() (same as the chooser)."""
+    desktop_id = str(desktop_id or "").strip()
+    if not desktop_id:
+        return True
+    if find_desktop_by_id(desktop_id):
+        return True
+    try:
+        return any(a["id"] == desktop_id or a["id"] == desktop_id + ".desktop"
+                   for a in list_applications())
+    except OSError:
+        return False
 
 
 def list_applications(search=None):
