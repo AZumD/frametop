@@ -81,6 +81,21 @@ if [ "${1:-}" != --inner ]; then
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 ))
+  # Gaze-pointer tuning for ft-screens (defaults match screens/vr.cpp LoadGazePointerConfig).
+  GAZE_POINTER=${GAZE_POINTER:-1}
+  export FT_GAZE_POINTER=${FT_GAZE_POINTER:-$GAZE_POINTER}
+  export FT_GAZE_POINTER_TIMEOUT=${FT_GAZE_POINTER_TIMEOUT:-${GAZE_POINTER_TIMEOUT:-10}}
+  export FT_GAZE_POINTER_MIN_CUTOFF=${FT_GAZE_POINTER_MIN_CUTOFF:-${GAZE_POINTER_MIN_CUTOFF:-1.0}}
+  export FT_GAZE_POINTER_BETA=${FT_GAZE_POINTER_BETA:-${GAZE_POINTER_BETA:-0.007}}
+  export FT_GAZE_POINTER_D_CUTOFF=${FT_GAZE_POINTER_D_CUTOFF:-${GAZE_POINTER_D_CUTOFF:-1.0}}
+  export FT_GAZE_POINTER_DEADZONE_PX=${FT_GAZE_POINTER_DEADZONE_PX:-${GAZE_POINTER_DEADZONE_PX:-3}}
+  export FT_GAZE_POINTER_DOT_M=${FT_GAZE_POINTER_DOT_M:-${GAZE_POINTER_DOT_M:-0.028}}
+  export FT_GAZE_POINTER_CAL_U=${FT_GAZE_POINTER_CAL_U:-${GAZE_POINTER_CAL_U:-0}}
+  export FT_GAZE_POINTER_CAL_V=${FT_GAZE_POINTER_CAL_V:-${GAZE_POINTER_CAL_V:-0}}
+  export FT_GAZE_POINTER_MODE=${FT_GAZE_POINTER_MODE:-${GAZE_POINTER_MODE:-gaze}}
+  export FT_GAZE_POINTER_PAD_UV=${FT_GAZE_POINTER_PAD_UV:-${GAZE_POINTER_PAD_UV:-0.08}}
+  export FT_GAZE_POINTER_PAD_DEADZONE=${FT_GAZE_POINTER_PAD_DEADZONE:-${GAZE_POINTER_PAD_DEADZONE:-0.50}}
+  export FT_GAZE_POINTER_EYE_GAIN=${FT_GAZE_POINTER_EYE_GAIN:-${GAZE_POINTER_EYE_GAIN:-0.35}}
   "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
   "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
     "${screen_args[@]}" > /tmp/frametop-screens.log 2>&1 < /dev/null &
@@ -154,16 +169,23 @@ touch "$runtime/session-active"
 # Private D-Bus session (no systemd1 on this bus — Plasma falls back to direct launches).
 # Watchdog starts first, waits for the real nested plasmashell, then snapshots its /proc
 # environ (wayland-0 under …/frametop) for respawns — never the pre-Plasma outer display.
+# ft-mpris bridges session MPRIS players to @frametop_mpris for the Media instrument.
+# Drop any leftover bridge from a prior session (abstract socket is exclusive).
+pkill -f '[p]ython3 .*/ft-mpris.py' 2>/dev/null || true
 dbus-run-session -- bash -c '
   set -eu
   here=$1
+  python3 "$here/ft-mpris.py" > /tmp/frametop-mpris.log 2>&1 &
+  mpris=$!
   bash "$here/ft-shell-watch.sh" &
   watch=$!
   set +e
   startplasma-wayland
   status=$?
   set -e
+  kill "$mpris" 2>/dev/null || true
   kill "$watch" 2>/dev/null || true
+  wait "$mpris" 2>/dev/null || true
   wait "$watch" 2>/dev/null || true
   exit "$status"
 ' bash "$here"

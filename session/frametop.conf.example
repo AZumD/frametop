@@ -20,3 +20,25 @@ POINTER_SCENE_RADIUS=0.5   # texture-less dashboard overlays (dock, window contr
 POINTER_EDGE_REACH=0.3     # just off a panel, the cursor stays on its plane this far (m), to reach its resize edges and window controls
 LAYOUT_GRAB_OFFSET=0.075   # arranging screens: where the floating window's grab bar is, in metres below the screen
 LAYOUT_SLIDE_SPEED=0.5     # arranging screens: how fast the invisible controller slides a grabbed screen (m/s)
+
+# Gaze-controlled desktop pointer (ft-screens + input-relay headset button).
+# Headset button candidate: gpio-keys KEY_SELECT (353). Set GAZE_POINTER=0 to disable.
+GAZE_POINTER=1
+GAZE_POINTER_MODE=gaze            # gaze | hybrid (ignored when GAZE_POINTER=0)
+GAZE_POINTER_PAD_UV=0.08          # hybrid: eye nudge radius as fraction of screen width
+GAZE_POINTER_PAD_DEADZONE=0.50    # hybrid: centre fraction with no eye nudge
+GAZE_POINTER_EYE_GAIN=0.35        # hybrid: eye authority inside the live zone (lower = stickier)
+GAZE_POINTER_TIMEOUT=10          # seconds without a headset-button click before the gaze pointer turns off
+GAZE_POINTER_MIN_CUTOFF=1.0      # One Euro filter: min cutoff (Hz)
+GAZE_POINTER_BETA=0.007          # One Euro: speed coefficient
+GAZE_POINTER_D_CUTOFF=1.0        # One Euro: derivative cutoff
+GAZE_POINTER_DEADZONE_PX=3       # seat-pixel stationary jitter gate (not UI snapping)
+GAZE_POINTER_DOT_M=0.028         # Frametop gaze reticle size (metres; scales slightly with distance)
+GAZE_POINTER_CAL_U=0             # gaze UV bias from `ft-layout gaze pointer calibrate` (additive)
+GAZE_POINTER_CAL_V=0
+# Optional: controller laser tip size after gaze mode (ft-screens restores system.pointer width)
+# FT_LASER_TIP_M=0.032
+GAZE_POINTER_BUTTON_DEVICE=gpio-keys
+GAZE_POINTER_BUTTON_CODE=353     # KEY_SELECT
+GAZE_POINTER_GRAB=1              # 1 = EVIOCGRAB gpio-keys; re-emit volume to virtual keyboard
+                                 # 0 = observe-only (SteamVR also sees KEY_SELECT → head laser)

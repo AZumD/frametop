@@ -34,8 +34,8 @@
 //     the controllers stay in it, and the 3D mouse (its own laser mode) or the dashboard
 //     works the screens. Modes: always, outside_games (default), dashboard (never on its
 //     own; also for flatscreen games, which aren't scene apps).
-//   - during a VR game the screens hide unless the dashboard is open (g_inGames, default),
-//     or stay visible over it; the hotkey still shows them.
+//   - during a VR game the screens (and Spatial Instruments) hide unless the dashboard is
+//     open (g_inGames, default), or stay visible over it; the hotkey still shows them.
 // OpenVR has no overlay-relative transforms here (openvr v2.15.6), so the bar, button,
 // and handle are placed whenever their screen moves.
 #include "vr.h"
@@ -49,16 +49,23 @@
 #include <chrono>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <csignal>
+#include <dirent.h>
 #include <fcntl.h>
 #include <initializer_list>
 #include <limits.h>
 #include <map>
 #include <string>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -468,13 +475,362 @@ vr::VRActionHandle_t g_eyeAction = vr::k_ulInvalidActionHandle;
 bool g_eyeManifestOk = false;     // action manifest loaded
 bool g_eyeAvailable = false;      // hardware/runtime has delivered valid data at least once
 bool g_eyeValid = false;          // current sample is usable
+bool g_eyeHeld = false;           // reusing last good ray through a brief dropout
 int g_eyeLastErr = 0;             // last EVRInputError from GetEyeTrackingData*
 int g_eyeFlags = 0;               // bit0=active bit1=valid bit2=tracked (last sample)
 bool g_gazeDebug = false;
 bool g_gazeFallbackHead = false;  // explicit debug fallback only — never silent
 double g_gazeOrigin[3] = {}, g_gazeDir[3] = {0, 0, -1};
+double g_lastEyeOrigin[3] = {}, g_lastEyeDir[3] = {0, 0, -1};
 GazeTarget g_gazeTarget;
 Clock::time_point g_lastGaze = Clock::now();
+Clock::time_point g_lastEyeValid{};
+constexpr double kEyeSampleHoldSec = 0.45;  // keep last ray when OpenVR eye samples flicker
+
+// --- Gaze pointer mode (eye → desktop seat mouse; headset button toggles / clicks) ---
+// Filtering: raw UV → One Euro → seat pixels → small stationary deadzone (no UI snapping).
+
+double EnvDouble(const char *name, double def) {
+    const char *v = std::getenv(name);
+    if (!v || !*v) return def;
+    char *end = nullptr;
+    const double x = std::strtod(v, &end);
+    return (end && end != v) ? x : def;
+}
+
+int EnvInt(const char *name, int def) {
+    const char *v = std::getenv(name);
+    if (!v || !*v) return def;
+    char *end = nullptr;
+    const long x = std::strtol(v, &end, 10);
+    return (end && end != v) ? int(x) : def;
+}
+
+struct OneEuroFilter {
+    double minCutoff = 1.0;
+    double beta = 0.007;
+    double dCutoff = 1.0;
+    bool inited = false;
+    double xHat = 0;
+    double dxHat = 0;
+    static double Alpha(double cutoff, double te) {
+        const double tau = 1.0 / (2.0 * M_PI * std::max(cutoff, 1e-6));
+        return 1.0 / (1.0 + tau / std::max(te, 1e-6));
+    }
+    void Reset(double x = 0) {
+        inited = true;
+        xHat = x;
+        dxHat = 0;
+    }
+    double Filter(double x, double te) {
+        if (!inited) {
+            Reset(x);
+            return xHat;
+        }
+        te = std::max(te, 1e-4);
+        const double dx = (x - xHat) / te;
+        const double aD = Alpha(dCutoff, te);
+        dxHat = aD * dx + (1.0 - aD) * dxHat;
+        const double cutoff = minCutoff + beta * std::fabs(dxHat);
+        const double a = Alpha(cutoff, te);
+        xHat = a * x + (1.0 - a) * xHat;
+        return xHat;
+    }
+};
+
+enum class GazePtrMode { Off = 0, Gaze = 1, Hybrid = 2 };
+
+struct GazePointerCfg {
+    bool featureEnabled = true;
+    GazePtrMode mode = GazePtrMode::Gaze;
+    double timeoutSec = 10.0;
+    double minCutoff = 1.0;
+    double beta = 0.007;
+    double dCutoff = 1.0;
+    double deadzonePx = 3.0;
+    double dotMetres = 0.028;  // gaze reticle width; lightly scaled by distance
+    double calU = 0.0;         // additive UV bias from calibration (raw → corrected)
+    double calV = 0.0;
+    // Hybrid: eye may only push the reticle this far (UV units) from the head hit.
+    double hybridPadUv = 0.08;
+    // Fraction of pad that is a no-move deadzone (eye must leave centre before nudge).
+    double hybridDeadzone = 0.50;
+    // How strongly eyes pull within the live zone (1 = full pad reach; lower = stickier).
+    double hybridEyeGain = 0.35;
+};
+
+struct GazePointerState {
+    GazePointerCfg cfg;
+    bool active = false;
+    bool buttonPending = false;  // edge from control socket / relay
+    bool forceEmit = false;      // first seat sample after activate
+    OneEuroFilter filtU, filtV;
+    OneEuroFilter filtOffU, filtOffV;  // hybrid: heavy smooth on eye offset
+    int screen = -1;  // 0-based last driven screen
+    double seatX = 0, seatY = 0;
+    double emitX = 0, emitY = 0;
+    double lastU = 0.5, lastV = 0.5;
+    double headU = 0.5, headV = 0.5;  // hybrid: head-ray UV (pad centre)
+    bool haveEmit = false;
+    // Auto-off after this long with no headset-button click (activation also resets).
+    Clock::time_point lastClick = Clock::now();
+};
+
+constexpr int kGazeCalPoints = 5;
+// Centre, then four inward corners — easy to fixate; enough for a mean UV bias.
+constexpr double kGazeCalUV[kGazeCalPoints][2] = {
+    {0.50, 0.50}, {0.18, 0.18}, {0.82, 0.18}, {0.18, 0.82}, {0.82, 0.82},
+};
+
+struct GazeCalibState {
+    bool active = false;
+    bool justFinished = false;
+    int step = 0;       // 0 .. kGazeCalPoints-1 while active
+    int screen = -1;    // screen hosting the targets
+    double sumErrU = 0, sumErrV = 0;
+    int samples = 0;
+};
+
+GazePointerState g_gazePtr;
+GazeCalibState g_gazeCal;
+vr::VROverlayHandle_t g_gazeCursor = vr::k_ulOverlayHandleInvalid;
+vr::VROverlayHandle_t g_gazeCalTarget = vr::k_ulOverlayHandleInvalid;
+vr::VROverlayHandle_t g_gazePad = vr::k_ulOverlayHandleInvalid;
+bool g_gazeCursorShown = false;
+bool g_gazeCalTargetShown = false;
+bool g_gazePadShown = false;
+Clock::time_point g_gazeCursorLastHit{};  // last frame we had a screen hit for the reticle
+float g_gazeCursorWidth = 0.028f;
+constexpr double kGazeCursorHoldSec = 0.55;  // keep reticle through brief gaze dropouts
+void (*g_eventHandle)(const ft_event *, void *) = nullptr;
+void *g_eventData = nullptr;
+
+const char *GazePtrModeName(GazePtrMode m) {
+    switch (m) {
+        case GazePtrMode::Hybrid: return "hybrid";
+        case GazePtrMode::Gaze: return "gaze";
+        default: return "off";
+    }
+}
+
+GazePtrMode ParseGazePtrMode(const char *s) {
+    if (!s) return GazePtrMode::Gaze;
+    if (!std::strcmp(s, "hybrid") || !std::strcmp(s, "head") || !std::strcmp(s, "pad")) return GazePtrMode::Hybrid;
+    if (!std::strcmp(s, "off") || !std::strcmp(s, "0")) return GazePtrMode::Off;
+    return GazePtrMode::Gaze;
+}
+
+void LoadGazePointerConfig() {
+    // FT_* env (session can export) or defaults. Conf keys mirrored in frametop.conf.example.
+    g_gazePtr.cfg.featureEnabled = EnvInt("FT_GAZE_POINTER", 1) != 0;
+    {
+        const char *modeEnv = std::getenv("FT_GAZE_POINTER_MODE");
+        g_gazePtr.cfg.mode = ParseGazePtrMode(modeEnv && modeEnv[0] ? modeEnv : "gaze");
+        if (!g_gazePtr.cfg.featureEnabled) g_gazePtr.cfg.mode = GazePtrMode::Off;
+        if (g_gazePtr.cfg.mode == GazePtrMode::Off) g_gazePtr.cfg.featureEnabled = false;
+        else g_gazePtr.cfg.featureEnabled = true;
+    }
+    g_gazePtr.cfg.timeoutSec = std::clamp(EnvDouble("FT_GAZE_POINTER_TIMEOUT", 10.0), 1.0, 120.0);
+    g_gazePtr.cfg.minCutoff = std::clamp(EnvDouble("FT_GAZE_POINTER_MIN_CUTOFF", 1.0), 0.01, 50.0);
+    g_gazePtr.cfg.beta = std::clamp(EnvDouble("FT_GAZE_POINTER_BETA", 0.007), 0.0, 1.0);
+    g_gazePtr.cfg.dCutoff = std::clamp(EnvDouble("FT_GAZE_POINTER_D_CUTOFF", 1.0), 0.01, 50.0);
+    g_gazePtr.cfg.deadzonePx = std::clamp(EnvDouble("FT_GAZE_POINTER_DEADZONE_PX", 3.0), 0.0, 40.0);
+    g_gazePtr.cfg.dotMetres = std::clamp(EnvDouble("FT_GAZE_POINTER_DOT_M", 0.028), 0.01, 0.12);
+    g_gazePtr.cfg.calU = std::clamp(EnvDouble("FT_GAZE_POINTER_CAL_U", 0.0), -0.25, 0.25);
+    g_gazePtr.cfg.calV = std::clamp(EnvDouble("FT_GAZE_POINTER_CAL_V", 0.0), -0.25, 0.25);
+    g_gazePtr.cfg.hybridPadUv = std::clamp(EnvDouble("FT_GAZE_POINTER_PAD_UV", 0.08), 0.03, 0.45);
+    g_gazePtr.cfg.hybridDeadzone = std::clamp(EnvDouble("FT_GAZE_POINTER_PAD_DEADZONE", 0.50), 0.0, 0.85);
+    g_gazePtr.cfg.hybridEyeGain = std::clamp(EnvDouble("FT_GAZE_POINTER_EYE_GAIN", 0.35), 0.05, 1.0);
+    g_gazeCursorWidth = float(g_gazePtr.cfg.dotMetres);
+    g_gazePtr.filtU.minCutoff = g_gazePtr.cfg.minCutoff;
+    g_gazePtr.filtU.beta = g_gazePtr.cfg.beta;
+    g_gazePtr.filtU.dCutoff = g_gazePtr.cfg.dCutoff;
+    g_gazePtr.filtV = g_gazePtr.filtU;
+    // Hybrid offset filter: slower than seat UV so eye jitter does not yank the tip.
+    g_gazePtr.filtOffU.minCutoff = 0.35;
+    g_gazePtr.filtOffU.beta = 0.001;
+    g_gazePtr.filtOffU.dCutoff = 0.5;
+    g_gazePtr.filtOffV = g_gazePtr.filtOffU;
+}
+
+void EmitFtEvent(const ft_event &e) {
+    if (g_eventHandle) g_eventHandle(&e, g_eventData);
+}
+
+void HideGazeCursor() {
+    if (g_gazeCursor != vr::k_ulOverlayHandleInvalid && g_gazeCursorShown) {
+        vr::VROverlay()->HideOverlay(g_gazeCursor);
+        g_gazeCursorShown = false;
+    }
+}
+
+void HideGazePad() {
+    if (g_gazePad != vr::k_ulOverlayHandleInvalid && g_gazePadShown) {
+        vr::VROverlay()->HideOverlay(g_gazePad);
+        g_gazePadShown = false;
+    }
+}
+
+void DestroyGazeCursor() {
+    HideGazeCursor();
+    if (g_gazeCursor != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->DestroyOverlay(g_gazeCursor);
+        g_gazeCursor = vr::k_ulOverlayHandleInvalid;
+    }
+    HideGazePad();
+    if (g_gazePad != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->DestroyOverlay(g_gazePad);
+        g_gazePad = vr::k_ulOverlayHandleInvalid;
+    }
+}
+
+void HideGazeCalTarget() {
+    if (g_gazeCalTarget != vr::k_ulOverlayHandleInvalid && g_gazeCalTargetShown) {
+        vr::VROverlay()->HideOverlay(g_gazeCalTarget);
+        g_gazeCalTargetShown = false;
+    }
+}
+
+void DestroyGazeCalTarget() {
+    HideGazeCalTarget();
+    if (g_gazeCalTarget != vr::k_ulOverlayHandleInvalid) {
+        vr::VROverlay()->DestroyOverlay(g_gazeCalTarget);
+        g_gazeCalTarget = vr::k_ulOverlayHandleInvalid;
+    }
+}
+
+// SteamVR's lasermouse tip / desktop arrow lives on system.pointer (and friends). While
+// gaze-pointer is active we hide that overlay so Valve's distance-scaling arrow does not
+// fight the cyan reticle. Controllers need the tip back at a usable size afterward — an
+// earlier suppress set width to 1 mm and left the tip looking like a single pixel.
+constexpr float kSteamVrLaserTipMetres = 0.032f;
+
+template <typename Fn>
+void ForEachSteamVrMouseCursor(Fn &&fn) {
+    if (!vr::VROverlay()) return;
+    static const char *kKeys[] = {"system.pointer", "system.pointer.secondary", "system.cursor",
+                                  "system.cursor.secondary", "system.pointer.left", "system.pointer.right",
+                                  "system.cursor.left", "system.cursor.right"};
+    for (const char *key : kKeys) {
+        vr::VROverlayHandle_t h = vr::k_ulOverlayHandleInvalid;
+        if (vr::VROverlay()->FindOverlay(key, &h) != vr::VROverlayError_None) continue;
+        if (h == vr::k_ulOverlayHandleInvalid) continue;
+        fn(h);
+    }
+}
+
+void SuppressSteamVrMouseCursor() {
+    ForEachSteamVrMouseCursor([](vr::VROverlayHandle_t h) {
+        vr::VROverlay()->HideOverlay(h);
+        vr::VROverlay()->SetOverlayAlpha(h, 0.f);
+    });
+}
+
+void RestoreSteamVrMouseCursor() {
+    const float tip =
+        float(std::clamp(EnvDouble("FT_LASER_TIP_M", double(kSteamVrLaserTipMetres)), 0.012, 0.08));
+    ForEachSteamVrMouseCursor([tip](vr::VROverlayHandle_t h) {
+        vr::VROverlay()->SetOverlayAlpha(h, 1.f);
+        vr::VROverlay()->SetOverlayWidthInMeters(h, tip);
+    });
+}
+
+void GazePointerLeave() {
+    if (!g_gazePtr.haveEmit || g_gazePtr.screen < 0) return;
+    ft_event e{};
+    e.type = FT_LEAVE;
+    e.screen = g_gazePtr.screen;
+    EmitFtEvent(e);
+    g_gazePtr.haveEmit = false;
+}
+
+void DeactivateGazePointer(const char *reason) {
+    if (!g_gazePtr.active) return;
+    GazePointerLeave();
+    HideGazeCursor();
+    HideGazePad();
+    g_gazePtr.active = false;
+    g_gazePtr.forceEmit = false;
+    g_gazePtr.filtU.inited = false;
+    g_gazePtr.filtV.inited = false;
+    g_gazePtr.filtOffU.inited = false;
+    g_gazePtr.filtOffV.inited = false;
+    RestoreSteamVrMouseCursor();
+    std::fprintf(stderr, "gaze-pointer: deactivated (%s)\n", reason ? reason : "unknown");
+}
+
+void GazePointerYieldToController(vr::TrackedDeviceIndex_t dev, const char *why) {
+    if (!g_gazePtr.active) return;
+    if (dev == vr::k_unTrackedDeviceIndexInvalid) return;
+    if (!IsHandController(dev)) return;
+    DeactivateGazePointer(why ? why : "controller");
+}
+
+void ActivateGazePointer() {
+    if (!g_gazePtr.cfg.featureEnabled) return;
+    g_gazePtr.active = true;
+    g_gazePtr.forceEmit = true;
+    g_gazePtr.filtU.inited = false;
+    g_gazePtr.filtV.inited = false;
+    g_gazePtr.filtOffU.inited = false;
+    g_gazePtr.filtOffV.inited = false;
+    g_gazePtr.haveEmit = false;
+    g_gazePtr.lastClick = Clock::now();
+    SuppressSteamVrMouseCursor();
+    if (!g_eyeAvailable)
+        std::fprintf(stderr, "gaze-pointer: activated (warning: eye tracking unavailable)\n");
+    else if (!g_eyeValid)
+        std::fprintf(stderr, "gaze-pointer: activated (warning: eye sample currently invalid)\n");
+    else
+        std::fprintf(stderr, "gaze-pointer: activated\n");
+}
+
+void GazePointerClick() {
+    if (!g_gazePtr.haveEmit || g_gazePtr.screen < 0) {
+        std::fprintf(stderr, "gaze-pointer: click ignored (no screen hit yet)\n");
+        return;
+    }
+    ft_event move{};
+    move.type = FT_MOTION;
+    move.screen = g_gazePtr.screen;
+    move.x = g_gazePtr.emitX;
+    move.y = g_gazePtr.emitY;
+    EmitFtEvent(move);
+    ft_event down{};
+    down.type = FT_BUTTON;
+    down.screen = g_gazePtr.screen;
+    down.x = g_gazePtr.emitX;
+    down.y = g_gazePtr.emitY;
+    down.button = BTN_LEFT;
+    down.pressed = true;
+    EmitFtEvent(down);
+    ft_event up = down;
+    up.pressed = false;
+    EmitFtEvent(up);
+    g_gazePtr.lastClick = Clock::now();
+    std::fprintf(stderr, "gaze-pointer: left-click screen=%d at %.1f,%.1f\n", g_gazePtr.screen + 1,
+                 g_gazePtr.emitX, g_gazePtr.emitY);
+}
+
+// Forward decls — calibration uses Screen / PlaceGazeCursor after Screen is defined.
+void CancelGazeCalibration(const char *reason);
+bool GazeCalibSample();
+void UpdateGazeCalibration();
+
+void OnGazePointerButton() {
+    if (!g_gazePtr.cfg.featureEnabled) return;
+    if (g_gazeCal.active) {
+        GazeCalibSample();
+        return;
+    }
+    if (!g_gazePtr.active) {
+        ActivateGazePointer();
+        return;  // activation press must not click
+    }
+    GazePointerClick();
+}
+
+// GazePointerSeatFromTarget / PlaceGazeCursor / UpdateGazePointer defined after Screen.
 
 struct Screen {
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid, bar = vr::k_ulOverlayHandleInvalid,
@@ -499,7 +855,7 @@ struct Screen {
     double attentionInMs = 150;     // fade toward active
     double attentionOutMs = 250;    // fade toward idle
     double attentionDwellMs = 80;   // gaze must stick before activating
-    double attentionHoldMs = 150;   // stay active briefly after gaze leaves
+    double attentionHoldMs = 400;   // stay active briefly after gaze leaves / sample drop
     double attentionFocusMs = 0;    // time currently focused / unfocused accumulator
     bool attentionFocused = false;
     AnchorMode anchor = AnchorMode::World;
@@ -555,7 +911,7 @@ std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
 
 // --- Spatial Instruments (ambient VR info; not desktop surfaces) ---
-enum class InstrumentType { Clock };
+enum class InstrumentType { Clock, Battery, Storage, Sd, Date, Media };
 
 struct Instrument {
     std::string id;
@@ -571,7 +927,7 @@ struct Instrument {
     double attentionInMs = 150;
     double attentionOutMs = 250;
     double attentionDwellMs = 80;
-    double attentionHoldMs = 150;
+    double attentionHoldMs = 400;
     double attentionFocusMs = 0;
     bool attentionFocused = false;
     AnchorMode anchor = AnchorMode::World;
@@ -594,17 +950,49 @@ struct Instrument {
     long nearUntil = 0;
     bool gazeHover = false;
     bool visible = false;
-    int lastMinute = -1;
+    float visibilityFade = 1.f;  // shared ModeVisible / wrist fade (same as screens)
+    int lastMinute = -1;       // Clock content key (hour*60+min)
+    int lastBatterySeg = -1;   // Battery filled-segment count last drawn
+    int lastStorageKey = -1;   // Storage/Sd: present*1000 + used_pct (0–100)
+    int lastDateKey = -1;      // Date: year*512 + yday
+    int lastMediaKey = -1;     // Media: hash of status+text+caps (not scroll)
+    int lastMediaScrollPx = -1;  // last uploaded marquee pixel offset
+    std::string mediaText;     // marquee label from MPRIS
+    int mediaStatus = 0;       // 0 none, 1 stopped, 2 paused, 3 playing
+    bool mediaCanPrev = false, mediaCanPause = false, mediaCanNext = false;
+    double mediaScroll = 0;    // marquee pixel offset
+    double mediaScrollAcc = 0; // sub-pixel accumulator for slow marquee
+    uint8_t colorR = 235, colorG = 240, colorB = 245;  // Clock/Date/Battery paint
     int texW = 384, texH = 128;
     std::vector<uint8_t> pixels;
     double heightMetres() const { return metres * double(texH) / double(texW); }
-    float ComposedAlpha() const { return attentionResolved; }
+    float ComposedAlpha() const { return attentionResolved * visibilityFade; }
 };
 
 std::vector<Instrument> g_instruments;
 
+// Headset battery via sysfs (Steam Frame: max1720x fuel-gauge Battery node).
+std::string g_batteryCapacityPath;
+int g_batteryPct = -1;  // last valid 0–100; -1 = never read
+Clock::time_point g_batteryNextPoll{};
+Clock::time_point g_batteryNextDiscover{};
+int g_batteryFailLogBudget = 3;
+
+// Device + SD storage pools (unique block mounts summed; SD may be unmounted).
+struct StoragePool {
+    bool present = false;
+    bool mounted = false;
+    uint64_t total = 0;
+    uint64_t used = 0;
+    int pct = 0;  // 0–100
+};
+StoragePool g_storageDevice, g_storageSd;
+Clock::time_point g_storageNextPoll{};
+int g_storageFailLogBudget = 3;
+
 bool InstrumentPose(const Instrument &inst, Mat *out);
 void UpdateInstrumentAttention(double dt);
+void UpdateInstrumentVisibility();
 void TickInstruments(double dt);
 void EndInstrumentDragsBy(vr::TrackedDeviceIndex_t dev);
 void ClearInstruments();
@@ -1371,31 +1759,36 @@ GazeTarget PickGazeTarget(const double origin[3], const double dir[3]) {
         // Screen surface.
         if (std::fabs(hx) <= halfW && std::fabs(hy) <= halfH) consider(GazeKind::Screen, -1, dist);
     }
-    for (size_t ii = 0; ii < g_instruments.size(); ++ii) {
-        Instrument &inst = g_instruments[ii];
-        if (!inst.enabled || !inst.visible) continue;
-        Mat ip;
-        if (!InstrumentPose(inst, &ip)) continue;
-        double hx, hy;
-        if (!RayOnPlane(ip, ray, &hx, &hy)) continue;
-        const double halfW = inst.metres / 2, halfH = inst.heightMetres() / 2;
-        if (std::fabs(hx) > halfW * 1.1 || std::fabs(hy) > halfH * 1.25) continue;
-        const double o[3] = {origin[0], origin[1], origin[2]};
-        const double hit[3] = {ip.m[0][3] + float(hx) * ip.m[0][0] + float(hy) * ip.m[0][1],
-                               ip.m[1][3] + float(hx) * ip.m[1][0] + float(hy) * ip.m[1][1],
-                               ip.m[2][3] + float(hx) * ip.m[2][0] + float(hy) * ip.m[2][1]};
-        const double dvec[3] = {hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]};
-        const double dist = std::sqrt(Dot3(dvec, dvec));
-        if (dist >= best.distance) continue;
-        best.kind = GazeKind::Instrument;
-        best.screen = -1;
-        best.instrument = int(ii);
-        best.slot = -1;
-        best.localX = hx;
-        best.localY = hy;
-        best.u = halfW > 0 ? (hx + halfW) / inst.metres : 0.5;
-        best.v = halfH > 0 ? (halfH - hy) / inst.heightMetres() : 0.5;
-        best.distance = dist;
+    // Instruments only when gaze is not already on a display/chrome. A clock/battery
+    // floating near (or between you and) a screen used to steal the closest hit every
+    // other frame and pulse attention + drop the gaze reticle.
+    if (best.kind == GazeKind::None) {
+        for (size_t ii = 0; ii < g_instruments.size(); ++ii) {
+            Instrument &inst = g_instruments[ii];
+            if (!inst.enabled || !inst.visible) continue;
+            Mat ip;
+            if (!InstrumentPose(inst, &ip)) continue;
+            double hx, hy;
+            if (!RayOnPlane(ip, ray, &hx, &hy)) continue;
+            const double halfW = inst.metres / 2, halfH = inst.heightMetres() / 2;
+            if (std::fabs(hx) > halfW || std::fabs(hy) > halfH) continue;
+            const double o[3] = {origin[0], origin[1], origin[2]};
+            const double hit[3] = {ip.m[0][3] + float(hx) * ip.m[0][0] + float(hy) * ip.m[0][1],
+                                   ip.m[1][3] + float(hx) * ip.m[1][0] + float(hy) * ip.m[1][1],
+                                   ip.m[2][3] + float(hx) * ip.m[2][0] + float(hy) * ip.m[2][1]};
+            const double dvec[3] = {hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]};
+            const double dist = std::sqrt(Dot3(dvec, dvec));
+            if (dist >= best.distance) continue;
+            best.kind = GazeKind::Instrument;
+            best.screen = -1;
+            best.instrument = int(ii);
+            best.slot = -1;
+            best.localX = hx;
+            best.localY = hy;
+            best.u = halfW > 0 ? (hx + halfW) / inst.metres : 0.5;
+            best.v = halfH > 0 ? (halfH - hy) / inst.heightMetres() : 0.5;
+            best.distance = dist;
+        }
     }
     return best;
 }
@@ -1404,8 +1797,22 @@ void UpdateGaze(double dt) {
     (void)dt;
     for (auto &[i, s] : g_screens) s.gazeHover = false;
     for (auto &inst : g_instruments) inst.gazeHover = false;
+    g_eyeHeld = false;
     double origin[3], dir[3];
     bool got = SampleEyeGaze(origin, dir);
+    if (got) {
+        g_lastEyeValid = Clock::now();
+        for (int k = 0; k < 3; ++k) g_lastEyeOrigin[k] = origin[k], g_lastEyeDir[k] = dir[k];
+    } else if (g_eyeAvailable) {
+        // OpenVR eye samples flicker off for tens of ms; keep the last ray so attention
+        // and the gaze reticle do not pulse / vanish.
+        const double since = std::chrono::duration<double>(Clock::now() - g_lastEyeValid).count();
+        if (since <= kEyeSampleHoldSec) {
+            for (int k = 0; k < 3; ++k) origin[k] = g_lastEyeOrigin[k], dir[k] = g_lastEyeDir[k];
+            g_eyeHeld = true;
+            got = true;
+        }
+    }
     if (!got && g_gazeFallbackHead) got = SampleHeadFallbackGaze(origin, dir);
     if (!got) {
         g_gazeTarget = {};
@@ -1435,9 +1842,10 @@ void UpdateGaze(double dt) {
             case GazeKind::Instrument: kind = "instrument"; break;
             default: break;
         }
-        std::printf("gaze: eye=%s valid=%s target=%s screen=%d u=%.3f v=%.3f dist=%.3f\n",
+        std::printf("gaze: eye=%s valid=%s held=%s target=%s screen=%d u=%.3f v=%.3f dist=%.3f\n",
                     g_eyeAvailable ? "yes" : "no", g_eyeValid ? "yes" : (g_gazeFallbackHead ? "fallback" : "no"),
-                    kind, g_gazeTarget.screen + 1, g_gazeTarget.u, g_gazeTarget.v, g_gazeTarget.distance);
+                    g_eyeHeld ? "yes" : "no", kind, g_gazeTarget.screen + 1, g_gazeTarget.u, g_gazeTarget.v,
+                    g_gazeTarget.distance);
     }
 }
 
@@ -1462,12 +1870,23 @@ void UpdateAttention(double dt) {
                  g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
                  g_gazeTarget.kind == GazeKind::Resize ||
                  g_gazeTarget.kind == GazeKind::Anchor || g_gazeTarget.kind == GazeKind::Slot);
-            // Temporary invalid sample: ease toward idle, do not slam.
-            const bool valid = g_eyeValid || (g_gazeFallbackHead && g_gazeTarget);
+            // Fresh sample, sticky held ray, or explicit head fallback all count as valid.
+            const bool valid = g_eyeValid || g_eyeHeld || (g_gazeFallbackHead && g_gazeTarget);
             if (!valid) {
-                const double tau = s.attentionOutMs / 1000.0;
+                // Truly lost tracking: keep focused through attentionHoldMs, then ease idle.
+                // Do not slam opacity toward idle on every brief OpenVR dropout.
+                if (s.attentionFocused) {
+                    s.attentionFocusMs += dt * 1000.0;
+                    if (s.attentionFocusMs >= s.attentionHoldMs) {
+                        s.attentionFocused = false;
+                        s.attentionFocusMs = 0;
+                    }
+                }
+                const float target = s.attentionFocused ? s.activeOpacity : s.idleOpacity;
+                const double tauMs = s.attentionFocused ? s.attentionInMs : s.attentionOutMs;
+                const double tau = tauMs / 1000.0;
                 const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
-                s.attentionResolved = float(s.attentionResolved + (s.idleOpacity - s.attentionResolved) * a);
+                s.attentionResolved = float(s.attentionResolved + (target - s.attentionResolved) * a);
             } else {
                 if (hit) {
                     s.attentionFocusMs += dt * 1000.0;
@@ -1493,6 +1912,468 @@ void UpdateAttention(double dt) {
             ApplyAlpha(s);
         }
     }
+}
+
+bool GazePointerSeatFromTarget(const GazeTarget &t, int *screenOut, double *sx, double *sy) {
+    if (t.kind != GazeKind::Screen || t.screen < 0) return false;
+    auto it = g_screens.find(t.screen);
+    if (it == g_screens.end()) return false;
+    const Screen &gs = it->second;
+    if (!gs.visible || gs.width <= 0 || gs.height <= 0) return false;
+    const int surf_w = gs.surfaceWidth > 0 ? gs.surfaceWidth : gs.width;
+    const int surf_h = gs.surfaceHeight > 0 ? gs.surfaceHeight : gs.height;
+    ft_uv_to_seat(t.u, t.v, gs.width, gs.height, surf_w, surf_h, gs.outputScale, sx, sy);
+    *screenOut = t.screen;
+    return true;
+}
+
+std::vector<uint8_t> GazeReticleTexture(int size) {
+    // Soft cyan reticle (distinct from the 3D-mouse white dot): filled core + faint ring.
+    std::vector<uint8_t> px(size_t(size) * size * 4, 0);
+    const double c = (size - 1) / 2.0, rCore = size * 0.18, rRing = size * 0.38, rOuter = size * 0.48;
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const double d = std::hypot(x - c, y - c);
+            uint8_t *p = &px[(size_t(y) * size + x) * 4];
+            double a = 0;
+            if (d <= rCore)
+                a = 1.0;
+            else if (d <= rRing)
+                a = std::clamp(1.0 - (d - rCore) / (rRing - rCore), 0.0, 1.0) * 0.35;
+            else if (d <= rOuter)
+                a = std::clamp(1.0 - (d - rRing) / (rOuter - rRing), 0.0, 1.0) * 0.85;
+            if (a <= 0) continue;
+            p[0] = 160;
+            p[1] = 220;
+            p[2] = 255;
+            p[3] = uint8_t(a * 230);
+        }
+    return px;
+}
+
+void EnsureGazeCursor() {
+    if (g_gazeCursor != vr::k_ulOverlayHandleInvalid) return;
+    if (vr::VROverlay()->CreateOverlay("frametop.gaze.cursor", "Frametop gaze pointer", &g_gazeCursor) !=
+        vr::VROverlayError_None) {
+        std::fprintf(stderr, "gaze-pointer: can't create reticle overlay\n");
+        g_gazeCursor = vr::k_ulOverlayHandleInvalid;
+        return;
+    }
+    static const auto tex = GazeReticleTexture(64);
+    vr::VROverlay()->SetOverlayRaw(g_gazeCursor, const_cast<uint8_t *>(tex.data()), 64, 64, 4);
+    vr::VROverlay()->SetOverlayInputMethod(g_gazeCursor, vr::VROverlayInputMethod_None);
+    vr::VROverlay()->SetOverlaySortOrder(g_gazeCursor, 250);
+    vr::VROverlay()->SetOverlayWidthInMeters(g_gazeCursor, float(g_gazePtr.cfg.dotMetres));
+}
+
+void PlaceGazeCursor(const Screen &s, double u, double v) {
+    EnsureGazeCursor();
+    if (g_gazeCursor == vr::k_ulOverlayHandleInvalid) return;
+    Mat pose;
+    if (!ScreenPose(s, &pose)) return;
+    const double lx = (u - 0.5) * s.metres;
+    const double ly = (0.5 - v) * s.heightMetres();
+    const Mat m = Mul(pose, OnSurface(s, lx, ly, 0.004));
+    vr::VROverlay()->SetOverlayTransformAbsolute(g_gazeCursor, vr::TrackingUniverseStanding, &m);
+    Mat head;
+    double dist = 1.5;
+    if (DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) {
+        const double d[3] = {m.m[0][3] - head.m[0][3], m.m[1][3] - head.m[1][3], m.m[2][3] - head.m[2][3]};
+        dist = std::max(0.3, std::sqrt(Dot3(d, d)));
+    }
+    const float targetW = float(std::clamp(std::max(g_gazePtr.cfg.dotMetres, dist * 0.014), 0.016, 0.06));
+    // Smooth width so distance jitter does not look like the reticle blinking/pulsing.
+    g_gazeCursorWidth += (targetW - g_gazeCursorWidth) * 0.15f;
+    vr::VROverlay()->SetOverlayWidthInMeters(g_gazeCursor, g_gazeCursorWidth);
+    vr::VROverlay()->SetOverlayAlpha(g_gazeCursor, 1.f);
+    // Show every frame: SteamVR can clear overlay visibility between ticks.
+    vr::VROverlay()->ShowOverlay(g_gazeCursor);
+    g_gazeCursorShown = true;
+}
+
+std::vector<uint8_t> GazePadTexture(int size) {
+    // Faint ring showing the hybrid eye-nudge circle around the head aim.
+    std::vector<uint8_t> px(size_t(size) * size * 4, 0);
+    const double c = (size - 1) / 2.0, r0 = size * 0.42, r1 = size * 0.48;
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const double d = std::hypot(x - c, y - c);
+            if (d < r0 || d > r1) continue;
+            const double a = std::clamp(1.0 - std::fabs(d - (r0 + r1) * 0.5) / ((r1 - r0) * 0.5), 0.0, 1.0);
+            uint8_t *p = &px[(size_t(y) * size + x) * 4];
+            p[0] = 120;
+            p[1] = 180;
+            p[2] = 220;
+            p[3] = uint8_t(a * 110);
+        }
+    return px;
+}
+
+void EnsureGazePad() {
+    if (g_gazePad != vr::k_ulOverlayHandleInvalid) return;
+    if (vr::VROverlay()->CreateOverlay("frametop.gaze.pad", "Frametop gaze hybrid pad", &g_gazePad) !=
+        vr::VROverlayError_None) {
+        g_gazePad = vr::k_ulOverlayHandleInvalid;
+        return;
+    }
+    static const auto tex = GazePadTexture(64);
+    vr::VROverlay()->SetOverlayRaw(g_gazePad, const_cast<uint8_t *>(tex.data()), 64, 64, 4);
+    vr::VROverlay()->SetOverlayInputMethod(g_gazePad, vr::VROverlayInputMethod_None);
+    vr::VROverlay()->SetOverlaySortOrder(g_gazePad, 240);
+}
+
+void PlaceGazePad(const Screen &s, double u, double v, double padUv) {
+    EnsureGazePad();
+    if (g_gazePad == vr::k_ulOverlayHandleInvalid) return;
+    Mat pose;
+    if (!ScreenPose(s, &pose)) return;
+    const double lx = (u - 0.5) * s.metres;
+    const double ly = (0.5 - v) * s.heightMetres();
+    const Mat m = Mul(pose, OnSurface(s, lx, ly, 0.003));
+    vr::VROverlay()->SetOverlayTransformAbsolute(g_gazePad, vr::TrackingUniverseStanding, &m);
+    // Circle diameter in metres along the screen's width axis.
+    const float w = float(std::clamp(2.0 * padUv * s.metres, 0.04, s.metres * 0.9));
+    vr::VROverlay()->SetOverlayWidthInMeters(g_gazePad, w);
+    vr::VROverlay()->SetOverlayAlpha(g_gazePad, 0.85f);
+    vr::VROverlay()->ShowOverlay(g_gazePad);
+    g_gazePadShown = true;
+}
+
+bool PlaceGazeCursorHeld(const Clock::time_point &now) {
+    if (g_gazePtr.screen < 0) return false;
+    const double since = std::chrono::duration<double>(now - g_gazeCursorLastHit).count();
+    if (since > kGazeCursorHoldSec) return false;
+    auto it = g_screens.find(g_gazePtr.screen);
+    if (it == g_screens.end() || !it->second.visible) return false;
+    PlaceGazeCursor(it->second, g_gazePtr.lastU, g_gazePtr.lastV);
+    return true;
+}
+
+std::vector<uint8_t> GazeCalTargetTexture(int size) {
+    // Warm orange crosshair — distinct from the cyan gaze reticle.
+    std::vector<uint8_t> px(size_t(size) * size * 4, 0);
+    const double c = (size - 1) / 2.0;
+    const double arm = size * 0.42, thick = size * 0.06, ring = size * 0.12;
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const double dx = x - c, dy = y - c;
+            const double d = std::hypot(dx, dy);
+            const bool onArm = (std::fabs(dx) <= thick && std::fabs(dy) <= arm) ||
+                               (std::fabs(dy) <= thick && std::fabs(dx) <= arm);
+            const bool onRing = d >= ring * 0.7 && d <= ring * 1.35;
+            if (!onArm && !onRing) continue;
+            uint8_t *p = &px[(size_t(y) * size + x) * 4];
+            p[0] = 255;
+            p[1] = 160;
+            p[2] = 40;
+            p[3] = onRing ? 200 : 240;
+        }
+    return px;
+}
+
+void EnsureGazeCalTarget() {
+    if (g_gazeCalTarget != vr::k_ulOverlayHandleInvalid) return;
+    if (vr::VROverlay()->CreateOverlay("frametop.gaze.caltarget", "Frametop gaze calibration", &g_gazeCalTarget) !=
+        vr::VROverlayError_None) {
+        std::fprintf(stderr, "gaze-pointer: can't create calibration target overlay\n");
+        g_gazeCalTarget = vr::k_ulOverlayHandleInvalid;
+        return;
+    }
+    static const auto tex = GazeCalTargetTexture(64);
+    vr::VROverlay()->SetOverlayRaw(g_gazeCalTarget, const_cast<uint8_t *>(tex.data()), 64, 64, 4);
+    vr::VROverlay()->SetOverlayInputMethod(g_gazeCalTarget, vr::VROverlayInputMethod_None);
+    vr::VROverlay()->SetOverlaySortOrder(g_gazeCalTarget, 260);
+    vr::VROverlay()->SetOverlayWidthInMeters(g_gazeCalTarget, 0.04f);
+}
+
+void PlaceGazeCalTarget(const Screen &s, double u, double v) {
+    EnsureGazeCalTarget();
+    if (g_gazeCalTarget == vr::k_ulOverlayHandleInvalid) return;
+    Mat pose;
+    if (!ScreenPose(s, &pose)) return;
+    const double lx = (u - 0.5) * s.metres;
+    const double ly = (0.5 - v) * s.heightMetres();
+    const Mat m = Mul(pose, OnSurface(s, lx, ly, 0.006));
+    vr::VROverlay()->SetOverlayTransformAbsolute(g_gazeCalTarget, vr::TrackingUniverseStanding, &m);
+    Mat head;
+    double dist = 1.5;
+    if (DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) {
+        const double d[3] = {m.m[0][3] - head.m[0][3], m.m[1][3] - head.m[1][3], m.m[2][3] - head.m[2][3]};
+        dist = std::max(0.3, std::sqrt(Dot3(d, d)));
+    }
+    const float w = float(std::clamp(std::max(0.03, dist * 0.018), 0.025, 0.07));
+    vr::VROverlay()->SetOverlayWidthInMeters(g_gazeCalTarget, w);
+    vr::VROverlay()->SetOverlayAlpha(g_gazeCalTarget, 1.f);
+    vr::VROverlay()->ShowOverlay(g_gazeCalTarget);
+    g_gazeCalTargetShown = true;
+}
+
+int GazeCalScreenIndex() {
+    if (g_gazeCal.screen >= 0 && g_screens.count(g_gazeCal.screen)) return g_gazeCal.screen;
+    if (g_screens.count(0)) return 0;
+    if (!g_screens.empty()) return g_screens.begin()->first;
+    return -1;
+}
+
+void CancelGazeCalibration(const char *reason) {
+    if (!g_gazeCal.active && !g_gazeCal.justFinished) {
+        HideGazeCalTarget();
+        return;
+    }
+    g_gazeCal.active = false;
+    HideGazeCalTarget();
+    std::fprintf(stderr, "gaze-pointer: calibration cancelled (%s)\n", reason ? reason : "unknown");
+}
+
+bool StartGazeCalibration() {
+    if (!g_gazePtr.cfg.featureEnabled) return false;
+    if (!g_eyeAvailable && !g_gazeFallbackHead) return false;
+    const int scr = GazeCalScreenIndex();
+    if (scr < 0) return false;
+    g_gazeCal = {};
+    g_gazeCal.active = true;
+    g_gazeCal.screen = scr;
+    g_gazeCal.step = 0;
+    // Measure raw bias; clear any previous correction while sampling.
+    g_gazePtr.cfg.calU = 0;
+    g_gazePtr.cfg.calV = 0;
+    ActivateGazePointer();
+    g_gazePtr.lastClick = Clock::now();  // do not idle-out mid-cal
+    std::fprintf(stderr, "gaze-pointer: calibration started (screen %d, %d points)\n", scr + 1, kGazeCalPoints);
+    return true;
+}
+
+bool GazeCalibSample() {
+    if (!g_gazeCal.active) return false;
+    if (g_gazeCal.step < 0 || g_gazeCal.step >= kGazeCalPoints) return false;
+    // Prefer filtered gaze on the cal screen; fall back to raw target UV.
+    double mu = g_gazePtr.lastU, mv = g_gazePtr.lastV;
+    if (g_gazeTarget.kind == GazeKind::Screen && g_gazeTarget.screen == g_gazeCal.screen) {
+        // lastU/V already include cal offsets (zero during cal); use them when we have a hit.
+        if (g_gazePtr.screen == g_gazeCal.screen) {
+            mu = g_gazePtr.lastU;
+            mv = g_gazePtr.lastV;
+        } else {
+            mu = g_gazeTarget.u;
+            mv = g_gazeTarget.v;
+        }
+    } else if (!(g_gazePtr.haveEmit && g_gazePtr.screen == g_gazeCal.screen)) {
+        std::fprintf(stderr, "gaze-pointer: calibration sample skipped (look at the orange crosshair)\n");
+        return false;
+    }
+    const double eu = kGazeCalUV[g_gazeCal.step][0];
+    const double ev = kGazeCalUV[g_gazeCal.step][1];
+    g_gazeCal.sumErrU += eu - mu;
+    g_gazeCal.sumErrV += ev - mv;
+    g_gazeCal.samples++;
+    std::fprintf(stderr, "gaze-pointer: cal point %d/%d raw=%.3f,%.3f err=%.3f,%.3f\n", g_gazeCal.step + 1,
+                 kGazeCalPoints, mu, mv, eu - mu, ev - mv);
+    g_gazeCal.step++;
+    g_gazePtr.lastClick = Clock::now();
+    if (g_gazeCal.step >= kGazeCalPoints) {
+        const double ou = std::clamp(g_gazeCal.sumErrU / g_gazeCal.samples, -0.25, 0.25);
+        const double ov = std::clamp(g_gazeCal.sumErrV / g_gazeCal.samples, -0.25, 0.25);
+        g_gazePtr.cfg.calU = ou;
+        g_gazePtr.cfg.calV = ov;
+        g_gazeCal.active = false;
+        g_gazeCal.justFinished = true;
+        HideGazeCalTarget();
+        DeactivateGazePointer("cal-done");
+        std::fprintf(stderr, "gaze-pointer: calibration done cal_u=%.4f cal_v=%.4f\n", ou, ov);
+    }
+    return true;
+}
+
+void UpdateGazeCalibration() {
+    if (!g_gazeCal.active) {
+        if (!g_gazeCal.justFinished) HideGazeCalTarget();
+        return;
+    }
+    // Keep idle timer from killing the pointer mid-cal.
+    g_gazePtr.lastClick = Clock::now();
+    const int scr = GazeCalScreenIndex();
+    if (scr < 0 || g_gazeCal.step < 0 || g_gazeCal.step >= kGazeCalPoints) {
+        CancelGazeCalibration("no-screen");
+        return;
+    }
+    g_gazeCal.screen = scr;
+    auto it = g_screens.find(scr);
+    if (it == g_screens.end() || !it->second.visible) {
+        CancelGazeCalibration("screen-hidden");
+        return;
+    }
+    PlaceGazeCalTarget(it->second, kGazeCalUV[g_gazeCal.step][0], kGazeCalUV[g_gazeCal.step][1]);
+    if (!g_gazePtr.active && g_gazePtr.cfg.featureEnabled) ActivateGazePointer();
+}
+
+void UpdateGazePointer(double dt) {
+    if (g_gazePtr.buttonPending) {
+        g_gazePtr.buttonPending = false;
+        OnGazePointerButton();
+    }
+    UpdateGazeCalibration();
+    if (!g_gazePtr.active) return;
+    if (!g_gazePtr.cfg.featureEnabled || g_gazePtr.cfg.mode == GazePtrMode::Off) {
+        DeactivateGazePointer("feature-off");
+        return;
+    }
+
+    SuppressSteamVrMouseCursor();
+
+    const auto now = Clock::now();
+    // Idle-out on click silence (looking around does not keep the pointer alive).
+    if (!g_gazeCal.active) {
+        const double idle = std::chrono::duration<double>(now - g_gazePtr.lastClick).count();
+        if (idle >= g_gazePtr.cfg.timeoutSec) {
+            DeactivateGazePointer("timeout");
+            return;
+        }
+    }
+
+    GazeTarget aim{};
+    if (g_gazePtr.cfg.mode == GazePtrMode::Hybrid && !g_gazeCal.active) {
+        // Head ray = coarse aim (pad centre). Eyes may only nudge within hybridPadUv.
+        double origin[3], dir[3];
+        if (!SampleHeadFallbackGaze(origin, dir)) {
+            if (!PlaceGazeCursorHeld(now)) {
+                HideGazeCursor();
+                HideGazePad();
+            }
+            return;
+        }
+        GazeTarget head = PickGazeTarget(origin, dir);
+        if (head.kind != GazeKind::Screen) {
+            if (!PlaceGazeCursorHeld(now)) {
+                HideGazeCursor();
+                HideGazePad();
+            }
+            return;
+        }
+        g_gazePtr.headU = head.u;
+        g_gazePtr.headV = head.v;
+        double eyeU = head.u, eyeV = head.v;
+        if (g_gazeTarget.kind == GazeKind::Screen && g_gazeTarget.screen == head.screen) {
+            eyeU = g_gazeTarget.u;
+            eyeV = g_gazeTarget.v;
+        }
+        eyeU = std::clamp(eyeU + g_gazePtr.cfg.calU, 0.0, 1.0);
+        eyeV = std::clamp(eyeV + g_gazePtr.cfg.calV, 0.0, 1.0);
+        double du = eyeU - head.u, dv = eyeV - head.v;
+        const double pad = g_gazePtr.cfg.hybridPadUv;
+        const double dz = g_gazePtr.cfg.hybridDeadzone;
+        const double gain = g_gazePtr.cfg.hybridEyeGain;
+        const double len = std::hypot(du, dv);
+        if (len <= pad * dz || len < 1e-9) {
+            du = 0;
+            dv = 0;
+        } else {
+            // Clamp to pad, then remap deadzone→edge into 0→pad*gain (stickier centre).
+            double cdu = du, cdv = dv;
+            if (len > pad) {
+                cdu *= pad / len;
+                cdv *= pad / len;
+            }
+            const double clen = std::hypot(cdu, cdv);
+            const double live = pad * (1.0 - dz);
+            double t = live > 1e-9 ? (clen - pad * dz) / live : 1.0;
+            t = std::clamp(t, 0.0, 1.0);
+            const double outLen = t * pad * gain;
+            if (clen > 1e-9) {
+                du = cdu * (outLen / clen);
+                dv = cdv * (outLen / clen);
+            } else {
+                du = dv = 0;
+            }
+        }
+        du = g_gazePtr.filtOffU.Filter(du, dt);
+        dv = g_gazePtr.filtOffV.Filter(dv, dt);
+        aim = head;
+        aim.u = std::clamp(head.u + du, 0.0, 1.0);
+        aim.v = std::clamp(head.v + dv, 0.0, 1.0);
+    } else {
+        // Full gaze (or calibration): eye hit is the aim.
+        if (g_gazeTarget.kind != GazeKind::Screen) {
+            HideGazePad();
+            if (!PlaceGazeCursorHeld(now)) HideGazeCursor();
+            return;
+        }
+        aim = g_gazeTarget;
+        aim.u = std::clamp(aim.u + g_gazePtr.cfg.calU, 0.0, 1.0);
+        aim.v = std::clamp(aim.v + g_gazePtr.cfg.calV, 0.0, 1.0);
+        g_gazePtr.headU = aim.u;
+        g_gazePtr.headV = aim.v;
+    }
+
+    const int rawScreen = aim.screen;
+    if (rawScreen != g_gazePtr.screen) {
+        g_gazePtr.filtU.inited = false;
+        g_gazePtr.filtV.inited = false;
+        g_gazePtr.filtOffU.inited = false;
+        g_gazePtr.filtOffV.inited = false;
+        g_gazePtr.screen = rawScreen;
+        g_gazePtr.haveEmit = false;
+        g_gazePtr.forceEmit = true;
+    }
+    // Hybrid wants stickier UV filtering than full gaze.
+    const bool hybrid = g_gazePtr.cfg.mode == GazePtrMode::Hybrid && !g_gazeCal.active;
+    g_gazePtr.filtU.minCutoff = hybrid ? std::min(g_gazePtr.cfg.minCutoff, 0.55) : g_gazePtr.cfg.minCutoff;
+    g_gazePtr.filtU.beta = hybrid ? std::min(g_gazePtr.cfg.beta, 0.002) : g_gazePtr.cfg.beta;
+    g_gazePtr.filtU.dCutoff = g_gazePtr.cfg.dCutoff;
+    g_gazePtr.filtV.minCutoff = g_gazePtr.filtU.minCutoff;
+    g_gazePtr.filtV.beta = g_gazePtr.filtU.beta;
+    g_gazePtr.filtV.dCutoff = g_gazePtr.filtU.dCutoff;
+    const double u = g_gazePtr.filtU.Filter(aim.u, dt);
+    const double v = g_gazePtr.filtV.Filter(aim.v, dt);
+    g_gazePtr.lastU = u;
+    g_gazePtr.lastV = v;
+
+    GazeTarget filtered = aim;
+    filtered.u = u;
+    filtered.v = v;
+    int screen = -1;
+    double sx = 0, sy = 0;
+    if (!GazePointerSeatFromTarget(filtered, &screen, &sx, &sy)) {
+        if (!PlaceGazeCursorHeld(now)) {
+            HideGazeCursor();
+            HideGazePad();
+        }
+        return;
+    }
+    g_gazePtr.seatX = sx;
+    g_gazePtr.seatY = sy;
+    g_gazePtr.screen = screen;
+    g_gazeCursorLastHit = now;
+
+    auto it = g_screens.find(screen);
+    if (it != g_screens.end()) {
+        PlaceGazeCursor(it->second, u, v);
+        if (g_gazePtr.cfg.mode == GazePtrMode::Hybrid && !g_gazeCal.active)
+            PlaceGazePad(it->second, g_gazePtr.headU, g_gazePtr.headV, g_gazePtr.cfg.hybridPadUv);
+        else
+            HideGazePad();
+    }
+
+    // During calibration we only show the reticle; do not drive the desktop seat.
+    if (g_gazeCal.active) return;
+
+    const bool movedEnough = !g_gazePtr.haveEmit || g_gazePtr.forceEmit || [&] {
+        const double dx = sx - g_gazePtr.emitX, dy = sy - g_gazePtr.emitY;
+        return dx * dx + dy * dy >= g_gazePtr.cfg.deadzonePx * g_gazePtr.cfg.deadzonePx;
+    }();
+    if (!movedEnough) return;
+
+    g_gazePtr.emitX = sx;
+    g_gazePtr.emitY = sy;
+    g_gazePtr.haveEmit = true;
+    g_gazePtr.forceEmit = false;
+    // Motion does not refresh lastClick — only headset-button clicks do.
+
+    ft_event e{};
+    e.type = FT_MOTION;
+    e.screen = screen;
+    e.x = sx;
+    e.y = sy;
+    EmitFtEvent(e);
 }
 
 void SetScreenOpacity(Screen &s, float active, float idle) {
@@ -1538,6 +2419,20 @@ void UpdateLasers() {
         s.lasers = want;
         vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, want);
     }
+    // Media transport + instrument move bars use the same controller-laser policy.
+    for (auto &inst : g_instruments) {
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid && inst.type == InstrumentType::Media)
+            vr::VROverlay()->SetOverlayFlag(inst.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+                                            want);
+        if (inst.bar != vr::k_ulOverlayHandleInvalid)
+            vr::VROverlay()->SetOverlayFlag(inst.bar, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, want);
+    }
+}
+
+bool ShouldSuppressSteamVrMouseCursor() {
+    // Only while gaze-pointer owns the tip. Always-on suppress removed the controller laser
+    // tip (same SteamVR overlays) and left width/alpha in a bad state for the next laser use.
+    return g_gazePtr.active;
 }
 
 // The controls are invisible until a laser is on one of them (SteamVR's hover event) or
@@ -1687,6 +2582,7 @@ vr::TrackedDeviceIndex_t WristOnLaser(const Screen &s, const Mat &d, const Mat &
 }
 
 void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
+    GazePointerYieldToController(dev, "controller-drag");
     Mat d, p;
     if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) return;
     s.pinTarget = kNone;
@@ -1889,11 +2785,42 @@ Instrument *FindInstrument(const char *id) {
     return nullptr;
 }
 
-Instrument &FindOrCreateClock() {
-    if (Instrument *existing = FindInstrument("clock")) return *existing;
+bool KnownInstrumentId(const char *id) {
+    return id && (!std::strcmp(id, "clock") || !std::strcmp(id, "battery") || !std::strcmp(id, "storage") ||
+                  !std::strcmp(id, "sd") || !std::strcmp(id, "date") || !std::strcmp(id, "media"));
+}
+
+InstrumentType InstrumentTypeForId(const char *id) {
+    if (id && !std::strcmp(id, "battery")) return InstrumentType::Battery;
+    if (id && !std::strcmp(id, "storage")) return InstrumentType::Storage;
+    if (id && !std::strcmp(id, "sd")) return InstrumentType::Sd;
+    if (id && !std::strcmp(id, "date")) return InstrumentType::Date;
+    if (id && !std::strcmp(id, "media")) return InstrumentType::Media;
+    return InstrumentType::Clock;
+}
+
+Instrument &FindOrCreateInstrument(const char *id) {
+    if (Instrument *existing = FindInstrument(id)) return *existing;
     Instrument inst;
-    inst.id = "clock";
-    inst.type = InstrumentType::Clock;
+    inst.id = id ? id : "clock";
+    inst.type = InstrumentTypeForId(id);
+    if (inst.type == InstrumentType::Battery) {
+        inst.texW = 320;
+        inst.texH = 96;
+        inst.metres = 0.32;
+    } else if (inst.type == InstrumentType::Storage || inst.type == InstrumentType::Sd) {
+        inst.texW = 336;
+        inst.texH = 96;
+        inst.metres = 0.34;
+    } else if (inst.type == InstrumentType::Date) {
+        inst.texW = 420;
+        inst.texH = 112;
+        inst.metres = 0.38;
+    } else if (inst.type == InstrumentType::Media) {
+        inst.texW = 480;
+        inst.texH = 140;
+        inst.metres = 0.42;
+    }
     g_instruments.push_back(inst);
     return g_instruments.back();
 }
@@ -2134,17 +3061,723 @@ void RefreshClockTexture(Instrument &inst, bool force) {
         if (i == 2) {
             // Colon
             const int cx = ox + 6;
-            FillInstrumentRect(inst.pixels, w, h, cx, oy + dh / 3 - 4, cx + 8, oy + dh / 3 + 4, 235, 240, 245, 230);
-            FillInstrumentRect(inst.pixels, w, h, cx, oy + 2 * dh / 3 - 4, cx + 8, oy + 2 * dh / 3 + 4, 235, 240, 245,
-                               230);
+            FillInstrumentRect(inst.pixels, w, h, cx, oy + dh / 3 - 4, cx + 8, oy + dh / 3 + 4, inst.colorR, inst.colorG,
+                               inst.colorB, 230);
+            FillInstrumentRect(inst.pixels, w, h, cx, oy + 2 * dh / 3 - 4, cx + 8, oy + 2 * dh / 3 + 4, inst.colorR,
+                               inst.colorG, inst.colorB, 230);
             ox += 18;
         }
-        DrawSegDigit(inst.pixels, w, h, ox, oy, dw, dh, digits[i], 235, 240, 245, 230);
+        DrawSegDigit(inst.pixels, w, h, ox, oy, dw, dh, digits[i], inst.colorR, inst.colorG, inst.colorB, 230);
         ox += dw + gap;
     }
     SoftOutlineInstrument(inst.pixels, w, h);
     if (inst.overlay != vr::k_ulOverlayHandleInvalid)
         vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+// Compact 5×7 uppercase glyphs (low 5 bits; bit4 = leftmost). Enough for weekday/month abbr.
+const uint8_t *GlyphRows(char ch) {
+    static const uint8_t kBlank[7] = {};
+    static const uint8_t kA[7] = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+    static const uint8_t kB[7] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
+    static const uint8_t kC[7] = {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E};
+    static const uint8_t kD[7] = {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
+    static const uint8_t kE[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
+    static const uint8_t kF[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
+    static const uint8_t kG[7] = {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E};
+    static const uint8_t kH[7] = {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+    static const uint8_t kI[7] = {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E};
+    static const uint8_t kJ[7] = {0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C};
+    static const uint8_t kK[7] = {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11};
+    static const uint8_t kL[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+    static const uint8_t kM[7] = {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
+    static const uint8_t kN[7] = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+    static const uint8_t kO[7] = {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+    static const uint8_t kP[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+    static const uint8_t kQ[7] = {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D};
+    static const uint8_t kR[7] = {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+    static const uint8_t kS[7] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
+    static const uint8_t kT[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+    static const uint8_t kU[7] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+    static const uint8_t kV[7] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04};
+    static const uint8_t kW[7] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11};
+    static const uint8_t kX[7] = {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11};
+    static const uint8_t kY[7] = {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04};
+    static const uint8_t kZ[7] = {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F};
+    static const uint8_t k0[7] = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
+    static const uint8_t k1[7] = {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E};
+    static const uint8_t k2[7] = {0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F};
+    static const uint8_t k3[7] = {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E};
+    static const uint8_t k4[7] = {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02};
+    static const uint8_t k5[7] = {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E};
+    static const uint8_t k6[7] = {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E};
+    static const uint8_t k7[7] = {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08};
+    static const uint8_t k8[7] = {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E};
+    static const uint8_t k9[7] = {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C};
+    static const uint8_t kDash[7] = {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
+    static const uint8_t kDot[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C};
+    static const uint8_t kColon[7] = {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00};
+    static const uint8_t kApos[7] = {0x0C, 0x0C, 0x08, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t kSlash[7] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00};
+    static const uint8_t kPlus[7] = {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00};
+    static const uint8_t kAnd[7] = {0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D};
+    if (ch >= 'a' && ch <= 'z') ch = char(ch - 'a' + 'A');
+    switch (ch) {
+        case 'A': return kA;
+        case 'B': return kB;
+        case 'C': return kC;
+        case 'D': return kD;
+        case 'E': return kE;
+        case 'F': return kF;
+        case 'G': return kG;
+        case 'H': return kH;
+        case 'I': return kI;
+        case 'J': return kJ;
+        case 'K': return kK;
+        case 'L': return kL;
+        case 'M': return kM;
+        case 'N': return kN;
+        case 'O': return kO;
+        case 'P': return kP;
+        case 'Q': return kQ;
+        case 'R': return kR;
+        case 'S': return kS;
+        case 'T': return kT;
+        case 'U': return kU;
+        case 'V': return kV;
+        case 'W': return kW;
+        case 'X': return kX;
+        case 'Y': return kY;
+        case 'Z': return kZ;
+        case '0': return k0;
+        case '1': return k1;
+        case '2': return k2;
+        case '3': return k3;
+        case '4': return k4;
+        case '5': return k5;
+        case '6': return k6;
+        case '7': return k7;
+        case '8': return k8;
+        case '9': return k9;
+        case '-':
+        case '_': return kDash;
+        case '.': return kDot;
+        case ':': return kColon;
+        case '\'': return kApos;
+        case '/': return kSlash;
+        case '+': return kPlus;
+        case '&': return kAnd;
+        case ' ': return kBlank;
+        default: return kBlank;
+    }
+}
+
+void DrawGlyphLetter(std::vector<uint8_t> &px, int w, int h, int ox, int oy, int cell, char ch, uint8_t r,
+                     uint8_t g, uint8_t b, uint8_t a) {
+    const uint8_t *rows = GlyphRows(ch);
+    const int scale = std::max(2, cell / 7);
+    const int gw = 5 * scale, gh = 7 * scale;
+    for (int row = 0; row < 7; ++row) {
+        const uint8_t bits = rows[row];
+        for (int col = 0; col < 5; ++col) {
+            if (!(bits & (1u << (4 - col)))) continue;
+            const int x0 = ox + col * scale, y0 = oy + row * scale;
+            FillInstrumentRect(px, w, h, x0, y0, x0 + scale - 1, y0 + scale - 1, r, g, b, a);
+        }
+    }
+    (void)gw;
+    (void)gh;
+}
+
+void DrawGlyphWord(std::vector<uint8_t> &px, int w, int h, int ox, int oy, int cell, const char *word, uint8_t r,
+                   uint8_t g, uint8_t b, uint8_t a) {
+    if (!word) return;
+    const int scale = std::max(2, cell / 7);
+    const int advance = 5 * scale + scale;  // glyph + 1-col gap
+    for (int i = 0; word[i]; ++i) DrawGlyphLetter(px, w, h, ox + i * advance, oy, cell, word[i], r, g, b, a);
+}
+
+int GlyphWordWidth(int cell, int letters) {
+    const int scale = std::max(2, cell / 7);
+    if (letters <= 0) return 0;
+    return letters * 5 * scale + (letters - 1) * scale;
+}
+
+void RefreshDateTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Date) return;
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    const int key = (local.tm_year + 1900) * 512 + local.tm_yday;
+    if (!force && key == inst.lastDateKey && !inst.pixels.empty()) return;
+    inst.lastDateKey = key;
+
+    static const char *kDays[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    static const char *kMonths[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                      "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+    const char *day = kDays[std::clamp(local.tm_wday, 0, 6)];
+    const char *mon = kMonths[std::clamp(local.tm_mon, 0, 11)];
+    const int dom = std::clamp(local.tm_mday, 1, 31);
+
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    const int cell = 14;  // ~2px scale → readable ambient letters
+    const int dw = 40, dh = 64, dgap = 8;
+    const int dayW = GlyphWordWidth(cell, 3);
+    const int monW = GlyphWordWidth(cell, 3);
+    const int numW = 2 * dw + dgap;
+    const int gap = 16;
+    const int total = dayW + gap + numW + gap + monW;
+    int ox = (w - total) / 2;
+    const int letterOy = (h - 7 * std::max(2, cell / 7)) / 2;
+    const int digitOy = (h - dh) / 2;
+
+    const uint8_t lr = uint8_t(inst.colorR * 200 / 235), lg = uint8_t(inst.colorG * 210 / 240),
+                  lb = uint8_t(inst.colorB * 220 / 245);
+    DrawGlyphWord(inst.pixels, w, h, ox, letterOy, cell, day, lr, lg, lb, 220);
+    ox += dayW + gap;
+    DrawSegDigit(inst.pixels, w, h, ox, digitOy, dw, dh, dom / 10, inst.colorR, inst.colorG, inst.colorB, 230);
+    ox += dw + dgap;
+    DrawSegDigit(inst.pixels, w, h, ox, digitOy, dw, dh, dom % 10, inst.colorR, inst.colorG, inst.colorB, 230);
+    ox += dw + gap;
+    DrawGlyphWord(inst.pixels, w, h, ox, letterOy, cell, mon, lr, lg, lb, 220);
+
+    SoftOutlineInstrument(inst.pixels, w, h);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+bool ReadSysfsTrim(const std::string &path, char *buf, size_t buflen) {
+    if (buflen < 2) return false;
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const ssize_t n = read(fd, buf, buflen - 1);
+    close(fd);
+    if (n <= 0) return false;
+    buf[n] = '\0';
+    // Trim trailing whitespace.
+    size_t len = size_t(n);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) buf[--len] = '\0';
+    return len > 0;
+}
+
+// Map 0–100% charge to 0–5 filled segments (20% bands; 0% → 0, 1–20 → 1, …, 81–100 → 5).
+int BatteryFilledSegments(int pct) {
+    pct = std::clamp(pct, 0, 100);
+    if (pct <= 0) return 0;
+    return std::min(5, (pct + 19) / 20);
+}
+
+void DiscoverHeadsetBatteryPath() {
+    // Prefer Steam Frame Maxim fuel-gauge Battery nodes (max1720x_*); else any type=Battery with capacity.
+    DIR *dir = opendir("/sys/class/power_supply");
+    if (!dir) {
+        g_batteryCapacityPath.clear();
+        return;
+    }
+    std::string best, fallback;
+    while (dirent *ent = readdir(dir)) {
+        if (ent->d_name[0] == '.') continue;
+        const std::string base = std::string("/sys/class/power_supply/") + ent->d_name;
+        char type[64] = {};
+        if (!ReadSysfsTrim(base + "/type", type, sizeof type)) continue;
+        if (std::strcmp(type, "Battery") != 0) continue;
+        const std::string cap = base + "/capacity";
+        char probe[32] = {};
+        if (!ReadSysfsTrim(cap, probe, sizeof probe)) continue;
+        if (!std::strncmp(ent->d_name, "max1720x", 8)) {
+            best = cap;
+            break;
+        }
+        if (fallback.empty()) fallback = cap;
+    }
+    closedir(dir);
+    g_batteryCapacityPath = !best.empty() ? best : fallback;
+}
+
+void PollHeadsetBattery() {
+    const auto now = Clock::now();
+    if (now < g_batteryNextPoll) return;
+    g_batteryNextPoll = now + std::chrono::seconds(20);
+
+    if (g_batteryCapacityPath.empty() || now >= g_batteryNextDiscover) {
+        DiscoverHeadsetBatteryPath();
+        g_batteryNextDiscover = now + std::chrono::seconds(60);
+    }
+    if (g_batteryCapacityPath.empty()) {
+        if (g_batteryFailLogBudget > 0) {
+            std::fprintf(stderr, "instrument battery: no sysfs Battery capacity node\n");
+            --g_batteryFailLogBudget;
+        }
+        return;
+    }
+    char buf[32] = {};
+    if (!ReadSysfsTrim(g_batteryCapacityPath, buf, sizeof buf)) {
+        if (g_batteryFailLogBudget > 0) {
+            std::fprintf(stderr, "instrument battery: read failed %s\n", g_batteryCapacityPath.c_str());
+            --g_batteryFailLogBudget;
+        }
+        g_batteryCapacityPath.clear();  // rediscover next cycle
+        return;
+    }
+    char *end = nullptr;
+    long v = std::strtol(buf, &end, 10);
+    if (end == buf) {
+        if (g_batteryFailLogBudget > 0) {
+            std::fprintf(stderr, "instrument battery: bad capacity %s\n", buf);
+            --g_batteryFailLogBudget;
+        }
+        return;
+    }
+    g_batteryPct = int(std::clamp(v, 0L, 100L));
+    g_batteryFailLogBudget = 3;  // recover → allow sparse logs again later
+}
+
+void RefreshBatteryTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Battery) return;
+    PollHeadsetBattery();
+    // No invented charge: keep last texture if we never got a reading; draw empty gauge once if needed.
+    const int pct = g_batteryPct;
+    const int filled = pct < 0 ? 0 : BatteryFilledSegments(pct);
+    // Include colour in the content key so settings colour changes force a redraw.
+    const int colorKey = int(inst.colorR) * 65536 + int(inst.colorG) * 256 + int(inst.colorB);
+    const int drawKey = filled * 16777216 + (colorKey & 0xFFFFFF);
+    if (!force && drawKey == inst.lastBatterySeg && !inst.pixels.empty()) return;
+    if (!force && pct < 0 && !inst.pixels.empty() && (inst.lastBatterySeg % 16777216) == (colorKey & 0xFFFFFF)) return;
+    inst.lastBatterySeg = drawKey;
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    constexpr int kSegs = 5;
+    const int segW = 44, segH = 36, gap = 8, radius = 4;
+    const int total = kSegs * segW + (kSegs - 1) * gap;
+    int ox = (w - total) / 2;
+    const int oy = (h - segH) / 2;
+    for (int i = 0; i < kSegs; ++i) {
+        const bool on = i < filled;
+        const uint8_t r = on ? inst.colorR : uint8_t(inst.colorR * 70 / 235);
+        const uint8_t g = on ? inst.colorG : uint8_t(inst.colorG * 78 / 240);
+        const uint8_t b = on ? inst.colorB : uint8_t(inst.colorB * 90 / 245);
+        const uint8_t a = on ? 230 : 90;
+        // Slightly rounded block via inset corners (simple geometry, no font).
+        FillInstrumentRect(inst.pixels, w, h, ox + radius, oy, ox + segW - radius, oy + segH - 1, r, g, b, a);
+        FillInstrumentRect(inst.pixels, w, h, ox, oy + radius, ox + segW - 1, oy + segH - radius - 1, r, g, b, a);
+        ox += segW + gap;
+    }
+    SoftOutlineInstrument(inst.pixels, w, h);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+// --- Storage (device = sum unique non-SD mounts; sd = mmcblk*, even if unmounted) ---
+
+const char *NormalizeBlockSource(const char *src, char *out, size_t outN) {
+    if (!src || !out || outN < 8 || std::strncmp(src, "/dev/", 5) != 0) return nullptr;
+    size_t i = 0;
+    for (; src[i] && src[i] != '[' && i + 1 < outN; ++i) out[i] = src[i];
+    out[i] = 0;
+    return out;
+}
+
+// 0 = ignore, 1 = device, 2 = sd
+int ClassifyBlockDevice(const char *devpath) {
+    if (!devpath) return 0;
+    const char *base = std::strrchr(devpath, '/');
+    base = base ? base + 1 : devpath;
+    auto starts = [&](const char *p) { return std::strncmp(base, p, std::strlen(p)) == 0; };
+    if (starts("loop") || starts("zram") || starts("nbd") || starts("ram") || starts("dm-")) return 0;
+    if (starts("mmcblk") || starts("mmc")) return 2;
+    if (starts("sd") || starts("nvme") || starts("vd") || starts("xvd") || starts("hd")) return 1;
+    return 0;
+}
+
+bool SkipStorageFs(const char *fstype) {
+    if (!fstype || !*fstype) return true;
+    static const char *kSkip[] = {
+        "tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs", "cgroup", "cgroup2", "devpts",
+        "securityfs", "pstore", "bpf", "tracefs", "debugfs", "fusectl", "configfs", "autofs",
+        "fuse.portal", "functionfs", "binfmt_misc", "hugetlbfs", "mqueue", "swap", nullptr};
+    for (int i = 0; kSkip[i]; ++i)
+        if (!std::strcmp(fstype, kSkip[i])) return true;
+    return false;
+}
+
+int StorageUsagePct(uint64_t total, uint64_t used) {
+    if (total == 0) return 0;
+    if (used > total) used = total;
+    return int(std::min<uint64_t>(100, (used * 100 + total - 1) / total));
+}
+
+void ResetStoragePool(StoragePool *p) {
+    p->present = false;
+    p->mounted = false;
+    p->total = 0;
+    p->used = 0;
+    p->pct = 0;
+}
+
+uint64_t ReadSysfsSizeBytes(const char *path) {
+    // /sys/block/*/size is in 512-byte sectors.
+    FILE *f = std::fopen(path, "r");
+    if (!f) return 0;
+    unsigned long long sectors = 0;
+    const int n = std::fscanf(f, "%llu", &sectors);
+    std::fclose(f);
+    if (n != 1 || sectors == 0) return 0;
+    return uint64_t(sectors) * 512ull;
+}
+
+void PollStoragePools() {
+    const auto now = Clock::now();
+    if (now < g_storageNextPoll) return;
+    g_storageNextPoll = now + std::chrono::seconds(30);
+
+    StoragePool device{}, sd{};
+    ResetStoragePool(&device);
+    ResetStoragePool(&sd);
+
+    // ft-screens runs in the "dev" distrobox: host filesystems are bind-mounted under
+    // /run/host (/, /home, /var, /persist, …). Prefer those so we sum SteamOS partitions,
+    // not container overlay noise. On bare metal /run/host is absent and we use /proc/mounts
+    // targets as-is.
+    const bool hostPrefix = access("/run/host", F_OK) == 0;
+
+    FILE *mt = std::fopen("/proc/mounts", "r");
+    if (!mt) {
+        if (g_storageFailLogBudget > 0) {
+            std::fprintf(stderr, "instrument storage: cannot open /proc/mounts\n");
+            --g_storageFailLogBudget;
+        }
+    } else {
+        char src[512], tgt[512], fstype[64], opts[512];
+        int dump = 0, pass = 0;
+        std::map<std::string, bool> seen;
+        while (std::fscanf(mt, "%511s %511s %63s %511s %d %d\n", src, tgt, fstype, opts, &dump, &pass) == 6) {
+            if (SkipStorageFs(fstype)) continue;
+            // Skip device-node bind targets and other non-fs paths from distrobox glue.
+            if (!std::strncmp(tgt, "/dev/", 5)) continue;
+            if (hostPrefix) {
+                if (std::strcmp(tgt, "/run/host") != 0 && std::strncmp(tgt, "/run/host/", 10) != 0)
+                    continue;
+            }
+            char norm[512];
+            if (!NormalizeBlockSource(src, norm, sizeof norm)) continue;
+            if (seen.count(norm)) continue;
+            const int kind = ClassifyBlockDevice(norm);
+            if (!kind) continue;
+            struct statvfs st {};
+            if (statvfs(tgt, &st) != 0 || st.f_blocks == 0 || st.f_frsize == 0) continue;
+            const uint64_t total = uint64_t(st.f_blocks) * uint64_t(st.f_frsize);
+            const uint64_t used = uint64_t(st.f_blocks - st.f_bfree) * uint64_t(st.f_frsize);
+            seen[norm] = true;
+            StoragePool *pool = kind == 2 ? &sd : &device;
+            pool->present = true;
+            pool->total += total;
+            pool->used += used;
+            if (kind == 2) pool->mounted = true;
+        }
+        std::fclose(mt);
+    }
+
+    // Unmounted SD cards: capacity from sysfs so the gauge still shows the card.
+    if (!sd.present) {
+        DIR *d = opendir("/sys/block");
+        if (d) {
+            while (dirent *e = readdir(d)) {
+                if (e->d_name[0] == '.') continue;
+                if (ClassifyBlockDevice(e->d_name) != 2) continue;
+                // Whole disk only (mmcblk0), not partitions (mmcblk0p1).
+                bool part = false;
+                for (const char *p = e->d_name; *p; ++p) {
+                    if (*p == 'p' && p > e->d_name && p[1] >= '0' && p[1] <= '9') {
+                        part = true;
+                        break;
+                    }
+                }
+                if (part) continue;
+                char path[PATH_MAX];
+                std::snprintf(path, sizeof path, "/sys/block/%s/size", e->d_name);
+                const uint64_t bytes = ReadSysfsSizeBytes(path);
+                if (bytes == 0) continue;
+                sd.present = true;
+                sd.total = bytes;
+                sd.used = 0;
+                sd.mounted = false;
+                break;
+            }
+            closedir(d);
+        }
+    }
+
+    device.pct = StorageUsagePct(device.total, device.used);
+    sd.pct = StorageUsagePct(sd.total, sd.used);
+    g_storageDevice = device;
+    g_storageSd = sd;
+    g_storageFailLogBudget = 3;
+}
+
+void DrawStorageGlyph(std::vector<uint8_t> &px, int w, int h, int ox, int oy, bool sdCard, uint8_t r, uint8_t g,
+                      uint8_t b, uint8_t a) {
+    // Tiny ambient icons: filled square = device disk; notched rectangle = SD.
+    if (!sdCard) {
+        FillInstrumentRect(px, w, h, ox, oy, ox + 18, oy + 18, r, g, b, a);
+        FillInstrumentRect(px, w, h, ox + 5, oy + 5, ox + 13, oy + 13, 20, 22, 28, 200);
+        return;
+    }
+    FillInstrumentRect(px, w, h, ox + 2, oy, ox + 16, oy + 20, r, g, b, a);
+    FillInstrumentRect(px, w, h, ox, oy + 4, ox + 4, oy + 10, r, g, b, a);  // contact notch
+    FillInstrumentRect(px, w, h, ox + 6, oy + 4, ox + 12, oy + 8, 20, 22, 28, 200);
+}
+
+void RefreshStorageTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Storage && inst.type != InstrumentType::Sd) return;
+    PollStoragePools();
+    const StoragePool &pool = inst.type == InstrumentType::Sd ? g_storageSd : g_storageDevice;
+    const int key = pool.present ? (1000 + pool.pct + (pool.mounted ? 0 : 200)) : 0;
+    if (!force && key == inst.lastStorageKey && !inst.pixels.empty()) return;
+    inst.lastStorageKey = key;
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+
+    const bool hot = pool.present && pool.pct >= 85;
+    const uint8_t tr = hot ? 235 : 70, tg = hot ? 150 : 78, tb = hot ? 90 : 95, ta = pool.present ? 110 : 50;
+    const uint8_t fr = hot ? 240 : 120, fg = hot ? 170 : 210, fb = hot ? 100 : 230,
+                  fa = pool.present ? 235 : 70;
+
+    const int barX0 = 44, barX1 = w - 16, barY0 = (h - 28) / 2, barY1 = barY0 + 27, rad = 4;
+    // Track
+    FillInstrumentRect(inst.pixels, w, h, barX0 + rad, barY0, barX1 - rad, barY1, tr, tg, tb, ta);
+    FillInstrumentRect(inst.pixels, w, h, barX0, barY0 + rad, barX1, barY1 - rad, tr, tg, tb, ta);
+    if (pool.present && pool.total > 0) {
+        const int fillW = int((int64_t(barX1 - barX0) * pool.pct) / 100);
+        if (fillW > 0) {
+            const int fx1 = barX0 + std::max(fillW, rad + 1);
+            FillInstrumentRect(inst.pixels, w, h, barX0 + rad, barY0 + 3, fx1 - rad, barY1 - 3, fr, fg, fb, fa);
+            FillInstrumentRect(inst.pixels, w, h, barX0 + 3, barY0 + rad, fx1 - 3, barY1 - rad, fr, fg, fb, fa);
+        }
+        // Unmounted SD: soft mid stripe so the empty capacity still reads as "card present".
+        if (inst.type == InstrumentType::Sd && !pool.mounted) {
+            FillInstrumentRect(inst.pixels, w, h, barX0 + 8, barY0 + 12, barX1 - 8, barY0 + 15, 180, 190, 200, 90);
+        }
+    }
+    DrawStorageGlyph(inst.pixels, w, h, 12, (h - 20) / 2, inst.type == InstrumentType::Sd, fr, fg, fb,
+                     pool.present ? 220 : 80);
+    SoftOutlineInstrument(inst.pixels, w, h);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+// --- Media (MPRIS via @frametop_mpris host bridge) ---
+
+Clock::time_point g_mediaNextPoll{};
+int g_mediaFailLogBudget = 3;
+
+bool AskFrametopMpris(const char *cmd, char *reply, size_t replyN) {
+    if (!cmd || !reply || replyN < 8) return false;
+    reply[0] = 0;
+    const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+    sockaddr_un local{};
+    local.sun_family = AF_UNIX;
+    // Abstract autobind: sun_path[0]=0, rest zero → kernel assigns.
+    if (bind(fd, reinterpret_cast<sockaddr *>(&local), sizeof(sa_family_t)) != 0) {
+        close(fd);
+        return false;
+    }
+    timeval tv{};
+    tv.tv_sec = 0;
+    tv.tv_usec = 400000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    sockaddr_un dest{};
+    dest.sun_family = AF_UNIX;
+    dest.sun_path[0] = '\0';
+    const char kName[] = "frametop_mpris";
+    std::memcpy(dest.sun_path + 1, kName, sizeof kName - 1);
+    const socklen_t destLen = socklen_t(offsetof(sockaddr_un, sun_path) + 1 + sizeof kName - 1);
+    const ssize_t sent = sendto(fd, cmd, std::strlen(cmd), 0, reinterpret_cast<sockaddr *>(&dest), destLen);
+    if (sent < 0) {
+        close(fd);
+        return false;
+    }
+    const ssize_t n = recvfrom(fd, reply, replyN - 1, 0, nullptr, nullptr);
+    close(fd);
+    if (n <= 0) return false;
+    reply[n] = 0;
+    return true;
+}
+
+void PollMediaBridge(Instrument &inst) {
+    const auto now = Clock::now();
+    // Always rate-limit — polling every frame when idle hammered the bridge and flickered.
+    if (now < g_mediaNextPoll) return;
+    g_mediaNextPoll = now + std::chrono::milliseconds(500);
+    char reply[512];
+    if (!AskFrametopMpris("state", reply, sizeof reply)) {
+        if (g_mediaFailLogBudget > 0) {
+            std::fprintf(stderr, "instrument media: @frametop_mpris not reachable\n");
+            --g_mediaFailLogBudget;
+        }
+        return;  // keep last-known text/status on transient failures
+    }
+    g_mediaFailLogBudget = 3;
+    // ok <status> <prev> <pp> <next> <text...>
+    char status[32] = {};
+    int prev = 0, pp = 0, next = 0;
+    if (std::sscanf(reply, "ok %31s %d %d %d", status, &prev, &pp, &next) < 4) {
+        return;
+    }
+    // Text starts after the fourth token.
+    const char *rest = reply;
+    for (int i = 0; i < 5 && rest && *rest; ++i) {
+        while (*rest == ' ') ++rest;
+        while (*rest && *rest != ' ') ++rest;
+    }
+    while (rest && *rest == ' ') ++rest;
+    inst.mediaCanPrev = prev != 0;
+    inst.mediaCanPause = pp != 0;
+    inst.mediaCanNext = next != 0;
+    if (!std::strcmp(status, "playing"))
+        inst.mediaStatus = 3;
+    else if (!std::strcmp(status, "paused"))
+        inst.mediaStatus = 2;
+    else if (!std::strcmp(status, "stopped"))
+        inst.mediaStatus = 1;
+    else
+        inst.mediaStatus = 0;
+    const std::string nextText = (!rest || !*rest || !std::strcmp(status, "none")) ? "" : rest;
+    if (nextText != inst.mediaText) {
+        inst.mediaText = nextText;
+        inst.mediaScroll = 0;
+        inst.mediaScrollAcc = 0;
+    }
+}
+
+void MediaSend(const char *cmd) {
+    char reply[512];
+    AskFrametopMpris(cmd, reply, sizeof reply);
+    g_mediaNextPoll = Clock::time_point{};  // force refresh
+}
+
+void DrawMediaIcon(std::vector<uint8_t> &px, int w, int h, int cx, int cy, int kind, bool on) {
+    // kind: 0=prev, 1=play, 2=pause, 3=next. Simple geometric glyphs.
+    const uint8_t r = on ? 230 : 90, g = on ? 235 : 95, b = on ? 245 : 105, a = on ? 230 : 100;
+    const int s = 14;
+    if (kind == 0) {  // |<
+        FillInstrumentRect(px, w, h, cx - s, cy - s / 2, cx - s + 3, cy + s / 2, r, g, b, a);
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx - i, cy - i / 2, cx - i + 2, cy + i / 2, r, g, b, a);
+    } else if (kind == 1) {  // >
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx - s / 2 + i, cy - (s - i) / 2, cx - s / 2 + i + 2, cy + (s - i) / 2, r, g,
+                               b, a);
+    } else if (kind == 2) {  // ||
+        FillInstrumentRect(px, w, h, cx - 8, cy - s / 2, cx - 3, cy + s / 2, r, g, b, a);
+        FillInstrumentRect(px, w, h, cx + 3, cy - s / 2, cx + 8, cy + s / 2, r, g, b, a);
+    } else {  // >|
+        for (int i = 0; i < s; ++i)
+            FillInstrumentRect(px, w, h, cx + i - s / 2, cy - i / 2, cx + i - s / 2 + 2, cy + i / 2, r, g, b, a);
+        FillInstrumentRect(px, w, h, cx + s / 2 - 1, cy - s / 2, cx + s / 2 + 2, cy + s / 2, r, g, b, a);
+    }
+}
+
+void RefreshMediaTexture(Instrument &inst, bool force) {
+    if (inst.type != InstrumentType::Media) return;
+    PollMediaBridge(inst);
+    const int cell = 10;
+    const int textW = GlyphWordWidth(cell, int(inst.mediaText.size()));
+    const int viewW = inst.texW - 24;
+    const bool scroll = textW > viewW && !inst.mediaText.empty();
+    // Slow marquee: ~12 px/s playing, ~6 px/s paused. Only re-upload when the
+    // integer pixel offset changes — constant SetOverlayRaw every frame flickered.
+    if (scroll) {
+        inst.mediaScrollAcc += (inst.mediaStatus == 3 ? 0.12 : 0.06);
+        if (inst.mediaScrollAcc >= 1.0) {
+            const int step = int(inst.mediaScrollAcc);
+            inst.mediaScrollAcc -= step;
+            inst.mediaScroll += step;
+        }
+        if (inst.mediaScroll > textW + 40) inst.mediaScroll = -20;
+    } else {
+        inst.mediaScroll = 0;
+        inst.mediaScrollAcc = 0;
+    }
+    const int scrollPx = int(inst.mediaScroll);
+    const int key = int(inst.mediaStatus) * 1000003 + int(inst.mediaCanPrev) * 17 + int(inst.mediaCanNext) * 31 +
+                    int(inst.mediaCanPause) * 13 + int(inst.mediaText.size()) * 101 +
+                    (inst.mediaText.empty() ? 0 : int(unsigned(inst.mediaText[0])) * 13 +
+                     (inst.mediaText.size() > 1 ? int(unsigned(inst.mediaText.back())) : 0));
+    if (!force && key == inst.lastMediaKey && scrollPx == inst.lastMediaScrollPx && !inst.pixels.empty()) return;
+    inst.lastMediaKey = key;
+    inst.lastMediaScrollPx = scrollPx;
+
+    const int w = inst.texW, h = inst.texH;
+    inst.pixels.assign(size_t(w) * h * 4, 0);
+    const int letterOy = 18;
+    if (inst.mediaText.empty()) {
+        DrawGlyphWord(inst.pixels, w, h, 24, letterOy, cell, "NO MEDIA", 120, 125, 135, 180);
+    } else if (!scroll) {
+        DrawGlyphWord(inst.pixels, w, h, (w - textW) / 2, letterOy, cell, inst.mediaText.c_str(), 220, 225, 235, 230);
+    } else {
+        const int ox = 12 - scrollPx;
+        DrawGlyphWord(inst.pixels, w, h, ox, letterOy, cell, inst.mediaText.c_str(), 220, 225, 235, 230);
+    }
+    const int by = h - 48;
+    FillInstrumentRect(inst.pixels, w, h, 8, by - 4, w - 9, h - 8, 40, 44, 52, 160);
+    const int third = w / 3;
+    const bool playing = inst.mediaStatus == 3;
+    DrawMediaIcon(inst.pixels, w, h, third / 2, by + 18, 0, inst.mediaCanPrev);
+    DrawMediaIcon(inst.pixels, w, h, third + third / 2, by + 18, playing ? 2 : 1, inst.mediaCanPause || playing);
+    DrawMediaIcon(inst.pixels, w, h, 2 * third + third / 2, by + 18, 3, inst.mediaCanNext);
+    SoftOutlineInstrument(inst.pixels, w, h);
+    if (inst.overlay != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayRaw(inst.overlay, inst.pixels.data(), uint32_t(w), uint32_t(h), 4);
+}
+
+int MediaHitButton(const Instrument &inst, double mx, double my) {
+    // Returns 0=prev 1=playpause 2=next, or -1. mx/my in texture pixels, origin top-left.
+    if (inst.type != InstrumentType::Media) return -1;
+    const double w = inst.texW, h = inst.texH;
+    double x = mx, y = my;
+    if (mx <= 1.01 && my <= 1.01) {
+        x = mx * w;
+        y = my * h;
+    }
+    if (y < h * 0.55) return -1;  // marquee zone — ignore
+    const int third = inst.texW / 3;
+    if (x < third) return 0;
+    if (x < 2 * third) return 1;
+    return 2;
+}
+
+void PollMediaOverlay(Instrument &inst) {
+    if (inst.type != InstrumentType::Media || inst.overlay == vr::k_ulOverlayHandleInvalid) return;
+    vr::VREvent_t ev;
+    while (vr::VROverlay()->PollNextOverlayEvent(inst.overlay, &ev, sizeof ev)) {
+        if (ev.eventType != vr::VREvent_MouseButtonDown || ev.data.mouse.button != vr::VRMouseButton_Left) continue;
+        const int btn = MediaHitButton(inst, ev.data.mouse.x, ev.data.mouse.y);
+        if (btn == 0 && inst.mediaCanPrev)
+            MediaSend("previous");
+        else if (btn == 1 && (inst.mediaCanPause || inst.mediaStatus > 0))
+            MediaSend("playpause");
+        else if (btn == 2 && inst.mediaCanNext)
+            MediaSend("next");
+        PollMediaBridge(inst);
+        RefreshMediaTexture(inst, true);
+    }
+}
+
+void RefreshInstrumentContent(Instrument &inst, bool force) {
+    switch (inst.type) {
+        case InstrumentType::Clock: RefreshClockTexture(inst, force); break;
+        case InstrumentType::Battery: RefreshBatteryTexture(inst, force); break;
+        case InstrumentType::Storage:
+        case InstrumentType::Sd: RefreshStorageTexture(inst, force); break;
+        case InstrumentType::Date: RefreshDateTexture(inst, force); break;
+        case InstrumentType::Media: RefreshMediaTexture(inst, force); break;
+    }
 }
 
 void DestroyInstrumentOverlays(Instrument &inst) {
@@ -2173,9 +3806,13 @@ void EnsureInstrumentOverlays(Instrument &inst) {
         return;
     }
     vr::VROverlay()->SetOverlayWidthInMeters(inst.overlay, float(inst.metres));
-    vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_None);
-    // Content is non-interactive; keep texture alpha (no IgnoreTextureAlpha).
-    // Do not set MakeOverlaysInteractiveIfVisible on the content overlay.
+    if (inst.type == InstrumentType::Media) {
+        // Media transport buttons need laser clicks on the content overlay.
+        vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_Mouse);
+        vr::VROverlay()->SetOverlayFlag(inst.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    } else {
+        vr::VROverlay()->SetOverlayInputMethod(inst.overlay, vr::VROverlayInputMethod_None);
+    }
     std::snprintf(key, sizeof key, "frametop.instrument.%s.bar", inst.id.c_str());
     std::snprintf(name, sizeof name, "Instrument %s: move", inst.id.c_str());
     inst.bar = MakeChrome(key, name, BarTexture(false), 256, 24);
@@ -2184,7 +3821,7 @@ void EnsureInstrumentOverlays(Instrument &inst) {
         vr::VROverlay()->SetOverlayFlag(inst.bar, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     }
     inst.attentionResolved = inst.activeOpacity;
-    RefreshClockTexture(inst, true);
+    RefreshInstrumentContent(inst, true);
     ApplyInstrumentAlpha(inst);
 }
 
@@ -2289,12 +3926,21 @@ void UpdateInstrumentAttention(double dt) {
         } else {
             const bool hit = g_gazeTarget && g_gazeTarget.instrument == int(ii) &&
                              g_gazeTarget.kind == GazeKind::Instrument;
-            const bool valid = g_eyeValid || (g_gazeFallbackHead && g_gazeTarget);
+            const bool valid = g_eyeValid || g_eyeHeld || (g_gazeFallbackHead && g_gazeTarget);
             if (!valid) {
-                const double tau = inst.attentionOutMs / 1000.0;
+                if (inst.attentionFocused) {
+                    inst.attentionFocusMs += dt * 1000.0;
+                    if (inst.attentionFocusMs >= inst.attentionHoldMs) {
+                        inst.attentionFocused = false;
+                        inst.attentionFocusMs = 0;
+                    }
+                }
+                const float target = inst.attentionFocused ? inst.activeOpacity : inst.idleOpacity;
+                const double tauMs = inst.attentionFocused ? inst.attentionInMs : inst.attentionOutMs;
+                const double tau = tauMs / 1000.0;
                 const double a = tau <= 1e-4 ? 1.0 : 1.0 - std::exp(-dt / tau);
                 inst.attentionResolved =
-                    float(inst.attentionResolved + (inst.idleOpacity - inst.attentionResolved) * a);
+                    float(inst.attentionResolved + (target - inst.attentionResolved) * a);
             } else {
                 if (hit) {
                     inst.attentionFocusMs += dt * 1000.0;
@@ -2359,14 +4005,22 @@ void UpdateInstrumentControls() {
         }
         const bool inUse = inst.drag != Drag::None || inst.hoverBar;
         const bool want = inst.visible && (inUse || g_tick < inst.nearUntil);
-        if (inst.visible && !inst.controlsUp && inst.bar != vr::k_ulOverlayHandleInvalid) {
-            vr::VROverlay()->ShowOverlay(inst.bar);
-            inst.controlsUp = true;
-            ApplyInstrumentAlpha(inst);
-        }
         const float before = inst.controls;
         inst.controls = std::clamp(inst.controls + (want ? 0.2f : -0.1f), 0.f, 1.f);
-        if (inst.controls != before) ApplyInstrumentAlpha(inst);
+        const bool show = inst.visible && (want || inst.controls > 0.02f);
+        if (inst.bar != vr::k_ulOverlayHandleInvalid && show != inst.controlsUp) {
+            if (show) {
+                vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_Mouse);
+                vr::VROverlay()->ShowOverlay(inst.bar);
+            } else {
+                vr::VROverlay()->SetOverlayInputMethod(inst.bar, vr::VROverlayInputMethod_None);
+                vr::VROverlay()->HideOverlay(inst.bar);
+            }
+            inst.controlsUp = show;
+            ApplyInstrumentAlpha(inst);
+        } else if (inst.controls != before) {
+            ApplyInstrumentAlpha(inst);
+        }
     }
 }
 
@@ -2412,6 +4066,36 @@ void SetInstrumentOpacity(Instrument &inst, float active, float idle) {
     ApplyInstrumentAlpha(inst);
 }
 
+bool ParseInstrumentColor(const char *hex, uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (!hex || !r || !g || !b) return false;
+    if (hex[0] == '#') ++hex;
+    unsigned v = 0;
+    if (std::strlen(hex) != 6) return false;
+    for (int i = 0; i < 6; ++i) {
+        const char c = hex[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= unsigned(c - '0');
+        else if (c >= 'a' && c <= 'f') v |= unsigned(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v |= unsigned(c - 'A' + 10);
+        else return false;
+    }
+    *r = uint8_t((v >> 16) & 0xFF);
+    *g = uint8_t((v >> 8) & 0xFF);
+    *b = uint8_t(v & 0xFF);
+    return true;
+}
+
+void SetInstrumentColor(Instrument &inst, uint8_t r, uint8_t g, uint8_t b) {
+    inst.colorR = r;
+    inst.colorG = g;
+    inst.colorB = b;
+    // Bust content caches so the next refresh repaints with the new colour.
+    inst.lastMinute = -1;
+    inst.lastDateKey = -1;
+    inst.lastBatterySeg = -1;
+    RefreshInstrumentContent(inst, true);
+}
+
 void EnableInstrument(Instrument &inst, bool on) {
     if (on) {
         EnsureInstrumentOverlays(inst);
@@ -2445,19 +4129,52 @@ void ClearInstruments() {
 const char *InstrumentTypeName(InstrumentType t) {
     switch (t) {
         case InstrumentType::Clock: return "clock";
+        case InstrumentType::Battery: return "battery";
+        case InstrumentType::Storage: return "storage";
+        case InstrumentType::Sd: return "sd";
+        case InstrumentType::Date: return "date";
+        case InstrumentType::Media: return "media";
     }
     return "clock";
 }
 
 void TickInstruments(double dt) {
+    UpdateInstrumentVisibility();
     for (auto &inst : g_instruments) {
         if (!inst.enabled) continue;
-        RefreshClockTexture(inst, false);
-        ShowInstrument(inst, true);
+        RefreshInstrumentContent(inst, false);
+        if (inst.type == InstrumentType::Media) PollMediaOverlay(inst);
     }
     UpdateInstrumentFollow(dt);
     UpdateInstrumentControls();
     PollInstrumentBars();
+}
+
+// Same shared ModeVisible / wrist rules as screens: hide with the displays during a VR
+// game (unless ingames visible, or the dashboard / hide hotkey brings them back), and
+// keep a mid-drag instrument up so a grab is not cancelled by a mode change.
+void UpdateInstrumentVisibility() {
+    const bool shared = ModeVisible();
+    Mat head;
+    const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
+    for (auto &inst : g_instruments) {
+        if (!inst.enabled) {
+            ShowInstrument(inst, false);
+            continue;
+        }
+        bool visible = shared || inst.drag != Drag::None;
+        float visFade = 1.f;
+        Mat p;
+        if (visible && inst.pinned != kNone && IsHandController(inst.pinned) && inst.drag == Drag::None &&
+            haveHead && InstrumentPose(inst, &p)) {
+            const double a = FacingAngle(p, head);
+            visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
+            visible = visFade > 0.02f;
+        }
+        if (!visible && inst.controls > 0.02f) visible = true, visFade = 0.f;
+        inst.visibilityFade = visFade;
+        ShowInstrument(inst, visible);
+    }
 }
 
 
@@ -2479,11 +4196,15 @@ bool ft_vr_init(void) {
     }
     // Action manifest must be set before the first PollNextEvent / UpdateActionState.
     InitEyeTracking();
+    LoadGazePointerConfig();
     RefreshPoses();
     return true;
 }
 
 void ft_vr_shutdown(void) {
+    DeactivateGazePointer("shutdown");
+    DestroyGazeCursor();
+    DestroyGazeCalTarget();
     ClearInstruments();
     for (auto &[i, s] : g_screens)
         for (auto o : s.All()) vr::VROverlay()->DestroyOverlay(o);
@@ -2646,9 +4367,12 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     const double dt = std::chrono::duration<double>(now - last).count();
     last = now;
     const double step = (dt > 0 && dt < 0.25) ? dt : 0.011;
+    g_eventHandle = handle;
+    g_eventData = data;
     UpdateFollow();
     UpdateGaze(step);
     UpdateAttention(step);
+    UpdateGazePointer(step);
     for (auto &[index, s] : g_screens) {
         vr::VREvent_t ev;
         // The screen itself: input for KWin.
@@ -2659,6 +4383,9 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                 case vr::VREvent_MouseMove:
                 case vr::VREvent_MouseButtonDown:
                 case vr::VREvent_MouseButtonUp: {
+                    // Controller laser takes over from gaze-pointer (avoids dual cursors /
+                    // a stuck Valve arrow after gaze mode).
+                    GazePointerYieldToController(ev.trackedDeviceIndex, "controller-laser");
                     // OpenVR reports buffer pixels (bottom-left); convert for the Wayland
                     // seat (coords.h) — see ft_buffer_to_seat for KWin scale vs wl dpr.
                     const double buf_x = ev.data.mouse.x;
@@ -2780,6 +4507,14 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateGuides();
     UpdateInstrumentAttention(step);
     TickInstruments(step);
+    // After overlay events: SteamVR may have re-shown system.pointer on a laser hit.
+    if (ShouldSuppressSteamVrMouseCursor())
+        SuppressSteamVrMouseCursor();
+    else if ((g_tick % 30) == 0)
+        // Keep the controller laser tip usable after gaze mode (or a prior 1 mm width bug).
+        RestoreSteamVrMouseCursor();
+    g_eventHandle = nullptr;
+    g_eventData = nullptr;
 }
 
 // Future pinch / finger tracking should call these (gaze selects; pinch confirms). Not wired yet.
@@ -2797,6 +4532,9 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
 //   attention <screen> on|off [inMs outMs dwellMs holdMs]
 //   deadzone <screen> on|off [degrees [metres]]   soft-follow glance dead zone
 //   gaze state|debug on|off|fallback head|fallback off
+//   gaze pointer on|off|feature on|off|button|state|timeout <s>|deadzone <px>|filter …
+//       |caloffset <u> <v>|calibrate start|cancel|reset|state
+//       headset-button gaze mouse; idle-out on click silence; UV calibration bias
 //   get <screen>  -> "ok ... width height curve activeOpacity idleOpacity anchor [rel...]"
 //   screens       -> "ok <count> <index>:<pixels w>x<h>:<metres> ..."
 //   head          -> "ok x y z yaw"
@@ -2983,13 +4721,15 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                 }
             }
             std::snprintf(reply, size,
-                          "ok eye=%d valid=%d fallback=%d err=%d flags=%d origin=%.4f,%.4f,%.4f dir=%.4f,%.4f,%.4f "
+                          "ok eye=%d valid=%d held=%d fallback=%d err=%d flags=%d origin=%.4f,%.4f,%.4f dir=%.4f,%.4f,%.4f "
                           "target=%s screen=%d slot=%d u=%.4f v=%.4f pixel=%d,%d buffer_pixel=%d,%d "
-                          "surface=%dx%d buffer=%dx%d dist=%.4f",
-                          g_eyeAvailable ? 1 : 0, g_eyeValid ? 1 : 0, g_gazeFallbackHead ? 1 : 0, g_eyeLastErr,
-                          g_eyeFlags, g_gazeOrigin[0], g_gazeOrigin[1], g_gazeOrigin[2], g_gazeDir[0], g_gazeDir[1],
-                          g_gazeDir[2], kind, g_gazeTarget.screen + 1, g_gazeTarget.slot + 1, g_gazeTarget.u,
-                          g_gazeTarget.v, px, py, bpx, bpy, surf_w, surf_h, buf_w, buf_h, g_gazeTarget.distance);
+                          "surface=%dx%d buffer=%dx%d dist=%.4f pointer=%d",
+                          g_eyeAvailable ? 1 : 0, g_eyeValid ? 1 : 0, g_eyeHeld ? 1 : 0, g_gazeFallbackHead ? 1 : 0,
+                          g_eyeLastErr, g_eyeFlags, g_gazeOrigin[0], g_gazeOrigin[1], g_gazeOrigin[2], g_gazeDir[0],
+                          g_gazeDir[1], g_gazeDir[2], kind, g_gazeTarget.screen + 1, g_gazeTarget.slot + 1,
+                          g_gazeTarget.u,
+                          g_gazeTarget.v, px, py, bpx, bpy, surf_w, surf_h, buf_w, buf_h, g_gazeTarget.distance,
+                          g_gazePtr.active ? 1 : 0);
         } else if (!std::strcmp(cmd + 5, "debug on")) {
             g_gazeDebug = true;
             std::snprintf(reply, size, "ok debug on");
@@ -3002,8 +4742,104 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         } else if (!std::strcmp(cmd + 5, "fallback off")) {
             g_gazeFallbackHead = false;
             std::snprintf(reply, size, "ok fallback=off");
+        } else if (!std::strcmp(cmd + 5, "pointer button")) {
+            g_gazePtr.buttonPending = true;
+            std::snprintf(reply, size, "ok");
+        } else if (!std::strcmp(cmd + 5, "pointer on")) {
+            ActivateGazePointer();
+            std::snprintf(reply, size, "ok active=%d", g_gazePtr.active ? 1 : 0);
+        } else if (!std::strcmp(cmd + 5, "pointer off")) {
+            if (g_gazeCal.active) CancelGazeCalibration("pointer-off");
+            DeactivateGazePointer("command");
+            std::snprintf(reply, size, "ok active=0");
+        } else if (!std::strcmp(cmd + 5, "pointer feature on")) {
+            g_gazePtr.cfg.featureEnabled = true;
+            if (g_gazePtr.cfg.mode == GazePtrMode::Off) g_gazePtr.cfg.mode = GazePtrMode::Gaze;
+            std::snprintf(reply, size, "ok feature=1 mode=%s", GazePtrModeName(g_gazePtr.cfg.mode));
+        } else if (!std::strcmp(cmd + 5, "pointer feature off")) {
+            g_gazePtr.cfg.featureEnabled = false;
+            g_gazePtr.cfg.mode = GazePtrMode::Off;
+            if (g_gazeCal.active) CancelGazeCalibration("feature-off");
+            DeactivateGazePointer("feature-off");
+            RestoreSteamVrMouseCursor();
+            std::snprintf(reply, size, "ok feature=0 mode=off");
+        } else if (std::sscanf(cmd + 5, "pointer mode %15s", word) == 1) {
+            GazePtrMode m = ParseGazePtrMode(word);
+            g_gazePtr.cfg.mode = m;
+            g_gazePtr.cfg.featureEnabled = (m != GazePtrMode::Off);
+            if (!g_gazePtr.cfg.featureEnabled) {
+                if (g_gazeCal.active) CancelGazeCalibration("mode-off");
+                DeactivateGazePointer("mode-off");
+                RestoreSteamVrMouseCursor();
+            } else if (m != GazePtrMode::Hybrid) {
+                HideGazePad();
+            }
+            std::snprintf(reply, size, "ok mode=%s feature=%d", GazePtrModeName(m),
+                          g_gazePtr.cfg.featureEnabled ? 1 : 0);
+        } else if (std::sscanf(cmd + 5, "pointer pad %lf", &w) == 1) {
+            g_gazePtr.cfg.hybridPadUv = std::clamp(w, 0.03, 0.45);
+            std::snprintf(reply, size, "ok pad=%.3f", g_gazePtr.cfg.hybridPadUv);
+        } else if (std::sscanf(cmd + 5, "pointer eyegain %lf", &w) == 1) {
+            g_gazePtr.cfg.hybridEyeGain = std::clamp(w, 0.05, 1.0);
+            std::snprintf(reply, size, "ok eyegain=%.3f", g_gazePtr.cfg.hybridEyeGain);
+        } else if (std::sscanf(cmd + 5, "pointer paddeadzone %lf", &w) == 1) {
+            g_gazePtr.cfg.hybridDeadzone = std::clamp(w, 0.0, 0.85);
+            std::snprintf(reply, size, "ok paddeadzone=%.3f", g_gazePtr.cfg.hybridDeadzone);
+        } else if (!std::strcmp(cmd + 5, "pointer state")) {
+            std::snprintf(reply, size,
+                          "ok active=%d feature=%d mode=%s pad=%.3f eyegain=%.3f paddeadzone=%.3f timeout=%.1f "
+                          "min_cutoff=%.3f beta=%.4f d_cutoff=%.3f deadzone_px=%.1f cal_u=%.4f cal_v=%.4f "
+                          "cal=%d cal_step=%d/%d screen=%d seat=%.1f,%.1f",
+                          g_gazePtr.active ? 1 : 0, g_gazePtr.cfg.featureEnabled ? 1 : 0,
+                          GazePtrModeName(g_gazePtr.cfg.mode), g_gazePtr.cfg.hybridPadUv,
+                          g_gazePtr.cfg.hybridEyeGain, g_gazePtr.cfg.hybridDeadzone, g_gazePtr.cfg.timeoutSec,
+                          g_gazePtr.cfg.minCutoff, g_gazePtr.cfg.beta, g_gazePtr.cfg.dCutoff,
+                          g_gazePtr.cfg.deadzonePx, g_gazePtr.cfg.calU, g_gazePtr.cfg.calV,
+                          g_gazeCal.active ? 1 : 0, g_gazeCal.step, kGazeCalPoints, g_gazePtr.screen + 1,
+                          g_gazePtr.emitX, g_gazePtr.emitY);
+        } else if (std::sscanf(cmd + 5, "pointer timeout %lf", &w) == 1) {
+            g_gazePtr.cfg.timeoutSec = std::clamp(w, 1.0, 120.0);
+            std::snprintf(reply, size, "ok timeout=%.1f", g_gazePtr.cfg.timeoutSec);
+        } else if (std::sscanf(cmd + 5, "pointer deadzone %lf", &w) == 1) {
+            g_gazePtr.cfg.deadzonePx = std::clamp(w, 0.0, 40.0);
+            std::snprintf(reply, size, "ok deadzone_px=%.1f", g_gazePtr.cfg.deadzonePx);
+        } else if (std::sscanf(cmd + 5, "pointer filter %lf %lf %lf", &x, &y, &z) == 3) {
+            g_gazePtr.cfg.minCutoff = std::clamp(x, 0.01, 50.0);
+            g_gazePtr.cfg.beta = std::clamp(y, 0.0, 1.0);
+            g_gazePtr.cfg.dCutoff = std::clamp(z, 0.01, 50.0);
+            std::snprintf(reply, size, "ok min_cutoff=%.3f beta=%.4f d_cutoff=%.3f", g_gazePtr.cfg.minCutoff,
+                          g_gazePtr.cfg.beta, g_gazePtr.cfg.dCutoff);
+        } else if (std::sscanf(cmd + 5, "pointer caloffset %lf %lf", &x, &y) == 2) {
+            g_gazePtr.cfg.calU = std::clamp(x, -0.25, 0.25);
+            g_gazePtr.cfg.calV = std::clamp(y, -0.25, 0.25);
+            g_gazeCal.justFinished = false;
+            std::snprintf(reply, size, "ok cal_u=%.4f cal_v=%.4f", g_gazePtr.cfg.calU, g_gazePtr.cfg.calV);
+        } else if (!std::strcmp(cmd + 5, "pointer calibrate start")) {
+            if (StartGazeCalibration())
+                std::snprintf(reply, size, "ok cal=1 step=0/%d screen=%d", kGazeCalPoints, g_gazeCal.screen + 1);
+            else
+                std::snprintf(reply, size, "error cannot start calibration (feature/eye/screen?)");
+        } else if (!std::strcmp(cmd + 5, "pointer calibrate cancel")) {
+            CancelGazeCalibration("command");
+            g_gazeCal.justFinished = false;
+            std::snprintf(reply, size, "ok cal=0");
+        } else if (!std::strcmp(cmd + 5, "pointer calibrate reset")) {
+            CancelGazeCalibration("reset");
+            g_gazePtr.cfg.calU = 0;
+            g_gazePtr.cfg.calV = 0;
+            g_gazeCal.justFinished = false;
+            std::snprintf(reply, size, "ok cal_u=0 cal_v=0");
+        } else if (!std::strcmp(cmd + 5, "pointer calibrate state")) {
+            const int done = (!g_gazeCal.active && g_gazeCal.justFinished) ? 1 : 0;
+            std::snprintf(reply, size,
+                          "ok active=%d done=%d step=%d/%d samples=%d screen=%d cal_u=%.4f cal_v=%.4f",
+                          g_gazeCal.active ? 1 : 0, done, g_gazeCal.step, kGazeCalPoints, g_gazeCal.samples,
+                          g_gazeCal.screen + 1, g_gazePtr.cfg.calU, g_gazePtr.cfg.calV);
         } else {
-            std::snprintf(reply, size, "error gaze state|debug on|debug off|fallback head|fallback off");
+            std::snprintf(reply, size,
+                          "error gaze state|debug on|off|fallback head|off|pointer "
+                          "on|off|feature|mode|pad|button|state|timeout|deadzone|filter|caloffset|"
+                          "calibrate start|cancel|reset|state");
         }
     } else if (std::sscanf(cmd, "followlag %lf", &w) == 1) {
         g_followLagMs = std::clamp(w, 0.0, 1000.0);
@@ -3101,9 +4937,9 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                     len += std::snprintf(reply + len, size - len, " %s:%s:%d", inst.id.c_str(),
                                          InstrumentTypeName(inst.type), inst.enabled ? 1 : 0);
         } else if (std::sscanf(rest, "enable %63s", id) == 1) {
-            if (std::strcmp(id, "clock") != 0 && !FindInstrument(id))
+            if (!KnownInstrumentId(id))
                 return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
-            Instrument &inst = FindOrCreateClock();  // v1: clock only
+            Instrument &inst = FindOrCreateInstrument(id);
             EnableInstrument(inst, true);
             if (IsIdentityMat(inst.pose)) RecenterInstrument(inst);
             std::snprintf(reply, size, "ok");
@@ -3113,9 +4949,9 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             EnableInstrument(*inst, false);
             std::snprintf(reply, size, "ok");
         } else if (std::sscanf(rest, "recenter %63s", id) == 1) {
-            if (std::strcmp(id, "clock") != 0 && !FindInstrument(id))
+            if (!KnownInstrumentId(id))
                 return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
-            Instrument &inst = FindOrCreateClock();
+            Instrument &inst = FindOrCreateInstrument(id);
             EnableInstrument(inst, true);
             RecenterInstrument(inst);
             std::snprintf(reply, size, "ok");
@@ -3129,6 +4965,14 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
             SetInstrumentOpacity(*inst, float(w), float(og >= 3 ? x : w));
             std::snprintf(reply, size, "ok");
+        } else if (std::sscanf(rest, "color %63s %63s", id, filled) == 2) {
+            Instrument *inst = FindInstrument(id);
+            if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
+            uint8_t cr, cg, cb;
+            if (!ParseInstrumentColor(filled, &cr, &cg, &cb))
+                return (void)std::snprintf(reply, size, "error color wants #RRGGBB");
+            SetInstrumentColor(*inst, cr, cg, cb);
+            std::snprintf(reply, size, "ok");
         } else if (std::sscanf(rest, "attention %63s %15s", id, word) == 2) {
             Instrument *inst = FindInstrument(id);
             if (!inst) return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
@@ -3139,9 +4983,9 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         } else if (std::sscanf(rest, "place %63s %lf %lf %lf %lf %lf %lf", id, &x, &y, &z, &yaw, &pitch, &roll) == 7) {
             Instrument *inst = FindInstrument(id);
             if (!inst) {
-                if (std::strcmp(id, "clock") != 0)
+                if (!KnownInstrumentId(id))
                     return (void)std::snprintf(reply, size, "error unknown instrument %s", id);
-                inst = &FindOrCreateClock();
+                inst = &FindOrCreateInstrument(id);
             }
             EndInstrumentDrag(*inst);
             SetInstrumentAbsolute(*inst, PanelPose(x, y, z, yaw, pitch, roll));
@@ -3194,7 +5038,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                     len += std::snprintf(reply + len, size - len, " %.5f", inst->pinRel.m[k / 4][k % 4]);
         } else {
             std::snprintf(reply, size, "error instrument commands: list|get|enable|disable|place|width|pin|unpin|"
-                                       "opacity|attention|recenter|clear");
+                                       "opacity|color|attention|recenter|clear");
         }
     } else {
         std::snprintf(reply, size, "error unknown command");

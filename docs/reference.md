@@ -14,7 +14,7 @@ desktops.sh uninstall      # back to the stock SteamOS desktop
 desktops.sh start | stop | restart | status | log [lines]
 ```
 
-`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
+`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Inside the private `dbus-run-session` it also starts `session/ft-mpris.py` (log: `/tmp/frametop-mpris.log`) so the Media instrument can talk to MPRIS players over `@frametop_mpris`. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
 
 If `plasmashell` exits while KWin stays up (black wallpaper / missing taskbar), `session/ft-shell-watch.sh` restarts only the shell inside the same nested D-Bus session, using `$XDG_RUNTIME_DIR/frametop/plasmashell.env` captured from the first healthy shell (`WAYLAND_DISPLAY=wayland-0`, not the outer ft-screens socket). Log: `/tmp/frametop-plasmashell-watchdog.log`. Manual: `./desktops.sh shell-restart`.
 
@@ -39,7 +39,7 @@ Every screen is an overlay named `frametop.screen.N` with under-chrome controls:
 - `.resize`, the tab on the bottom right corner, sets the width. Screens go down to 15 cm wide.
 - `.anchor` cycles world / head-soft / yaw-follow / position-follow; profile slot circles 1–6 sit on the left of the bar.
 
-**Spatial Instruments** live outside the virtual displays as ambient overlays (not KDE windows). Display Settings → Spatial Instruments configures them; the first type is **Clock** (`HH:MM`, 24-hour local time, transparent background). Instruments reuse screen-style anchors and gaze attention opacity. Aim a controller laser at the clock to reveal its move bar. Layout/profile JSON may include an `instruments` array; older files without that key still load.
+**Spatial Instruments** live outside the virtual displays as ambient overlays (not KDE windows). Display Settings → Spatial Instruments configures them. Types: **Clock** (`HH:MM`), **Date** (`TUE 29 SEP`), **Battery** (five-segment headset charge), **Device storage** (summed internal mounts), **SD card** (`mmcblk*`), and **Media** (MPRIS now-playing + prev/play-pause/next via `@frametop_mpris`). Clock, Date, and Battery support a configurable `#RRGGBB` colour. Instruments reuse screen-style anchors, gaze attention opacity, and the same shared visibility rules as the displays (including hiding during a VR game when Always + “hide during games” is in effect, unless the dashboard or hide hotkey brings them back). Aim a controller laser at an instrument to reveal its move bar; Media also accepts laser clicks on its transport buttons. Layout/profile JSON may include an `instruments` array; older files without that key still load.
 
 The controls are sized from both the screen's width and its distance from you, follow the surface of a curved screen, and stay invisible until a laser or the 3D mouse's cursor lands on one or comes within about 1.5 times a button's size of it. While invisible they're still there, fully transparent, so SteamVR's laser can find them. They're translucent until a laser is on them, like SteamVR's own window controls.
 
@@ -54,7 +54,7 @@ The Visibility & wrist tab of Frametop Display Settings decides when the screens
 
 In the last three modes the hotkey shows the screens anyway. Two more settings on the same tab cover VR games, which ft-screens detects as SteamVR scene apps:
 
-- During VR games, the Always mode hides the screens unless the dashboard is open (the default), or leaves them up.
+- During VR games, the Always mode hides the screens and Spatial Instruments unless the dashboard is open (the default), or leaves them up.
 - Controllers on the screens. Visible screens can keep SteamVR's laser mouse on, so controllers work them with the dashboard closed, but that also takes the controllers away from a game. By default this is off while a VR game runs, and the 3D mouse or the dashboard works the screens. The other choices are always on, or only with the dashboard open, which also suits flatscreen games since they aren't scene apps.
 
 Input from the lasers reaches KWin through ft-screens' own seat. OpenVR reports hits in DMA-BUF (buffer) pixels; ft-screens maps those through UV onto the committed Wayland surface-local size (`screens/coords.h`) before `wlr_seat_pointer_notify_*`. That keeps the laser aligned with the KDE cursor at 100%, 125%, 150%, and mixed per-screen scales without changing the panel's width in metres. Keys come from the input relay, from any keyboard it doesn't grab and any key a pointer device passes through, and go to the screen you clicked last, except while the SteamVR dashboard is open.
@@ -121,9 +121,10 @@ Device rules are saved in `~/.config/frametop-input.json`. `input-settings/insta
 
 When the desktop starts, its screens arrange themselves around where you're facing. You can move them by hand at any time and put them back with Meta+Shift+R, the Reset Screen Layout menu entry, Arrange now in the app, or a mouse button mapped to Reset desktop screen layout.
 
-Frametop Display Settings has three tabs:
+Frametop Display Settings has tabs for:
 
 - Screens: add and remove screens, and set each one's resolution (presets from 1080p to 4K, ultrawide, super ultrawide, portrait, or custom), its width in VR (0.5 to 6 m), active/idle opacity (0–100%), optional true-eye gaze attention with fade-in and fade-out speeds, its scale, whether it's curved, anchor/follow mode, and whether it has the taskbar. Resolution, width, curve, and opacity apply at once. Adding or removing a screen takes a desktop restart, which the app offers.
+- Spatial Instruments: Clock, Date, Battery, Device storage, SD card, and Media ambient overlays (screens backend).
 - Layout: a curve around you, with the screens hinged edge to edge like monitors on a desk and each turned to face you, or a flat wall. Both take rows, distance, gap, and height. Save current arrangement keeps the positions and sizes you set by hand instead. Named spatial profiles (same screen count; pose, metres, curve, anchors, active/idle opacity, attention) can be saved, applied (default 450 ms transition), and assigned to slots 1–6 for the VR chrome buttons. A preview shows the layout from above and from the front, and a switch turns auto-arrange at startup on or off.
 - Visibility & wrist: the visibility, game, and controller settings described above, the wrist angle, and buttons to pin all screens to a wrist, soft head / yaw-follow / position-follow, or unpin them.
 
@@ -135,11 +136,21 @@ layout/ft-layout capture                 # save the current arrangement and size
 layout/ft-layout plan                    # print the arrangement as JSON (no VR needed)
 layout/ft-layout scale                   # per-screen scale, positions, and taskbar screen, to KWin
 layout/ft-layout screen state --json     # per-screen anchor/opacity + slot info
-layout/ft-layout gaze state              # true eye tracking + current GazeTarget
+layout/ft-layout gaze state              # eye tracking + GazeTarget (+ held= / pointer=)
+layout/ft-layout gaze pointer state|on|off|feature|mode|pad|eyegain|paddeadzone|button
+layout/ft-layout gaze pointer timeout 10
+layout/ft-layout gaze pointer pad 0.08
+layout/ft-layout gaze pointer eyegain 0.35
+layout/ft-layout gaze pointer paddeadzone 0.50
+layout/ft-layout gaze pointer mode gaze|hybrid|off
+layout/ft-layout gaze pointer calibrate start|cancel|reset|state
+layout/ft-layout gaze pointer caloffset 0 0
+layout/ft-layout gaze pointer deadzone 3
+layout/ft-layout gaze pointer filter 1.0 0.007 1.0
 layout/ft-layout gaze debug on|off
 layout/ft-layout gaze fallback head|off  # explicit head fallback (debug only)
 layout/ft-layout instrument list|state [--json]
-layout/ft-layout instrument enable|disable|recenter clock
+layout/ft-layout instrument enable|disable|recenter clock|battery|storage|sd|date|media
 layout/ft-layout toggle                  # hide or show all screens
 layout/ft-layout pin N|all left|right|head|head-rigid|yaw-follow|position-follow
 layout/ft-layout profile list [--json]
@@ -155,7 +166,7 @@ layout/ft-layout action list [--json]
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
 
-Spatial Instruments (Clock) are stored in the active layout's `instruments` array and in named profiles. Missing `instruments` means none.
+Spatial Instruments (Clock, Date, Battery, Device storage, SD card, Media) are stored in the active layout's `instruments` array and in named profiles. Missing `instruments` means none. Unknown `type` values are skipped safely. Media needs `session/ft-mpris.py` running in the nested session (`@frametop_mpris`).
 
 The active layout is `~/.config/frametop-layout.json` (relative to your head when applied). Named profiles are `~/.config/frametop-layout-profiles.json` (includes optional `slots` 1–6). Soft head follow lag is `FOLLOW_LAG_MS` in `~/.config/frametop.conf` (default 120). `/tmp/frametop-layout.log` has the run from the last desktop start.
 
@@ -174,5 +185,5 @@ With remote access on, the nested KWin runs with `KWIN_WAYLAND_NO_PERMISSION_CHE
 ## Limits
 
 - A controller button can't show hidden screens; a mapped mouse or keyboard button can.
-- KWin's cursor isn't drawn on the screens, because KWin draws it as a host cursor, which ft-screens doesn't render. The 3D mouse's dot and SteamVR's laser dot show where you're pointing.
+- KWin's cursor isn't drawn on the screens, because KWin draws it as a host cursor, which ft-screens doesn't render. The 3D mouse's dot and SteamVR's laser tip show where you're pointing. Gaze-pointer mode draws a cyan reticle and temporarily hides SteamVR's `system.pointer` / `system.cursor` (without changing their width). Aiming a controller at a panel ends gaze mode so the normal laser tip comes back.
 - The old gamescope backend (`BACKEND=gamescope`) still works, but it gives every screen the same resolution, at most 1920×1080 pixels' worth, and arranging screens borrows the pointer for a few seconds.

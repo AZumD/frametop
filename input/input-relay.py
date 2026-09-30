@@ -26,6 +26,13 @@ Keys also go to ft-screens (@ft_screens, the Frametop desktop's compositor), whi
 types them into the desktop screen that has focus (not while the SteamVR dashboard is
 open): from keyboards that aren't grabbed, and keys a pointer device passes through.
 
+Headset button (Steam Frame): the host `gpio-keys` node exposes KEY_SELECT and
+KEY_VOLUMEUP. When GAZE_POINTER=1 (default), the relay grabs that device
+(EVIOCGRAB is device-wide — required so SteamVR does not also see KEY_SELECT and
+summon its head laser), routes KEY_SELECT to @ft_screens as `gaze pointer button`,
+and re-emits other keys (volume up) onto the existing `frametop virtual keyboard`.
+GAZE_POINTER_GRAB=0 falls back to observe-only (Valve laser will compete again).
+
 Pointer mode (POINTER=1 in ~/.config/frametop.conf) sends pointer devices to
 the ft-pointer helper (pointer/helper), which drives the ft_pointer
 SteamVR driver. With POINTER=0, pointer devices go to the virtual mouse and
@@ -66,6 +73,7 @@ KEY_A = 30
 REL_X, REL_Y, REL_WHEEL, REL_MAX = 0x00, 0x01, 0x08, 0x0F
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA = 0x110, 0x111, 0x112, 0x113, 0x114
 KEY_LEFTMETA, KEY_RIGHTMETA = 125, 126
+KEY_SELECT = 0x161  # 353 — gpio-keys on Steam Frame (likely the headset button)
 BUS_USB, BUS_BLUETOOTH, BUS_VIRTUAL = 0x03, 0x05, 0x06
 
 # struct input_event on 64-bit: struct timeval (2 x long), u16 type, u16 code, s32 value.
@@ -231,6 +239,192 @@ def read_rules(path=RULES_PATH):
     rules.setdefault("buttons", {})
     return rules
 
+
+def gpio_key_route(code, select_code=KEY_SELECT):
+    """How to handle a key from the grabbed gpio-keys node.
+
+    Returns: 'gaze' (Frametop headset button), 'forward' (re-emit to virtual keyboard),
+    or 'drop' (unsupported on the virtual keyboard; never re-emit KEY_SELECT).
+    """
+    if code == select_code:
+        return "gaze"
+    if 0 < code < BTN_MISC:
+        return "forward"
+    return "drop"
+
+
+class HeadsetButton:
+    """Own KEY_SELECT on gpio-keys for gaze-pointer without killing volume.
+
+    SteamVR opens gpio-keys at start and uses KEY_SELECT to summon its head laser.
+    Observe-only cannot stop that (multiple readers). EVIOCGRAB is device-wide, so
+    we grab the node, swallow KEY_SELECT → ft-screens, and re-emit other keys
+    (KEY_VOLUMEUP) onto `frametop virtual keyboard`, which SteamVR already holds.
+    """
+
+    def __init__(self):
+        self.fd = None
+        self.path = None
+        self.name = ""
+        self.enabled = True
+        self.want_grab = True
+        self.can_grab = True
+        self.grabbed = False
+        self.device_name = "gpio-keys"
+        self.code = KEY_SELECT
+        self.identified = False
+        self.next_scan = 0.0
+        self.forward = None  # Virtual keyboard for non-SELECT keys
+        self._warned_drop = set()
+
+    def configure(self, conf, can_grab=True, forward=None):
+        self.enabled = conf.get("GAZE_POINTER", "1") != "0"
+        self.want_grab = conf.get("GAZE_POINTER_GRAB", "1") != "0"
+        self.can_grab = can_grab
+        if forward is not None:
+            self.forward = forward
+        self.device_name = conf.get("GAZE_POINTER_BUTTON_DEVICE", "gpio-keys") or "gpio-keys"
+        try:
+            self.code = int(conf.get("GAZE_POINTER_BUTTON_CODE", str(KEY_SELECT)))
+        except ValueError:
+            self.code = KEY_SELECT
+        if not self.enabled:
+            self.close()
+            log("gaze-pointer headset button: disabled (GAZE_POINTER=0)")
+        else:
+            mode = "grab+reemit" if (self.want_grab and self.can_grab) else "observe-only"
+            log(f"gaze-pointer headset button: mode={mode} name={self.device_name!r} "
+                f"code={self.code}")
+
+    def close(self):
+        if self.fd is not None:
+            if self.grabbed:
+                try:
+                    fcntl.ioctl(self.fd, EVIOCGRAB, 0)
+                except OSError:
+                    pass
+                self.grabbed = False
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        self.fd = None
+        self.path = None
+        self.name = ""
+
+    def scan(self, now):
+        if not self.enabled:
+            return
+        if self.fd is not None:
+            return
+        if now < self.next_scan:
+            return
+        self.next_scan = now + 2.0
+        try:
+            names = os.listdir("/dev/input")
+        except OSError:
+            return
+        for name in sorted(names):
+            if not name.startswith("event"):
+                continue
+            path = f"/dev/input/{name}"
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            try:
+                buf = bytearray(256)
+                fcntl.ioctl(fd, eviocgname(len(buf)), buf)
+                dev_name = buf.split(b"\0", 1)[0].decode(errors="replace")
+                if dev_name != self.device_name:
+                    os.close(fd)
+                    continue
+                keys = bits(fd, EV_KEY, KEY_MAX + 1)
+                if self.code not in keys:
+                    log(f"gaze-pointer: {path} name={dev_name!r} missing key {self.code}; skipping")
+                    os.close(fd)
+                    continue
+                grabbed = False
+                if self.want_grab and self.can_grab:
+                    try:
+                        fcntl.ioctl(fd, EVIOCGRAB, 1)
+                        grabbed = True
+                    except OSError as e:
+                        log(f"gaze-pointer: EVIOCGRAB failed on {path}: {e}; "
+                            f"Valve may still summon its laser on KEY_SELECT")
+                self.fd = fd
+                self.path = path
+                self.name = dev_name
+                self.grabbed = grabbed
+                if not self.identified:
+                    others = sorted(k for k in keys if k != self.code)
+                    log(f"gaze-pointer: using {path} name={dev_name!r} select={self.code} "
+                        f"grabbed={int(grabbed)} other_keys={others} "
+                        f"(volume re-emit={'yes' if self.forward else 'no'})")
+                    self.identified = True
+                return
+            except OSError:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    def fileno(self):
+        return self.fd
+
+    def handle_events(self, screens_sock):
+        """Consume gpio-keys events: KEY_SELECT → gaze; others → virtual keyboard."""
+        if self.fd is None:
+            return False
+        try:
+            data = os.read(self.fd, EVENT.size * 64)
+        except OSError as e:
+            if e.errno == errno.EAGAIN:
+                return False
+            log(f"gaze-pointer: read failed on {self.path}: {e}; will rescan")
+            self.close()
+            return False
+        if not data:
+            log(f"gaze-pointer: {self.path} closed; will rescan")
+            self.close()
+            return False
+        sent = False
+        forwarded = False
+        for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+            _, _, etype, code, value = EVENT.unpack_from(data, off)
+            if etype == EV_SYN and code == SYN_REPORT:
+                if forwarded and self.forward:
+                    self.forward.sync()
+                    forwarded = False
+                continue
+            if etype != EV_KEY:
+                continue
+            route = gpio_key_route(code, self.code)
+            if route == "gaze":
+                if value == 1:  # press edge only
+                    try:
+                        screens_sock.sendto(b"gaze pointer button", SCREENS)
+                        sent = True
+                        log(f"gaze-pointer: headset button press → ft-screens "
+                            f"({self.path} code={code} grabbed={int(self.grabbed)})")
+                    except OSError:
+                        pass
+                continue
+            if route == "forward" and self.forward is not None:
+                self.forward.emit(EV_KEY, code, value)
+                forwarded = True
+                continue
+            if code not in self._warned_drop:
+                self._warned_drop.add(code)
+                log(f"gaze-pointer: dropping unsupported key {code} from {self.path} "
+                    f"(not re-emitted; virtual keyboard max is {BTN_MISC - 1})")
+        if forwarded and self.forward:
+            self.forward.sync()
+        return sent
+
+    # Back-compat alias for older call sites / docs.
+    def read_presses(self, screens_sock):
+        return self.handle_events(screens_sock)
 
 class Pointer:
     """Drives the ft_pointer SteamVR driver from a mouse (pointer mode).
@@ -453,11 +647,12 @@ def main():
     control.setblocking(False)
     watchers = {}  # address -> watch end time
 
-    state = {"pointer": None, "rules": {}}
+    state = {"pointer": None, "rules": {}, "headset_btn": HeadsetButton()}
 
     def load_config():
         conf = read_config()
         state["rules"] = read_rules()
+        state["headset_btn"].configure(conf, can_grab=can_grab, forward=keyboard)
         if conf.get("POINTER", "0") == "1":
             p = state["pointer"] or Pointer(0.03, 30)
             p.sensitivity = float(conf.get("POINTER_SENSITIVITY", "0.03"))
@@ -470,8 +665,12 @@ def main():
             log("pointer mode off: pointer devices feed the virtual mouse and keyboard")
 
     load_config()
+    # If gaze-pointer was already holding gpio-keys, re-open with new grab settings.
+    state["headset_btn"].close()
+    state["headset_btn"].identified = False
     meta_down = False  # Meta pressed with no other key yet: a tap toggles the dashboard
     screens_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
+    headset_btn = state["headset_btn"]
 
     def to_screens(code, value):
         """A key for the desktop screens (ft-screens decides whether it types)."""
@@ -549,6 +748,10 @@ def main():
                 reply(addr, {"t": "watching", "seconds": seconds})
             elif cmd == "reload":
                 load_config()
+                # Re-open gpio-keys so GAZE_POINTER on/off takes grab effect immediately
+                # (ungrab → SteamVR gets KEY_SELECT / head laser again; grab → Frametop owns it).
+                state["headset_btn"].close()
+                state["headset_btn"].identified = False
                 apply_roles()
                 if state["pointer"]:
                     state["pointer"].send("reload")
@@ -599,7 +802,11 @@ def main():
             if added:
                 apply_roles()
 
-        ready, _, _ = select.select(list(nodes) + [control], [], [],
+        headset_btn.scan(now)
+        select_fds = list(nodes) + [control]
+        if headset_btn.fileno() is not None:
+            select_fds.append(headset_btn.fileno())
+        ready, _, _ = select.select(select_fds, [], [],
                                     pointer.timeout() if pointer else 0.5)
         now = time.monotonic()
         if pointer:
@@ -607,6 +814,9 @@ def main():
         for fd in ready:
             if fd is control:
                 handle_control(now)
+                continue
+            if headset_btn.fileno() is not None and fd == headset_btn.fileno():
+                headset_btn.handle_events(screens_sock)
                 continue
             node = nodes[fd]
             try:
