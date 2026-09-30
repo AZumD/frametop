@@ -1107,14 +1107,34 @@ void UpdateFollow() {
     const double tau = g_followLagMs / 1000.0;
     for (auto &[i, s] : g_screens) {
         if (s.drag != Drag::None || !IsSoftFollow(s.anchor)) continue;
+        // Head-soft only: freeze while gaze-focused so reading does not pitch/slide the
+        // surface under your eyes. Yaw-follow and position-follow are meant to keep
+        // moving while you look at them — freezing those felt like path stutter when
+        // eye samples flickered on/off the panel.
+        if (s.attentionEnabled && s.attentionFocused && s.anchor == AnchorMode::HeadSoft) {
+            if (s.followDeadzone) {
+                const Mat cur = ReferenceFrame(s.anchor, hmd);
+                s.followLock = cur;
+                s.followLockValid = true;
+            }
+            continue;
+        }
         const Mat cur = ReferenceFrame(s.anchor, hmd);
         Mat ref = cur;
-        if (s.followDeadzone) {
+        // Position-follow always gets a tiny dead zone so millimetre HMD noise does not
+        // jitter a still sitter. User deadzone (if any) is at least this large.
+        const double posFloorM = 0.025;  // 2.5 cm
+        const bool useDeadzone =
+            s.followDeadzone || s.anchor == AnchorMode::PositionFollow;
+        if (useDeadzone) {
             if (!s.followLockValid) {
                 s.followLock = cur;
                 s.followLockValid = true;
             }
-            PushFollowLock(&s.followLock, cur, s.anchor, s.followDeadzoneDeg, s.followDeadzoneM);
+            const double zoneDeg = s.followDeadzone ? s.followDeadzoneDeg : 15.0;
+            const double zoneM = s.followDeadzone ? std::max(s.followDeadzoneM, posFloorM)
+                                                 : posFloorM;
+            PushFollowLock(&s.followLock, cur, s.anchor, zoneDeg, zoneM);
             ref = s.followLock;
         } else {
             s.followLockValid = false;
@@ -2170,14 +2190,30 @@ void UpdateInstrumentFollow(double dt) {
     const double tau = g_followLagMs / 1000.0;
     for (auto &inst : g_instruments) {
         if (!inst.enabled || inst.drag != Drag::None || !IsSoftFollow(inst.anchor)) continue;
+        // Same as UpdateFollow: only head-soft freezes under gaze.
+        if (inst.attentionEnabled && inst.attentionFocused &&
+            inst.anchor == AnchorMode::HeadSoft) {
+            if (inst.followDeadzone) {
+                const Mat cur = ReferenceFrame(inst.anchor, hmd);
+                inst.followLock = cur;
+                inst.followLockValid = true;
+            }
+            continue;
+        }
         const Mat cur = ReferenceFrame(inst.anchor, hmd);
         Mat ref = cur;
-        if (inst.followDeadzone) {
+        const double posFloorM = 0.025;
+        const bool useDeadzone =
+            inst.followDeadzone || inst.anchor == AnchorMode::PositionFollow;
+        if (useDeadzone) {
             if (!inst.followLockValid) {
                 inst.followLock = cur;
                 inst.followLockValid = true;
             }
-            PushFollowLock(&inst.followLock, cur, inst.anchor, inst.followDeadzoneDeg, inst.followDeadzoneM);
+            const double zoneDeg = inst.followDeadzone ? inst.followDeadzoneDeg : 15.0;
+            const double zoneM = inst.followDeadzone ? std::max(inst.followDeadzoneM, posFloorM)
+                                                    : posFloorM;
+            PushFollowLock(&inst.followLock, cur, inst.anchor, zoneDeg, zoneM);
             ref = inst.followLock;
         } else {
             inst.followLockValid = false;
