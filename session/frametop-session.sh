@@ -81,6 +81,7 @@ if [ "${1:-}" != --inner ]; then
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 ))
+  
   "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
   "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
     "${screen_args[@]}" > /tmp/frametop-screens.log 2>&1 < /dev/null &
@@ -154,16 +155,23 @@ touch "$runtime/session-active"
 # Private D-Bus session (no systemd1 on this bus — Plasma falls back to direct launches).
 # Watchdog starts first, waits for the real nested plasmashell, then snapshots its /proc
 # environ (wayland-0 under …/frametop) for respawns — never the pre-Plasma outer display.
+# ft-mpris bridges session MPRIS players to @frametop_mpris for the Media instrument.
+# Drop any leftover bridge from a prior session (abstract socket is exclusive).
+pkill -f '[p]ython3 .*/ft-mpris.py' 2>/dev/null || true
 dbus-run-session -- bash -c '
   set -eu
   here=$1
+  python3 "$here/ft-mpris.py" > /tmp/frametop-mpris.log 2>&1 &
+  mpris=$!
   bash "$here/ft-shell-watch.sh" &
   watch=$!
   set +e
   startplasma-wayland
   status=$?
   set -e
+  kill "$mpris" 2>/dev/null || true
   kill "$watch" 2>/dev/null || true
+  wait "$mpris" 2>/dev/null || true
   wait "$watch" 2>/dev/null || true
   exit "$status"
 ' bash "$here"

@@ -56,6 +56,7 @@ keyboards) get their volume entries remapped to unused stand-in codes, so their
 other keys keep working for SteamVR; a device without a keymap that has only volume
 keys (the headset's pmic_resin) is grabbed. The keymaps go back when the relay exits.
 
+
 Pointer mode (POINTER=1 in ~/.config/frametop.conf) sends pointer devices to
 the ft-pointer helper (pointer/helper), which drives the ft_pointer
 SteamVR driver. With POINTER=0, pointer devices go to the virtual mouse and
@@ -610,6 +611,7 @@ def main():
             log("pointer mode off: pointer devices feed the virtual mouse and keyboard")
 
     load_config()
+    # If gaze-pointer was already holding gpio-keys, re-open with new grab settings.
     meta_down = False  # Meta pressed with no other key yet: a tap toggles the dashboard
     screens_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
 
@@ -819,6 +821,7 @@ def main():
                 reply(addr, {"t": "watching", "seconds": seconds})
             elif cmd == "reload":
                 load_config()
+                # (ungrab → SteamVR gets KEY_SELECT / head laser again; grab → Frametop owns it).
                 apply_roles()
                 if state["pointer"]:
                     state["pointer"].send("reload")
@@ -893,6 +896,7 @@ def main():
         for fd in ready:
             if fd is control:
                 handle_control(now)
+                continue
                 continue
             node = nodes[fd]
             try:

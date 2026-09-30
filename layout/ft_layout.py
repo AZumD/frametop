@@ -28,9 +28,9 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                 "scale": 1.0,                         KWin output scale (1.0 = 100%)
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
-   "instruments": [{"id": "clock", "type": "clock", "enabled": true,  Spatial Instruments (ambient VR
-                     "pos"/"face"/"roll" or "pin", "metres",            info outside virtual displays;
-                     "active_opacity", "idle_opacity", "attention"}],   Clock is the first type)
+   "instruments": [{"id": "clock"|"battery"|"storage"|"sd"|"date"|"media", "type": …,
+                     "enabled", "pos"/"face"/"roll" or "pin", "metres",
+                     "active_opacity", "idle_opacity", "attention"}],   Spatial Instruments
    "panel_size": [w, h]}              gamescope: last measured panel size
 
 Named spatial profiles (same screen count; no resolution/scale/visibility) live in
@@ -69,7 +69,7 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout profile apply-slot N [--duration MS]
   ft-layout profile next|previous [--duration MS]
   ft-layout instrument list|state [--json]
-  ft-layout instrument enable|disable|recenter clock
+  ft-layout instrument enable|disable|recenter clock|battery|storage|sd|date|media
 """
 import json
 import math
@@ -108,7 +108,11 @@ PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 INSTRUMENT_ANCHORS = ("world", "head", "head-rigid", "yaw-follow", "position-follow")
-KNOWN_INSTRUMENT_TYPES = ("clock",)
+KNOWN_INSTRUMENT_TYPES = ("clock", "battery", "storage", "sd", "date", "media")
+DEFAULT_BATTERY_METRES = 0.32
+DEFAULT_STORAGE_METRES = 0.34
+DEFAULT_DATE_METRES = 0.38
+DEFAULT_MEDIA_METRES = 0.42
 CONTROLLER_ANCHORS = ("left", "right")
 SOFT_FOLLOW_ANCHORS = ("head", "yaw-follow", "position-follow")
 SLOT_COUNT = 6
@@ -117,6 +121,7 @@ DEFAULT_FOLLOW_LAG_MS = 120
 DEFAULT_OPACITY = 1.0
 DEFAULT_INSTRUMENT_METRES = 0.35
 DEFAULT_INSTRUMENT_IDLE = 0.35
+DEFAULT_INSTRUMENT_COLOR = "#EBF0F5"
 DEFAULT_ATTENTION_IN_MS = 150.0
 DEFAULT_ATTENTION_OUT_MS = 250.0
 DEFAULT_ATTENTION_DWELL_MS = 80.0
@@ -312,6 +317,30 @@ def spatial_screen(entry):
     return out
 
 
+def default_instrument_attention():
+    return {
+        "enabled": True,
+        "in_ms": DEFAULT_ATTENTION_IN_MS,
+        "out_ms": DEFAULT_ATTENTION_OUT_MS,
+        "dwell_ms": DEFAULT_ATTENTION_DWELL_MS,
+        "hold_ms": DEFAULT_ATTENTION_HOLD_MS,
+    }
+
+
+def normalize_instrument_color(value, default=DEFAULT_INSTRUMENT_COLOR):
+    """Accept #RRGGBB / RRGGBB; return canonical #RRGGBB or default."""
+    s = str(value or "").strip()
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) != 6:
+        return default
+    try:
+        int(s, 16)
+    except ValueError:
+        return default
+    return "#" + s.upper()
+
+
 def default_clock_instrument():
     return {
         "id": "clock",
@@ -321,14 +350,279 @@ def default_clock_instrument():
         "active_opacity": 1.0,
         "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
         "opacity": 1.0,
-        "attention": {
-            "enabled": True,
-            "in_ms": DEFAULT_ATTENTION_IN_MS,
-            "out_ms": DEFAULT_ATTENTION_OUT_MS,
-            "dwell_ms": DEFAULT_ATTENTION_DWELL_MS,
-            "hold_ms": DEFAULT_ATTENTION_HOLD_MS,
-        },
+        "color": DEFAULT_INSTRUMENT_COLOR,
+        "attention": default_instrument_attention(),
     }
+
+
+def default_battery_instrument():
+    return {
+        "id": "battery",
+        "type": "battery",
+        "enabled": False,
+        "metres": DEFAULT_BATTERY_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "color": DEFAULT_INSTRUMENT_COLOR,
+        "attention": default_instrument_attention(),
+    }
+
+
+def default_storage_instrument():
+    """Internal headset storage (sum of unique device mounts)."""
+    return {
+        "id": "storage",
+        "type": "storage",
+        "enabled": False,
+        "metres": DEFAULT_STORAGE_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "attention": default_instrument_attention(),
+    }
+
+
+def default_sd_instrument():
+    """Removable SD / mmc card storage."""
+    return {
+        "id": "sd",
+        "type": "sd",
+        "enabled": False,
+        "metres": DEFAULT_STORAGE_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "attention": default_instrument_attention(),
+    }
+
+
+def default_date_instrument():
+    """Local calendar date: weekday abbr + day-of-month + month abbr (e.g. TUE 29 SEP)."""
+    return {
+        "id": "date",
+        "type": "date",
+        "enabled": False,
+        "metres": DEFAULT_DATE_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "color": DEFAULT_INSTRUMENT_COLOR,
+        "attention": default_instrument_attention(),
+    }
+
+
+def default_media_instrument():
+    """MPRIS now-playing + prev / play-pause / next (via session/ft-mpris.py)."""
+    return {
+        "id": "media",
+        "type": "media",
+        "enabled": False,
+        "metres": DEFAULT_MEDIA_METRES,
+        "active_opacity": 1.0,
+        "idle_opacity": DEFAULT_INSTRUMENT_IDLE,
+        "opacity": 1.0,
+        "attention": default_instrument_attention(),
+    }
+
+
+def default_instrument(itype):
+    """Defaults for a known instrument type id."""
+    itype = str(itype or "").strip().lower()
+    if itype == "battery":
+        return default_battery_instrument()
+    if itype == "storage":
+        return default_storage_instrument()
+    if itype == "sd":
+        return default_sd_instrument()
+    if itype == "date":
+        return default_date_instrument()
+    if itype == "media":
+        return default_media_instrument()
+    return default_clock_instrument()
+
+
+def format_date_instrument(tm_wday, tm_mday, tm_mon):
+    """Render strings for the Date instrument (same labels as ft-screens).
+
+    Returns (weekday3, day_of_month_int, month3). Weekday: 0=Sun … 6=Sat.
+    Month: 0=Jan … 11=Dec. Invalid inputs clamp / fall back safely.
+    """
+    days = ("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+    months = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+              "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+    try:
+        wday = int(tm_wday)
+    except (TypeError, ValueError):
+        wday = 0
+    try:
+        mday = int(tm_mday)
+    except (TypeError, ValueError):
+        mday = 1
+    try:
+        mon = int(tm_mon)
+    except (TypeError, ValueError):
+        mon = 0
+    wday = max(0, min(6, wday))
+    mon = max(0, min(11, mon))
+    mday = max(1, min(31, mday))
+    return days[wday], mday, months[mon]
+
+
+def normalize_block_source(source):
+    """Strip findmnt subvol suffixes: /dev/sda8[/.steamos/…] → /dev/sda8."""
+    if not source or not isinstance(source, str):
+        return None
+    s = source.strip()
+    if not s.startswith("/dev/"):
+        return None
+    return s.split("[", 1)[0]
+
+
+def classify_block_device(devpath):
+    """Classify a /dev node as 'device', 'sd', or None (ignore).
+
+    Steam Frame: internal SSD is sdX partitions; SD card is mmcblk*.
+    Skip loop/zram/nbd/ram and other ephemeral devices.
+    """
+    base = os.path.basename(normalize_block_source(devpath) or "")
+    if not base:
+        return None
+    if base.startswith(("loop", "zram", "nbd", "ram", "dm-")):
+        return None
+    if base.startswith("mmcblk") or base.startswith("mmc"):
+        return "sd"
+    if base.startswith(("sd", "nvme", "vd", "xvd", "hd")):
+        return "device"
+    return None
+
+
+def storage_usage_pct(total_bytes, used_bytes):
+    """0–100 fill percent; missing/zero total → 0."""
+    try:
+        total = int(total_bytes)
+        used = int(used_bytes)
+    except (TypeError, ValueError):
+        return 0
+    if total <= 0:
+        return 0
+    used = max(0, min(used, total))
+    return int(min(100, (used * 100 + total - 1) // total))  # ceil
+
+
+def sum_storage_pools(mounts, sd_block_bytes=None):
+    """Sum unique block filesystems into device + SD pools.
+
+    mounts: iterable of (source, target, fstype, total_bytes, used_bytes)
+            — one row per mount; bind mounts of the same /dev node must share
+            the same source basename (subvol suffixes are stripped).
+    sd_block_bytes: optional {devname: size_bytes} from sysfs for unmounted SD
+            cards (e.g. {'mmcblk0': 511868665856}).
+
+    Returns dict:
+      {'device': {'present', 'total', 'used', 'pct'},
+       'sd':     {'present', 'total', 'used', 'pct', 'mounted'}}
+    Duplicate /dev nodes count once (SteamOS splits one disk across /, /var, /home…).
+    """
+    pools = {
+        "device": {"present": False, "total": 0, "used": 0, "pct": 0},
+        "sd": {"present": False, "total": 0, "used": 0, "pct": 0, "mounted": False},
+    }
+    seen = set()
+    skip_fs = {"tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs", "cgroup",
+               "cgroup2", "devpts", "securityfs", "pstore", "bpf", "tracefs", "debugfs",
+               "fusectl", "configfs", "autofs", "fuse.portal", "functionfs", "binfmt_misc",
+               "hugetlbfs", "mqueue", "swap"}
+    for row in mounts or ():
+        if len(row) < 5:
+            continue
+        source, _target, fstype, total, used = row[0], row[1], row[2], row[3], row[4]
+        if (fstype or "").lower() in skip_fs:
+            continue
+        dev = normalize_block_source(source)
+        if not dev or dev in seen:
+            continue
+        kind = classify_block_device(dev)
+        if not kind:
+            continue
+        try:
+            total_i, used_i = int(total), int(used)
+        except (TypeError, ValueError):
+            continue
+        if total_i <= 0:
+            continue
+        seen.add(dev)
+        pools[kind]["present"] = True
+        pools[kind]["total"] += total_i
+        pools[kind]["used"] += max(0, min(used_i, total_i))
+        if kind == "sd":
+            pools[kind]["mounted"] = True
+    # Unmounted SD: still show capacity from sysfs so the gauge isn't blank.
+    for name, size in (sd_block_bytes or {}).items():
+        kind = classify_block_device(f"/dev/{os.path.basename(str(name))}")
+        if kind != "sd":
+            continue
+        try:
+            size_i = int(size)
+        except (TypeError, ValueError):
+            continue
+        if size_i <= 0:
+            continue
+        if not pools["sd"]["present"]:
+            pools["sd"]["present"] = True
+            pools["sd"]["total"] = size_i
+            pools["sd"]["used"] = 0
+            pools["sd"]["mounted"] = False
+    for kind in ("device", "sd"):
+        pools[kind]["pct"] = storage_usage_pct(pools[kind]["total"], pools[kind]["used"])
+    return pools
+
+
+def battery_filled_segments(pct):
+    """Map headset charge percent to 0–5 filled segments (same bands as ft-screens).
+
+    0% → 0; 1–20 → 1; 21–40 → 2; 41–60 → 3; 61–80 → 4; 81–100 → 5.
+    Values outside 0–100 clamp. Malformed input → 0.
+    """
+    try:
+        pct = int(pct)
+    except (TypeError, ValueError):
+        return 0
+    pct = max(0, min(100, pct))
+    if pct <= 0:
+        return 0
+    return min(5, (pct + 19) // 20)
+
+
+def parse_battery_capacity_text(text):
+    """Parse a sysfs capacity file body → int 0–100, or None if unusable."""
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s:
+        return None
+    try:
+        v = int(s.split()[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return max(0, min(100, v))
+
+
+def pick_headset_battery_capacity_path(entries):
+    """Choose sysfs capacity path from [(name, type, has_capacity), ...].
+
+    Prefers max1720x* Battery nodes (Steam Frame fuel gauge); else first Battery with capacity.
+    """
+    fallback = None
+    for name, typ, has_cap in entries:
+        if typ != "Battery" or not has_cap:
+            continue
+        path = f"/sys/class/power_supply/{name}/capacity"
+        if str(name).startswith("max1720x"):
+            return path
+        if fallback is None:
+            fallback = path
+    return fallback
 
 
 def normalize_instrument(entry, warn=True):
@@ -343,14 +637,22 @@ def normalize_instrument(entry, warn=True):
             log(f"warning: ignoring unknown instrument type {itype!r}", file=sys.stderr)
         return None
     iid = str(entry.get("id") or itype).strip() or itype
-    out = default_clock_instrument() if itype == "clock" else {"id": iid, "type": itype}
+    out = default_instrument(itype)
     out["id"] = iid
     out["type"] = itype
     out["enabled"] = bool(entry.get("enabled", False))
+    if itype == "battery":
+        default_m = DEFAULT_BATTERY_METRES
+    elif itype in ("storage", "sd"):
+        default_m = DEFAULT_STORAGE_METRES
+    elif itype == "date":
+        default_m = DEFAULT_DATE_METRES
+    else:
+        default_m = DEFAULT_INSTRUMENT_METRES
     try:
-        out["metres"] = max(0.08, min(2.0, float(entry.get("metres", DEFAULT_INSTRUMENT_METRES))))
+        out["metres"] = max(0.08, min(2.0, float(entry.get("metres", default_m))))
     except (TypeError, ValueError):
-        out["metres"] = DEFAULT_INSTRUMENT_METRES
+        out["metres"] = default_m
     active, idle = screen_opacities(entry if ("active_opacity" in entry or "idle_opacity" in entry
                                              or "opacity" in entry) else {
         "active_opacity": out["active_opacity"], "idle_opacity": out["idle_opacity"]})
@@ -372,6 +674,10 @@ def normalize_instrument(entry, warn=True):
     out["active_opacity"] = round(active, 3)
     out["idle_opacity"] = round(idle, 3)
     out["opacity"] = round(active, 3)
+    if itype in ("clock", "battery", "date"):
+        out["color"] = normalize_instrument_color(entry.get("color"), DEFAULT_INSTRUMENT_COLOR)
+    else:
+        out.pop("color", None)
     for k in ("pos", "face", "roll"):
         if k in entry:
             out[k] = entry[k]
@@ -422,6 +728,8 @@ def spatial_instrument(entry):
         "active_opacity": round(float(inst["active_opacity"]), 3),
         "idle_opacity": round(float(inst["idle_opacity"]), 3),
     }
+    if inst["type"] in ("clock", "battery", "date"):
+        out["color"] = normalize_instrument_color(inst.get("color"), DEFAULT_INSTRUMENT_COLOR)
     for k in ("pos", "face", "roll"):
         if k in inst:
             out[k] = inst[k]
@@ -1013,6 +1321,8 @@ def apply_instruments(sock, layout=None):
             sock.ask(f"instrument width {iid} {float(inst['metres']):.4f}")
             active, idle = inst["active_opacity"], inst["idle_opacity"]
             sock.ask(f"instrument opacity {iid} {active:.3f} {idle:.3f}")
+            if inst["type"] in ("clock", "battery", "date"):
+                sock.ask(f"instrument color {iid} {normalize_instrument_color(inst.get('color'))}")
             att = inst.get("attention") or {}
             if att.get("enabled"):
                 sock.ask(f"instrument attention {iid} on")
@@ -1142,13 +1452,13 @@ def parse_instrument_get(reply):
 def instrument_cmd(argv):
     """ft-layout instrument list|state|enable|disable|recenter [id] [--json]."""
     if len(argv) < 3:
-        print("usage: ft-layout instrument list|state|enable|disable|recenter [clock] [--json]",
-              file=sys.stderr)
+        print("usage: ft-layout instrument list|state|enable|disable|recenter "
+              "[clock|battery|storage|sd|date] [--json]", file=sys.stderr)
         return 2
     sub = argv[2]
     as_json = "--json" in argv
     args = [a for a in argv[3:] if a != "--json"]
-    iid = args[0] if args else "clock"
+    iid = (args[0] if args else "clock").strip().lower()
 
     if sub in ("list", "state"):
         layout = load_layout()
@@ -1167,10 +1477,14 @@ def instrument_cmd(argv):
         return 0
 
     if sub in ("enable", "disable", "recenter"):
+        if iid not in KNOWN_INSTRUMENT_TYPES:
+            print(f"unknown instrument {iid!r} (known: {', '.join(KNOWN_INSTRUMENT_TYPES)})",
+                  file=sys.stderr)
+            return 2
         layout = load_layout()
-        inst = instrument_entry(layout, iid) or default_clock_instrument()
-        if inst["id"] != iid:
-            inst["id"] = iid
+        inst = instrument_entry(layout, iid) or default_instrument(iid)
+        inst["id"] = iid
+        inst["type"] = iid
         if sub == "enable":
             inst["enabled"] = True
         elif sub == "disable":
@@ -1653,12 +1967,16 @@ def screen_state_json():
 
 
 def gaze_cmd(argv):
-    """ft-layout gaze state|debug on|off|fallback head|fallback off — proxy to ft-screens."""
+    """ft-layout gaze … — proxy to ft-screens attention / GazeTarget state."""
     if len(argv) < 3:
-        print("usage: ft-layout gaze state|debug on|off|fallback head|fallback off", file=sys.stderr)
+        print("usage: ft-layout gaze state|debug on|off|fallback head|off",
+              file=sys.stderr)
+        return 2
+    if argv[2] == "pointer":
+        print("error: fork gaze-pointer removed; use upstream gaze/ (POINTER_GAZE / ft-gazectl)",
+              file=sys.stderr)
         return 2
     reply = screens_socket().ask("gaze " + " ".join(argv[2:]))
-    # Machine-readable on stdout for `state`; debug toggles go to log (stderr-ish via log).
     if argv[2] == "state":
         print(reply)
     else:

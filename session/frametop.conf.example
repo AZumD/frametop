@@ -33,3 +33,6 @@ META_DASHBOARD=0   # 1 = a Meta tap on a pass-through keyboard toggles the Steam
 SHARE_KEYS=0       # 1 = keys of keyboards grabbed for the desktop also go to @frametop_keys, for hotkey tools (any local process can listen)
 LAYOUT_GRAB_OFFSET=0.075   # arranging screens: where the floating window's grab bar is, in metres below the screen
 LAYOUT_SLIDE_SPEED=0.5     # arranging screens: how fast the invisible controller slides a grabbed screen (m/s)
+
+# Gaze-controlled desktop pointer (ft-screens + input-relay headset button).
+                                 # 0 = observe-only (SteamVR also sees KEY_SELECT → head laser)

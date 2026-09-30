@@ -6,7 +6,7 @@ Profile switching must stay on one path:
 
 - VR chrome slot circles → `ft-layout action profile.slot.N`
 - Hide/show screens → `screens.toggle`
-- Spatial Instruments → Display Settings tab; Clock is the first type (`ft-layout instrument …`)
+- Spatial Instruments → Display Settings tab; Clock, Date, Battery, Device storage, SD, Media (`ft-layout instrument …`)
 - SteamVR digital keyboard → removed for now (chrome "K" / ShowKeyboard path withdrawn)
 - Aurora / passthrough → not exposed (no public OpenVR API for overlay apps)
 - Input Settings button maps → same aliases (`profile_slot_N`, `profile_next`, …)
@@ -31,11 +31,15 @@ Head fallback is **debug only**. Production attention fading requires valid eye 
 
 ## Gaze targeting
 
-`GazeTarget` picks the closest hit along the gaze ray: screen surface, chrome controls, profile slots. Gaze focuses and drives optional attention fade. It does not click, and it does not reveal the bottom chrome (laser / 3D mouse only for now).
+`GazeTarget` picks the closest hit along the gaze ray among screen surfaces, chrome controls, and profile slots. Spatial Instruments are only considered when that ray misses every screen/chrome — otherwise a nearby clock/battery/storage steals the hit and pulses display attention. Gaze focuses and drives optional attention fade. It does not reveal the bottom chrome (laser / 3D mouse only for now).
 
-Future pinch / finger tracking should call conceptual helpers (`activateCurrentGazeTarget`, gaze-drag begin/update/end) against the current target — chrome → semantic Frametop action; screen surface → desktop pointer at mapped UV/pixels.
+OpenVR eye samples often drop for tens of milliseconds. ft-screens keeps the last valid ray for ~450 ms (`held` in `gaze state` / debug) so attention stay put through those gaps.
 
-Screen UV → desktop pixel mapping is exposed in `gaze state` when the target is a screen (`u`, `v`, `pixel=` = surface-local logical; `buffer_pixel=` = DMA-BUF). Laser clicks and future gaze+pinch share `screens/coords.h`. Do not move the system mouse from gaze alone yet.
+### Desktop gaze pointer (upstream)
+
+Pointer-follow-gaze for the whole desktop lives in upstream `gaze/` (`ft-gazed`, `ft-gazectl`, probe). Enable with `POINTER_GAZE=1` / Input Settings → Gaze, not the removed fork `GAZE_POINTER_*` / `ft-layout gaze pointer` path. Screen attention opacity still uses ft-screens' own OpenVR eye samples (`ft-layout gaze state`).
+
+See `gaze/README.md`.
 
 ## Opacity / attention
 

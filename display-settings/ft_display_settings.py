@@ -36,6 +36,7 @@ import ft_layout  # noqa: E402  (pure Python: the same geometry ft-layout uses)
 FT_LAYOUT = os.path.join(LAYOUT_DIR, "ft-layout")
 DESKTOPS = os.path.join(HERE, "..", "desktops.sh")
 CONF_PATH = ft_layout.CONF_PATH
+FT_SCREENS = "\0ft_screens"
 # gamescope's VR backend uploads a texture the size of a screen at start, through a
 # 1920x1080x4-byte buffer: more pixels than 1920x1080 abort it (see the design notes).
 MAX_PIXELS = 1920 * 1080
@@ -45,7 +46,6 @@ SCREEN_RESOLUTIONS = [(1920, 1080, ""), (2560, 1440, ""), (3840, 2160, "4K"), (2
                       (3440, 1440, "ultrawide"), (5120, 1440, "super ultrawide"), (1920, 1200, "16:10"),
                       (2560, 1600, "16:10"), (1080, 1920, "portrait"), (1440, 2560, "portrait"),
                       (2160, 3840, "portrait 4K")]
-FT_SCREENS = "\0ft_screens"
 SCALES = [0.75, 1.0, 1.25, 4 / 3, 1.5, 1.75, 2.0]
 ROTATIONS = [("normal", "Landscape"), ("left", "Portrait"), ("right", "Portrait (flipped)")]
 
@@ -239,20 +239,54 @@ class Backend(QObject):
             "current_slot": current_slot,
         }
 
-    @Property("QVariantMap", notify=changed)
-    def clockInstrument(self):
-        """Spatial Instruments — Clock card."""
+    def _instrument_card(self, iid):
         layout = ft_layout.load_layout()
-        inst = ft_layout.instrument_entry(layout, "clock") or ft_layout.default_clock_instrument()
+        inst = ft_layout.instrument_entry(layout, iid) or ft_layout.default_instrument(iid)
         att = inst.get("attention") or {}
+        default_m = (ft_layout.DEFAULT_BATTERY_METRES if iid == "battery"
+                     else ft_layout.DEFAULT_STORAGE_METRES if iid in ("storage", "sd")
+                     else ft_layout.DEFAULT_DATE_METRES if iid == "date"
+                     else ft_layout.DEFAULT_MEDIA_METRES if iid == "media"
+                     else ft_layout.DEFAULT_INSTRUMENT_METRES)
         return {
             "enabled": bool(inst.get("enabled")),
             "anchor": ft_layout.pin_anchor(inst.get("pin")) or "world",
-            "metres": float(inst.get("metres", ft_layout.DEFAULT_INSTRUMENT_METRES)),
+            "metres": float(inst.get("metres", default_m)),
             "activeOpacity": float(inst.get("active_opacity", 1.0)),
             "idleOpacity": float(inst.get("idle_opacity", ft_layout.DEFAULT_INSTRUMENT_IDLE)),
             "attentionEnabled": bool(att.get("enabled", True)),
+            "color": ft_layout.normalize_instrument_color(inst.get("color")),
         }
+
+    @Property("QVariantMap", notify=changed)
+    def clockInstrument(self):
+        """Spatial Instruments — Clock card."""
+        return self._instrument_card("clock")
+
+    @Property("QVariantMap", notify=changed)
+    def dateInstrument(self):
+        """Spatial Instruments — Date card (weekday + day + month)."""
+        return self._instrument_card("date")
+
+    @Property("QVariantMap", notify=changed)
+    def batteryInstrument(self):
+        """Spatial Instruments — Battery card (Steam Frame headset)."""
+        return self._instrument_card("battery")
+
+    @Property("QVariantMap", notify=changed)
+    def storageInstrument(self):
+        """Spatial Instruments — internal device storage (summed mounts)."""
+        return self._instrument_card("storage")
+
+    @Property("QVariantMap", notify=changed)
+    def sdInstrument(self):
+        """Spatial Instruments — SD / mmc card storage."""
+        return self._instrument_card("sd")
+
+    @Property("QVariantMap", notify=changed)
+    def mediaInstrument(self):
+        """Spatial Instruments — Media (MPRIS now-playing + transport)."""
+        return self._instrument_card("media")
 
     @Property("QVariantList", notify=changed)
     def plan(self):
@@ -551,23 +585,36 @@ class Backend(QObject):
         if not (reply and reply.startswith("ok")):
             self.message.emit(f"Couldn't unpin: {reply or 'the desktop is not running'}", True)
 
-    def _edit_clock(self, mutate):
+    def _edit_instrument(self, iid, mutate):
         layout = ft_layout.load_layout()
-        inst = ft_layout.instrument_entry(layout, "clock") or ft_layout.default_clock_instrument()
+        inst = ft_layout.instrument_entry(layout, iid) or ft_layout.default_instrument(iid)
         mutate(inst)
         layout = ft_layout.upsert_instrument(layout, inst)
         ft_layout.save_layout(layout)
         self.changed.emit()
         return inst
 
-    @Slot(bool)
-    def setClockEnabled(self, enabled):
-        self._edit_clock(lambda i: i.__setitem__("enabled", bool(enabled)))
-        if self._running:
-            self._run("Clock", "instrument", "enable" if enabled else "disable", "clock")
+    def _edit_clock(self, mutate):
+        return self._edit_instrument("clock", mutate)
 
-    @Slot(str)
-    def setClockAnchor(self, mode):
+    def _edit_date(self, mutate):
+        return self._edit_instrument("date", mutate)
+
+    def _edit_battery(self, mutate):
+        return self._edit_instrument("battery", mutate)
+
+    def _edit_storage(self, mutate):
+        return self._edit_instrument("storage", mutate)
+
+    def _edit_sd(self, mutate):
+        return self._edit_instrument("sd", mutate)
+
+    def _set_instrument_enabled(self, iid, label, enabled):
+        self._edit_instrument(iid, lambda i: i.__setitem__("enabled", bool(enabled)))
+        if self._running:
+            self._run(label, "instrument", "enable" if enabled else "disable", iid)
+
+    def _set_instrument_anchor(self, iid, mode):
         mode = ft_layout.normalize_anchor(mode) or "world"
         if mode not in ft_layout.INSTRUMENT_ANCHORS:
             mode = "world"
@@ -579,63 +626,244 @@ class Backend(QObject):
                 rel = (inst.get("pin") or {}).get("rel") or [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
                 inst["pin"] = ft_layout.make_pin(mode, rel)
 
-        self._edit_clock(edit)
+        self._edit_instrument(iid, edit)
         if self._running:
             if mode == "world":
-                self._ask_screens("instrument unpin clock")
+                self._ask_screens(f"instrument unpin {iid}")
             else:
-                self._ask_screens(f"instrument pin clock {mode}")
+                self._ask_screens(f"instrument pin {iid} {mode}")
 
-    @Slot(float)
-    def setClockMetres(self, metres):
+    def _set_instrument_metres(self, iid, metres):
         metres = max(0.08, min(2.0, float(metres)))
-        self._edit_clock(lambda i: i.__setitem__("metres", metres))
+        self._edit_instrument(iid, lambda i: i.__setitem__("metres", metres))
         if self._running:
-            self._ask_screens(f"instrument width clock {metres:.4f}")
+            self._ask_screens(f"instrument width {iid} {metres:.4f}")
 
-    @Slot(float)
-    def setClockActiveOpacity(self, value):
+    def _set_instrument_active_opacity(self, iid, value):
         value = max(0.0, min(1.0, float(value)))
 
         def edit(inst):
             inst["active_opacity"] = value
             inst["opacity"] = value
 
-        inst = self._edit_clock(edit)
+        inst = self._edit_instrument(iid, edit)
         if self._running:
             self._ask_screens(
-                f"instrument opacity clock {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
+                f"instrument opacity {iid} {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
 
-    @Slot(float)
-    def setClockIdleOpacity(self, value):
+    def _set_instrument_idle_opacity(self, iid, value):
         value = max(0.0, min(1.0, float(value)))
 
         def edit(inst):
             inst["idle_opacity"] = value
 
-        inst = self._edit_clock(edit)
+        inst = self._edit_instrument(iid, edit)
         if self._running:
             self._ask_screens(
-                f"instrument opacity clock {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
+                f"instrument opacity {iid} {inst['active_opacity']:.3f} {inst['idle_opacity']:.3f}")
 
-    @Slot(bool)
-    def setClockAttention(self, enabled):
+    def _set_instrument_attention(self, iid, enabled):
         def edit(inst):
             att = dict(inst.get("attention") or ft_layout.screen_attention({}))
             att["enabled"] = bool(enabled)
             inst["attention"] = att
 
-        self._edit_clock(edit)
+        self._edit_instrument(iid, edit)
         if self._running:
-            self._ask_screens(f"instrument attention clock {'on' if enabled else 'off'}")
+            self._ask_screens(f"instrument attention {iid} {'on' if enabled else 'off'}")
+
+    def _set_instrument_color(self, iid, color):
+        color = ft_layout.normalize_instrument_color(color)
+        self._edit_instrument(iid, lambda i: i.__setitem__("color", color))
+        if self._running:
+            self._ask_screens(f"instrument color {iid} {color}")
+
+    def _recenter_instrument(self, iid, label):
+        self._edit_instrument(iid, lambda i: i.__setitem__("enabled", True))
+        if self._running:
+            self._run(label, "instrument", "recenter", iid)
+        else:
+            self.message.emit(f"Desktop not running — enable {label} when Frametop is up", False)
+
+    @Slot(bool)
+    def setClockEnabled(self, enabled):
+        self._set_instrument_enabled("clock", "Clock", enabled)
+
+    @Slot(str)
+    def setClockAnchor(self, mode):
+        self._set_instrument_anchor("clock", mode)
+
+    @Slot(float)
+    def setClockMetres(self, metres):
+        self._set_instrument_metres("clock", metres)
+
+    @Slot(float)
+    def setClockActiveOpacity(self, value):
+        self._set_instrument_active_opacity("clock", value)
+
+    @Slot(float)
+    def setClockIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("clock", value)
+
+    @Slot(bool)
+    def setClockAttention(self, enabled):
+        self._set_instrument_attention("clock", enabled)
+
+    @Slot(str)
+    def setClockColor(self, color):
+        self._set_instrument_color("clock", color)
 
     @Slot()
     def recenterClock(self):
-        self._edit_clock(lambda i: i.__setitem__("enabled", True))
-        if self._running:
-            self._run("Place clock", "instrument", "recenter", "clock")
-        else:
-            self.message.emit("Desktop not running — enable Clock when Frametop is up", False)
+        self._recenter_instrument("clock", "Clock")
+
+    @Slot(bool)
+    def setDateEnabled(self, enabled):
+        self._set_instrument_enabled("date", "Date", enabled)
+
+    @Slot(str)
+    def setDateAnchor(self, mode):
+        self._set_instrument_anchor("date", mode)
+
+    @Slot(float)
+    def setDateMetres(self, metres):
+        self._set_instrument_metres("date", metres)
+
+    @Slot(float)
+    def setDateActiveOpacity(self, value):
+        self._set_instrument_active_opacity("date", value)
+
+    @Slot(float)
+    def setDateIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("date", value)
+
+    @Slot(bool)
+    def setDateAttention(self, enabled):
+        self._set_instrument_attention("date", enabled)
+
+    @Slot(str)
+    def setDateColor(self, color):
+        self._set_instrument_color("date", color)
+
+    @Slot()
+    def recenterDate(self):
+        self._recenter_instrument("date", "Date")
+
+    @Slot(bool)
+    def setBatteryEnabled(self, enabled):
+        self._set_instrument_enabled("battery", "Battery", enabled)
+
+    @Slot(str)
+    def setBatteryAnchor(self, mode):
+        self._set_instrument_anchor("battery", mode)
+
+    @Slot(float)
+    def setBatteryMetres(self, metres):
+        self._set_instrument_metres("battery", metres)
+
+    @Slot(float)
+    def setBatteryActiveOpacity(self, value):
+        self._set_instrument_active_opacity("battery", value)
+
+    @Slot(float)
+    def setBatteryIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("battery", value)
+
+    @Slot(bool)
+    def setBatteryAttention(self, enabled):
+        self._set_instrument_attention("battery", enabled)
+
+    @Slot(str)
+    def setBatteryColor(self, color):
+        self._set_instrument_color("battery", color)
+
+    @Slot()
+    def recenterBattery(self):
+        self._recenter_instrument("battery", "Battery")
+
+    @Slot(bool)
+    def setStorageEnabled(self, enabled):
+        self._set_instrument_enabled("storage", "Storage", enabled)
+
+    @Slot(str)
+    def setStorageAnchor(self, mode):
+        self._set_instrument_anchor("storage", mode)
+
+    @Slot(float)
+    def setStorageMetres(self, metres):
+        self._set_instrument_metres("storage", metres)
+
+    @Slot(float)
+    def setStorageActiveOpacity(self, value):
+        self._set_instrument_active_opacity("storage", value)
+
+    @Slot(float)
+    def setStorageIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("storage", value)
+
+    @Slot(bool)
+    def setStorageAttention(self, enabled):
+        self._set_instrument_attention("storage", enabled)
+
+    @Slot()
+    def recenterStorage(self):
+        self._recenter_instrument("storage", "Storage")
+
+    @Slot(bool)
+    def setSdEnabled(self, enabled):
+        self._set_instrument_enabled("sd", "SD card", enabled)
+
+    @Slot(str)
+    def setSdAnchor(self, mode):
+        self._set_instrument_anchor("sd", mode)
+
+    @Slot(float)
+    def setSdMetres(self, metres):
+        self._set_instrument_metres("sd", metres)
+
+    @Slot(float)
+    def setSdActiveOpacity(self, value):
+        self._set_instrument_active_opacity("sd", value)
+
+    @Slot(float)
+    def setSdIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("sd", value)
+
+    @Slot(bool)
+    def setSdAttention(self, enabled):
+        self._set_instrument_attention("sd", enabled)
+
+    @Slot()
+    def recenterSd(self):
+        self._recenter_instrument("sd", "SD card")
+
+    @Slot(bool)
+    def setMediaEnabled(self, enabled):
+        self._set_instrument_enabled("media", "Media", enabled)
+
+    @Slot(str)
+    def setMediaAnchor(self, mode):
+        self._set_instrument_anchor("media", mode)
+
+    @Slot(float)
+    def setMediaMetres(self, metres):
+        self._set_instrument_metres("media", metres)
+
+    @Slot(float)
+    def setMediaActiveOpacity(self, value):
+        self._set_instrument_active_opacity("media", value)
+
+    @Slot(float)
+    def setMediaIdleOpacity(self, value):
+        self._set_instrument_idle_opacity("media", value)
+
+    @Slot(bool)
+    def setMediaAttention(self, enabled):
+        self._set_instrument_attention("media", enabled)
+
+    @Slot()
+    def recenterMedia(self):
+        self._recenter_instrument("media", "Media")
 
     @Slot(str)
     def applyProfile(self, name):
