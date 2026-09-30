@@ -399,7 +399,8 @@ class Backend(QObject):
                     available = True
             card["appAvailable"] = available
             # Also expose whether the id is in the chooser list (UI can recompute live).
-            card["appInChooser"] = available        return card
+            card["appInChooser"] = available
+        return card
 
     @Property("QVariantList", notify=changed)
     def instrumentColorPresets(self):
