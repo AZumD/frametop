@@ -48,7 +48,6 @@
 #include <limits.h>
 #include <spawn.h>
 
-extern char **environ;  // for posix_spawn
 
 #include <algorithm>
 #include <chrono>
@@ -491,26 +490,6 @@ GazeTarget g_gazeTarget;
 Clock::time_point g_lastGaze = Clock::now();
 Clock::time_point g_lastEyeValid{};
 constexpr double kEyeSampleHoldSec = 0.45;  // keep last ray when OpenVR eye samples flicker
-
-// --- Gaze pointer mode (eye → desktop seat mouse; headset button toggles / clicks) ---
-// Filtering: raw UV → One Euro → seat pixels → small stationary deadzone (no UI snapping).
-
-double EnvDouble(const char *name, double def) {
-    const char *v = std::getenv(name);
-    if (!v || !*v) return def;
-    char *end = nullptr;
-    const double x = std::strtod(v, &end);
-    return (end && end != v) ? x : def;
-}
-
-int EnvInt(const char *name, int def) {
-    const char *v = std::getenv(name);
-    if (!v || !*v) return def;
-    char *end = nullptr;
-    const long x = std::strtol(v, &end, 10);
-    return (end && end != v) ? int(x) : def;
-}
-
 
 
 
@@ -1597,44 +1576,6 @@ void UpdateAttention(double dt) {
     }
 }
 
-bool GazePointerSeatFromTarget(const GazeTarget &t, int *screenOut, double *sx, double *sy) {
-    if (t.kind != GazeKind::Screen || t.screen < 0) return false;
-    auto it = g_screens.find(t.screen);
-    if (it == g_screens.end()) return false;
-    const Screen &gs = it->second;
-    if (!gs.visible || gs.width <= 0 || gs.height <= 0) return false;
-    const int surf_w = gs.surfaceWidth > 0 ? gs.surfaceWidth : gs.width;
-    const int surf_h = gs.surfaceHeight > 0 ? gs.surfaceHeight : gs.height;
-    ft_uv_to_seat(t.u, t.v, gs.width, gs.height, surf_w, surf_h, gs.outputScale, sx, sy);
-    *screenOut = t.screen;
-    return true;
-}
-
-std::vector<uint8_t> GazeReticleTexture(int size) {
-    // Soft cyan reticle (distinct from the 3D-mouse white dot): filled core + faint ring.
-    std::vector<uint8_t> px(size_t(size) * size * 4, 0);
-    const double c = (size - 1) / 2.0, rCore = size * 0.18, rRing = size * 0.38, rOuter = size * 0.48;
-    for (int y = 0; y < size; ++y)
-        for (int x = 0; x < size; ++x) {
-            const double d = std::hypot(x - c, y - c);
-            uint8_t *p = &px[(size_t(y) * size + x) * 4];
-            double a = 0;
-            if (d <= rCore)
-                a = 1.0;
-            else if (d <= rRing)
-                a = std::clamp(1.0 - (d - rCore) / (rRing - rCore), 0.0, 1.0) * 0.35;
-            else if (d <= rOuter)
-                a = std::clamp(1.0 - (d - rRing) / (rOuter - rRing), 0.0, 1.0) * 0.85;
-            if (a <= 0) continue;
-            p[0] = 160;
-            p[1] = 220;
-            p[2] = 255;
-            p[3] = uint8_t(a * 230);
-        }
-    return px;
-}
-
-
 void SetScreenOpacity(Screen &s, float active, float idle) {
     s.activeOpacity = std::clamp(active, 0.f, 1.f);
     s.idleOpacity = std::clamp(idle, 0.f, 1.f);
@@ -1836,7 +1777,6 @@ vr::TrackedDeviceIndex_t WristOnLaser(const Screen &s, const Mat &d, const Mat &
 }
 
 void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
-    GazePointerYieldToController(dev, "controller-drag");
     Mat d, p;
     if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) return;
     s.pinTarget = kNone;
@@ -3645,8 +3585,6 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     const double dt = std::chrono::duration<double>(now - last).count();
     last = now;
     const double step = (dt > 0 && dt < 0.25) ? dt : 0.011;
-    g_eventHandle = handle;
-    g_eventData = data;
     UpdateFollow();
     UpdateGaze(step);
     UpdateAttention(step);
@@ -3660,9 +3598,6 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                 case vr::VREvent_MouseMove:
                 case vr::VREvent_MouseButtonDown:
                 case vr::VREvent_MouseButtonUp: {
-                    // Controller laser takes over from gaze-pointer (avoids dual cursors /
-                    // a stuck Valve arrow after gaze mode).
-                    GazePointerYieldToController(ev.trackedDeviceIndex, "controller-laser");
                     // OpenVR reports buffer pixels (bottom-left); convert for the Wayland
                     // seat (coords.h) — see ft_buffer_to_seat for KWin scale vs wl dpr.
                     const double buf_x = ev.data.mouse.x;
@@ -3785,8 +3720,6 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateGuides();
     UpdateInstrumentAttention(step);
     TickInstruments(step);
-    g_eventHandle = nullptr;
-    g_eventData = nullptr;
 }
 
 // Future pinch / finger tracking should call these (gaze selects; pinch confirms). Not wired yet.
