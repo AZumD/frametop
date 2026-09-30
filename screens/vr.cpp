@@ -1635,6 +1635,60 @@ std::vector<uint8_t> GazeReticleTexture(int size) {
 }
 
 
+void SetScreenOpacity(Screen &s, float active, float idle) {
+    s.activeOpacity = std::clamp(active, 0.f, 1.f);
+    s.idleOpacity = std::clamp(idle, 0.f, 1.f);
+    if (!s.attentionEnabled || (!g_eyeAvailable && !g_gazeFallbackHead))
+        s.attentionResolved = s.activeOpacity;
+    else
+        s.attentionResolved = std::clamp(s.attentionResolved, std::min(s.idleOpacity, s.activeOpacity),
+                                         std::max(s.idleOpacity, s.activeOpacity));
+    PlaceChrome(s);
+    ApplyAlpha(s);
+}
+
+
+void UpdateVisibility() {
+    const bool shared = ModeVisible();
+    Mat head;
+    const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
+    for (auto &[i, s] : g_screens) {
+        bool visible = s.shown && (shared || s.drag != Drag::None);
+        float visFade = 1;
+        Mat p;
+        // Wrist fade is only for controller-pinned screens.
+        if (visible && s.pinned != kNone && IsHandController(s.pinned) && s.drag == Drag::None && haveHead &&
+            ScreenPose(s, &p)) {
+            const double a = FacingAngle(p, head);
+            visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
+            visible = visFade > 0.02f;
+        }
+        // Keep chrome interactable even when the surface is fully transparent.
+        if (!visible && s.shown && s.controls > 0.02f) visible = true, visFade = 0.f;
+        SetVisible(s, visible, visFade);
+    }
+}
+
+
+// Controllers' lasers on the screens (see the top): the flag follows the mode and whether a
+// VR game runs.
+void UpdateLasers() {
+    const bool want = g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_gameRunning);
+    for (auto &[i, s] : g_screens) {
+        if (s.lasers == want) continue;
+        s.lasers = want;
+        vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, want);
+    }
+    // Media transport + instrument move bars use the same controller-laser policy.
+    for (auto &inst : g_instruments) {
+        if (inst.overlay != vr::k_ulOverlayHandleInvalid && inst.type == InstrumentType::Media)
+            vr::VROverlay()->SetOverlayFlag(inst.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible,
+                                            want);
+        if (inst.bar != vr::k_ulOverlayHandleInvalid)
+            vr::VROverlay()->SetOverlayFlag(inst.bar, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, want);
+    }
+}
+
 // The controls are invisible until a laser is on one of them (SteamVR's hover event) or
 // passes very close (within `reach`, about 1.5 times a button's size); they stay
 // kControlsLinger ticks after it leaves, and while in use.
