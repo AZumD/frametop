@@ -102,6 +102,8 @@ KEY_A = 30
 REL_X, REL_Y, REL_WHEEL, REL_MAX = 0x00, 0x01, 0x08, 0x0F
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA = 0x110, 0x111, 0x112, 0x113, 0x114
 KEY_LEFTMETA, KEY_RIGHTMETA = 125, 126
+# Left-hand code for either side: Ctrl, Shift, Alt, Meta (EVIOCGKEY reconcile / startup sanitation).
+MODIFIERS = {29: 29, 97: 29, 42: 42, 54: 42, 56: 56, 100: 56, 125: 125, 126: 125}
 KEY_VOLUMEDOWN, KEY_VOLUMEUP = 114, 115
 # Volume keys are remapped to KEY_MACRO29 and KEY_MACRO30: above 255, so X11 can't
 # carry them, and bound to nothing in the default keymap.
@@ -643,13 +645,16 @@ def main():
             state["pointer"].action(action, value, now)
 
 
+    screens_down = set()  # keys the desktop was told went down and not yet up (see reconcile_desktop_keys)
+
     def to_screens(code, value):
         """A key for the desktop screens (ft-screens decides whether it types)."""
         if value in (0, 1) and code < BTN_MISC:
             try:
                 screens_sock.sendto(f"key {code} {value}".encode(), SCREENS)
             except OSError:
-                pass  # ft-screens not running
+                return  # ft-screens not running
+            (screens_down.add if value else screens_down.discard)(code)
     nodes = {}  # fd -> Node
     # Nodes already probed (rejected or open): path -> inode. A device that disconnects and
     # reconnects between two scans often gets the same event numbers back, so the path alone
@@ -731,6 +736,32 @@ def main():
         mouse.sync()
         keyboard.sync()
 
+    def physically_down():
+        """The keys down on every device read here, as the kernel has them (EVIOCGKEY)."""
+        down = set()
+        for node in nodes.values():
+            buf = bytearray((KEY_MAX + 8) // 8)
+            try:
+                fcntl.ioctl(node.fd, EVIOCGKEY, buf)
+            except OSError:
+                continue
+            down.update(i * 8 + bit for i, b in enumerate(buf) if b for bit in range(8) if b >> bit & 1)
+        return down
+
+    def reconcile_desktop_keys():
+        """A key the desktop has down that no device holds comes up there.
+
+        A key can be left down when its device vanishes with it held (release_held only
+        lets go of it on the relay's own devices / share_key path) or a release goes
+        astray. Once a second, EVIOCGKEY across every open node is the ground truth.
+        """
+        if not screens_down:
+            return
+        down = physically_down()
+        for code in sorted(screens_down - down):
+            to_screens(code, 0)
+            log(f"key {code} released on the desktop: no keyboard holds it")
+
     def keys_down(node):
         buf = bytearray((KEY_MAX + 8) // 8)
         try:
@@ -794,46 +825,54 @@ def main():
                 return
             words = data.decode(errors="replace").split()
             cmd = words[0] if words else ""
-            if cmd == "keyboard":
-                # From ft-screens (unbound, no reply): where typing goes, repeated every second.
-                desktop = len(words) > 1 and words[1] == "desktop"
-                state["desktop_until"] = now + 3.0 if desktop else 0.0
-                continue
-            if cmd == "vrbtn" and len(words) == 3 and words[1] in VR_BUTTONS and words[2] in ("0", "1"):
-                vr_button(words[1], int(words[2]), now)
-                continue
-            if cmd == "vrhello":
-                vr_bind(now)
-                continue
-            if cmd == "gazeawake" and len(words) == 2:
-                if state["pointer"]:
-                    state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
-                continue
-            if not addr:
-                continue  # unbound sender, nowhere to reply
-            if cmd == "devices":
-                reply(addr, {"t": "devices", "pointer_mode": state["pointer"] is not None,
-                             "actions": ACTIONS,
-                             "nodes": [n.describe() for n in nodes.values() if n.candidate]})
-            elif cmd == "watch":
-                seconds = float(words[1]) if len(words) > 1 else 30
-                watchers[addr] = now + min(seconds, 600)
-                reply(addr, {"t": "watching", "seconds": seconds})
-            elif cmd == "reload":
-                load_config()
-                # (ungrab → SteamVR gets KEY_SELECT / head laser again; grab → Frametop owns it).
-                apply_roles()
-                if state["pointer"]:
-                    state["pointer"].send("reload")
-                vr_bind(now)
-                reply(addr, {"t": "reloaded"})
-            elif cmd == "vrcapture":
-                seconds = float(words[1]) if len(words) > 1 else 30
-                state["vr_capture_until"] = now + min(seconds, 120) if seconds > 0 else 0.0
-                vr_bind(now)
-                reply(addr, {"t": "vrcapture", "seconds": seconds})
-            else:
-                reply(addr, {"t": "error", "error": f"unknown command {cmd!r}"})
+            # One malformed datagram must not end the relay: it would drop every grab,
+            # including the volume keys that keep gamescope from aborting. The control
+            # socket is an abstract socket, so any local process can send to it.
+            try:
+                if cmd == "keyboard":
+                    # From ft-screens (unbound, no reply): where typing goes, repeated every second.
+                    desktop = len(words) > 1 and words[1] == "desktop"
+                    state["desktop_until"] = now + 3.0 if desktop else 0.0
+                    continue
+                if cmd == "vrbtn" and len(words) == 3 and words[1] in VR_BUTTONS and words[2] in ("0", "1"):
+                    vr_button(words[1], int(words[2]), now)
+                    continue
+                if cmd == "vrhello":
+                    vr_bind(now)
+                    continue
+                if cmd == "gazeawake" and len(words) == 2:
+                    if state["pointer"]:
+                        state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
+                    continue
+                if not addr:
+                    continue  # unbound sender, nowhere to reply
+                if cmd == "devices":
+                    reply(addr, {"t": "devices", "pointer_mode": state["pointer"] is not None,
+                                 "actions": ACTIONS,
+                                 "nodes": [n.describe() for n in nodes.values() if n.candidate]})
+                elif cmd == "watch":
+                    seconds = float(words[1]) if len(words) > 1 else 30
+                    watchers[addr] = now + min(seconds, 600)
+                    reply(addr, {"t": "watching", "seconds": seconds})
+                elif cmd == "reload":
+                    load_config()
+                    # (ungrab → SteamVR gets KEY_SELECT / head laser again; grab → Frametop owns it).
+                    apply_roles()
+                    if state["pointer"]:
+                        state["pointer"].send("reload")
+                    vr_bind(now)
+                    reply(addr, {"t": "reloaded"})
+                elif cmd == "vrcapture":
+                    seconds = float(words[1]) if len(words) > 1 else 30
+                    state["vr_capture_until"] = now + min(seconds, 120) if seconds > 0 else 0.0
+                    vr_bind(now)
+                    reply(addr, {"t": "vrcapture", "seconds": seconds})
+                else:
+                    reply(addr, {"t": "error", "error": f"unknown command {cmd!r}"})
+            except Exception as e:
+                # Truncate: control payloads are small, but don't dump arbitrary garbage.
+                shown = data if len(data) <= 200 else data[:200] + b"..."
+                log(f"bad control datagram {shown!r}: {e!r}")
 
     def broadcast(node, etype, code, value, now):
         if not watchers or not node.candidate:
@@ -851,11 +890,16 @@ def main():
 
     vr_bind(time.monotonic())  # a helper that's already running keeps its buttons in step
     waiting = False  # a keyboard's grab waits for its keys to come up
+    # A relay that went away with a key down left it down on the desktop, where this one
+    # never sent it: modifiers come up there now (a release of a key that isn't down is nothing).
+    for code in sorted(MODIFIERS):
+        to_screens(code, 0)
     while True:
         now = time.monotonic()
         pointer = state["pointer"]
         if now >= next_scan:
             next_scan = now + 1.0
+            reconcile_desktop_keys()
             current = {}
             for name in os.listdir("/dev/input"):
                 if name.startswith("event"):
@@ -896,7 +940,6 @@ def main():
         for fd in ready:
             if fd is control:
                 handle_control(now)
-                continue
                 continue
             node = nodes[fd]
             try:
