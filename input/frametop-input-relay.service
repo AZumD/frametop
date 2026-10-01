@@ -5,6 +5,9 @@ Documentation=file://@REPO@/README.md
 # SteamVR opens input devices only at startup, so the virtual devices must exist first.
 # Ordered before SteamVR, but not RequiredBy it: a relay failure must not black-screen VR.
 Before=steamvr.service
+# Cap restart storms so a broken relay cannot churn forever beside SteamVR.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 # READY=1 is sent only after the virtual devices exist.
@@ -15,9 +18,6 @@ ExecStart=/usr/bin/python3 @REPO@/input/input-relay.py
 TimeoutStartSec=20
 Restart=on-failure
 RestartSec=2
-# Cap restart storms so a broken relay cannot churn forever beside SteamVR.
-StartLimitIntervalSec=60
-StartLimitBurst=3
 # systemd holds the virtual devices' file descriptors across relay restarts,
 # so SteamVR keeps the same devices. Clear with: systemctl --user clean --what=fdstore <unit>
 FileDescriptorStoreMax=4
