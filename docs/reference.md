@@ -62,16 +62,18 @@ Input from the lasers reaches KWin through ft-screens' own seat. OpenVR reports 
 
 KWin's nested backend doesn't undo a screen's scale on pointer input; Frametop corrects that in vr.cpp as above. A scale changed only in Plasma's own display settings is put back to the Frametop layout's the next time `ft-layout` runs.
 
-ft-screens listens for datagrams on the abstract socket `@ft_screens` and replies to the sender:
+ft-screens listens for datagrams on the abstract socket `@ft_screens` (override with `--control NAME`) and replies to the sender:
 
 ```
 place N x y z yaw pitch roll     width N metres          curve N radius|on|off
 pin N|all left|right [matrix]    unpin N|all             size N w h
 get N    screens    head    state    key code value    scale N s
+toplevels    input N move|down|up|leave [x y [left|right|middle]]
 visibility always|dashboard|except_dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
 hide | show | toggle    controllers always|outside_games|dashboard    ingames hide|visible
 ```
 
+`ft-screens --no-vr` skips OpenVR entirely (no overlays, no relay contact) for a disposable nested desktop beside the live one; see `screens/test/headless.sh` and [SCREENS_TEST_HEADLESS.md](README/SCREENS_TEST_HEADLESS.md). Production defaults (`@ft_screens`, VR on) are unchanged.
 ## Input relay
 
 SteamVR opens input devices only when it starts. A Bluetooth mouse that sleeps and reconnects gets new device nodes, SteamVR keeps reading the dead ones, and the mouse stops working until SteamVR restarts. `input/input-relay.py` avoids this. It creates two virtual devices, `frametop virtual mouse` and `frametop virtual keyboard`, through `/dev/uinput` before SteamVR starts. It then grabs USB and Bluetooth mice and keyboards as they come and go and forwards their events, so SteamVR only ever sees the virtual devices, which never go away.
