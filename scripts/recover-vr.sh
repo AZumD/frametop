@@ -34,15 +34,15 @@ else
 fi
 echo
 echo "This will:"
-echo "  - stop and disable frametop-pointer.service and frametop-input-relay.service"
-echo "  - clean the input-relay fd store if present"
+echo "  - stop and disable frametop-pointer.service"
+echo "  - stop the input relay and clean its fd store, then leave it enabled for the next SteamVR start"
 echo "  - unregister ft_pointer with vrpathreg (after backing up openvrpaths.vrpath)"
 echo "  - set POINTER=0 in ~/.config/frametop.conf"
 echo "  - remove an empty ~/.config/openvr/steamvr-pending.path if present"
-echo "    (an empty pending path makes \`steamvr path\` fail with realpath: '' and"
+echo "    (an empty pending path makes `steamvr path` fail with realpath: '' and"
 echo "    SteamVR crash-loops into a black screen after the boot logo)"
 echo "  - stop a steamvr.service crash loop so health-check stops turning panels off"
-echo "It leaves layout JSON, profiles, and desktop launcher settings intact."
+echo "It leaves layout JSON, profiles, desktop launcher settings, and the core input relay installed."
 echo
 
 if ! ask "Continue?"; then
@@ -61,22 +61,34 @@ CHANGED=0
 say() { printf 'CHANGED: %s\n' \"\$*\"; CHANGED=1; }
 
 echo '== systemd services'
-for unit in frametop-pointer.service frametop-input-relay.service; do
-  if systemctl --user cat \$unit >/dev/null 2>&1; then
-    was_enabled=\$(systemctl --user is-enabled \$unit 2>/dev/null || true)
-    was_active=\$(systemctl --user is-active \$unit 2>/dev/null || true)
-    systemctl --user disable --now \$unit 2>/dev/null || true
-    say \"\$unit: stop/disable (was enabled=\$was_enabled active=\$was_active)\"
-  else
-    echo \"\$unit: not installed (ok)\"
-  fi
-done
-
-if systemctl --user cat frametop-input-relay.service >/dev/null 2>&1; then
-  if systemctl --user clean --what=fdstore frametop-input-relay.service 2>/dev/null; then
-    say 'frametop-input-relay: cleaned fd store'
-  fi
+unit=frametop-pointer.service
+if systemctl --user cat \$unit >/dev/null 2>&1; then
+  was_enabled=\$(systemctl --user is-enabled \$unit 2>/dev/null || true)
+  was_active=\$(systemctl --user is-active \$unit 2>/dev/null || true)
+  systemctl --user disable --now \$unit 2>/dev/null || true
+  say \"\$unit: stop/disable (was enabled=\$was_enabled active=\$was_active)\"
+else
+  echo \"\$unit: not installed (ok)\"
 fi
+
+unit=frametop-input-relay.service
+if systemctl --user cat \$unit >/dev/null 2>&1; then
+  was_enabled=\$(systemctl --user is-enabled \$unit 2>/dev/null || true)
+  was_active=\$(systemctl --user is-active \$unit 2>/dev/null || true)
+  systemctl --user stop \$unit 2>/dev/null || true
+  if systemctl --user clean --what=fdstore \$unit 2>/dev/null; then
+    say 'frametop-input-relay: stopped and cleaned fd store'
+  else
+    say \"frametop-input-relay: stopped (was enabled=\$was_enabled active=\$was_active)\"
+  fi
+  # The relay is core keyboard/mouse plumbing. Keep it stopped for this running
+  # SteamVR recovery, but make sure the next SteamVR start pulls it in again.
+  systemctl --user enable \$unit >/dev/null 2>&1 || true
+  echo 'frametop-input-relay: enabled for next SteamVR start (not started now)'
+else
+  echo \"\$unit: not installed (ok)\"
+fi
+
 systemctl --user daemon-reload 2>/dev/null || true
 if pkill -x ft-pointer 2>/dev/null; then
   say 'killed leftover ft-pointer process'
@@ -115,7 +127,7 @@ fi
 
 echo '== steamvr-pending.path'
 pending=\$HOME/.config/openvr/steamvr-pending.path
-# An empty pending file makes /usr/bin/steamvr run: realpath \"\" and exit under set -e,
+# An empty pending file makes /usr/bin/steamvr run: realpath "" and exit under set -e,
 # so select_steamvr.sh gets an empty path, vrstartup never runs, and steamvr.service
 # crash-loops (health-check then turns the panels off → black screen after boot logo).
 if [ -e \"\$pending\" ] && [ ! -s \"\$pending\" ]; then
@@ -152,7 +164,7 @@ else
 fi
 echo 'Next: put the headset on, then: systemctl --user start steamvr.service'
 echo 'When vrcompositor is up: desktops.sh start'
+echo 'The input relay is enabled and will start with SteamVR; the optional 3D pointer stays disabled.'
 echo 'Re-enable the optional 3D mouse later with:'
 echo '  pointer/driver/install.sh install && pointer/helper/run.sh install'
-echo '  (and desktops.sh relay install if you also disabled the input relay)'
 "
