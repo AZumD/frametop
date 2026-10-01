@@ -473,6 +473,7 @@ constexpr float kChromeIdle = 0.55f; // the controls' opacity without a laser on
 constexpr float kChromeFloor = 0.4f; // chrome stays at least this visible when screen alpha is 0
 constexpr long kControlsLinger = 35; // ticks (~0.4 s) the controls stay after a laser leaves
 long g_tick = 0;                     // ft_vr_poll calls
+bool g_vr = false;                   // connected to SteamVR (ft-screens --no-vr runs without it)
 constexpr vr::TrackedDeviceIndex_t kNone = kNoneEarly;
 constexpr int kSlotCount = 6;
 double g_followLagMs = 120;
@@ -4077,7 +4078,14 @@ extern "C" {
 
 bool ft_vr_init(void) {
     vr::EVRInitError err = vr::VRInitError_None;
-    vr::VR_Init(&err, vr::VRApplication_Overlay);
+    // Background first: Overlay VR_Init starts vrserver itself when none is running,
+    // and a rogue one (e.g. from the container) never finds the HMD.
+    vr::VR_Init(&err, vr::VRApplication_Background);
+    if (err == vr::VRInitError_None) {
+        vr::VR_Shutdown();
+        err = vr::VRInitError_None;
+        vr::VR_Init(&err, vr::VRApplication_Overlay);
+    }
     if (err != vr::VRInitError_None) {
         std::fprintf(stderr, "openvr: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
         return false;
@@ -4089,10 +4097,12 @@ bool ft_vr_init(void) {
     // Action manifest must be set before the first PollNextEvent / UpdateActionState.
     InitEyeTracking();
     RefreshPoses();
+    g_vr = true;
     return true;
 }
 
 void ft_vr_shutdown(void) {
+    if (!g_vr) return;
     // Best-effort teardown: after a dying SteamVR, overlay calls may fail; still attempt
     // VR_Shutdown so we do not strand the runtime when SIGTERM reaches us in time.
     try {
@@ -4117,17 +4127,24 @@ void ft_vr_shutdown(void) {
     g_screens.clear();
     g_imports.clear();
     vr::VR_Shutdown();
+    g_vr = false;
 }
 
 int ft_vr_modifiers(uint32_t format, uint64_t *out, int max) {
+    if (!g_vr) {  // --no-vr: nothing imports the buffers, so any layout KWin can draw
+        if (max < 1) return 0;
+        out[0] = 0;  // DRM_FORMAT_MOD_LINEAR
+        return 1;
+    }
     uint32_t n = uint32_t(max);
     if (!vr::VRIPCResourceManager()->GetDmabufModifiers(vr::VRApplication_Overlay, format, &n, out)) return 0;
     return int(n < uint32_t(max) ? n : uint32_t(max));
 }
 
-bool ft_vr_screens_shown(void) { return ModeVisible(); }
+bool ft_vr_screens_shown(void) { return g_vr && ModeVisible(); }
 
 void ft_vr_screen_create(int index, double metres, int count) {
+    if (!g_vr) return;
     Screen &s = g_screens[index];
     s.metres = metres;
     char key[64], name[64];
@@ -4189,6 +4206,7 @@ void ft_vr_screen_destroy(int index) {
 }
 
 bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *b) {
+    if (!g_vr) return false;
     auto sit = g_screens.find(index);
     if (sit == g_screens.end()) return false;
     Screen &s = sit->second;
@@ -4258,6 +4276,7 @@ double ft_vr_screen_output_scale(int index) {
 }
 
 void ft_vr_forget(const void *key) {
+    if (!g_vr) return;
     auto it = g_imports.find(key);
     if (it == g_imports.end()) return;
     vr::VRIPCResourceManager()->UnrefResource(it->second);
@@ -4265,6 +4284,7 @@ void ft_vr_forget(const void *key) {
 }
 
 void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
+    if (!g_vr) return;
     RefreshPoses();
     static auto last = Clock::now();
     const auto now = Clock::now();
@@ -4441,6 +4461,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
 // (size <screen> <w> <h> and key <code> <value> are handled in compositor.c.) Screens are
 // numbered from 1 here, like everywhere the user sees them.
 void ft_vr_command(const char *cmd, char *reply, int size) {
+    if (!g_vr) return (void)std::snprintf(reply, size, "error no SteamVR (--no-vr)");
     RefreshPoses();
     int n;
     double x, y, z, yaw, pitch, roll, w;

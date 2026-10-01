@@ -461,7 +461,14 @@ int main() {
 
     vr::EVRInitError err = vr::VRInitError_None;
     while (true) {
-        vr::VR_Init(&err, vr::VRApplication_Overlay);
+        // Background first: Overlay VR_Init starts vrserver itself when none is running,
+        // and a rogue one from the container never finds the HMD.
+        vr::VR_Init(&err, vr::VRApplication_Background);
+        if (err == vr::VRInitError_None) {
+            vr::VR_Shutdown();
+            err = vr::VRInitError_None;
+            vr::VR_Init(&err, vr::VRApplication_Overlay);
+        }
         if (err == vr::VRInitError_None) break;
         std::fprintf(stderr, "waiting for SteamVR: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
         std::this_thread::sleep_for(std::chrono::seconds(2));

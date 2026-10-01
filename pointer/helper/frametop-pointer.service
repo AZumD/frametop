@@ -3,9 +3,12 @@
 Description=Frametop pointer helper: the universal 3D mouse (cursor, collision, ft_pointer driver)
 Documentation=file://@REPO@/README.md
 # Needs SteamVR's IPC; it starts and stops with SteamVR.
-# After= only: a hung helper must never delay SteamVR itself.
+# After=/PartOf=/Requisite=: SteamVR is the parent. Requisite= fails this unit when
+# steamvr.service is inactive (so we never start an overlay client that would spawn a
+# rogue vrserver). Never Requires=: a hung helper must not delay or block SteamVR.
 After=steamvr.service frametop-input-relay.service
 PartOf=steamvr.service
+Requisite=steamvr.service
 
 [Service]
 # Runs in the dev container (built there against its libraries). The helper process
