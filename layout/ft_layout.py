@@ -1584,6 +1584,10 @@ def apply_screens(wait=0, duration_ms=0):
             apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
             apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
+    try:
+        sock.ask("vrkeyboard close")  # the keyboard, if open, goes too: a reset starts over
+    except RuntimeError:
+        pass  # an older ft-screens
     push_slot_state(sock)
     apply_instruments(sock, layout)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))

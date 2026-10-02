@@ -71,7 +71,10 @@ get N    screens    head    state    key code value    scale N s
 toplevels    input N move|down|up|leave [x y [left|right|middle]]
 visibility always|dashboard|except_dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
 hide | show | toggle    controllers always|outside_games|dashboard    ingames hide|visible
+vrkeyboard show|hide|toggle|close
 ```
+
+`vrkeyboard` is described under Input relay.
 
 `ft-screens --no-vr` skips OpenVR entirely (no overlays, no relay contact) for a disposable nested desktop beside the live one; see `screens/test/headless.sh` and [SCREENS_TEST_HEADLESS.md](README/SCREENS_TEST_HEADLESS.md). Production defaults (`@ft_screens`, VR on) are unchanged.
 ## Input relay
@@ -90,6 +93,12 @@ scripts/recover-vr.sh [--yes]    # stop/disable relay+pointer, unregister ft_poi
 ```
 
 The first time, the relay has to start before SteamVR, so reboot or restart SteamVR after installing it. After that it's safe to restart on its own: systemd keeps the virtual devices open in its file descriptor store (`FileDescriptorStorePreserve=yes`), so SteamVR keeps the same devices.
+
+### Frametop's keyboard
+
+For a text field in the desktop, ft-screens can show its own keyboard panel (`screens/keyboard.cpp`, see [SCREENS_KEYBOARD.md](README/SCREENS_KEYBOARD.md)). The desktop's input method, `input/ft-textinput` ([FT_TEXTINPUT.md](README/FT_TEXTINPUT.md), started by KWin through `--inputmethod`), sends `textfield 1|0` to the relay, and the relay's `vr_keyboard` rule (`always`, `no_keyboard` (default), `button`, `never`) decides whether to send `vrkeyboard show|hide` on to ft-screens. `vr_keyboard_persist` (default on) keeps it open after focus is lost. The **Open/close keyboard** action (`keyboard_toggle`) sends `vrkeyboard toggle` from a mouse or controller button, for apps that don't report text fields. A keyboard that a program created through uinput doesn't count as a connected keyboard for `no_keyboard`. The keyboard steps aside while the Steam menu or Steam's keyboard is open.
+
+`vrkeyboard close` also closes it, and `ft-layout apply` sends it.
 
 ## The 3D mouse
 
@@ -116,7 +125,7 @@ The pointer settings are in `~/.config/frametop.conf`: `POINTER_SENSITIVITY`, `P
 
 ## Frametop Input Settings
 
-A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs in the `dev` container and talks to the relay over its control socket, `@frametop_relay`. It has six pages:
+A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs in the `dev` container and talks to the relay over its control socket, `@frametop_relay`. It has eight pages (the two added after Controllers/Pointer are Keyboard and Ignored panels, described below the list):
 
 - Devices lists every USB and Bluetooth mouse and keyboard, with a light that flashes when the device is used. Each device gets a role: 3D pointer (grabbed, drives the pointer; the default for anything with a mouse), Pass through (grabbed only while typing goes to the desktop; the default for keyboards, where a Meta tap toggles the dashboard if `META_DASHBOARD=1` is in `~/.config/frametop.conf`), or Ignore. A device is identified by its Bluetooth address, or its USB ids and name, so all of its input nodes share one role. Forget drops everything saved for a device.
 - Buttons maps a pointer device's buttons. Choose Capture a button, press the button or key, then pick an action: a click, back, scroll, toggle dashboard, recenter, pointer on or off, head follow on or off, gaze pointer on or off, faster or slower, reset or hide/show screens, profile slot 1–6 / next / previous, pass the key through, or nothing. Devices with saved mappings are listed even while they're asleep.
@@ -124,6 +133,9 @@ A Kirigami app with a Python backend, in the Plasma menu under Settings. It runs
 - Pointer has a Head follow switch and sliders for the pointer settings, which apply immediately, and a Recenter button.
 - Gaze has the gaze pointer switch (on now and from now on; a mapped button toggles it until the helper restarts), the gaze mode sliders, the gaze service's state (headset, samples per second, whether only one eye is tracked, the calibration, the nudges learned), and Calibrate (opens the gaze probe), Reload calibration, and Forget nudges.
 - Bluetooth lists paired devices and has Apply Bluetooth fixes, which runs `/etc/steamframe/bt-fixups.sh` through `pkexec`. Pair new devices in Steam.
+
+- Keyboard picks when Frametop's keyboard opens (`vr_keyboard`: always, only while no pass-through keyboard is connected, only with the button, never) and whether it stays open after focus is lost (`vr_keyboard_persist`). It lists the pass-through keyboards connected now (a program's uinput keyboard doesn't count).
+- Ignored panels lists overlays the 3D mouse should skip (`POINTER_IGNORE` in `~/.config/frametop.conf`: comma-separated patterns matched like shell globs against the overlay key, without backslash escapes). Overlays that were seen are offered to add, and entries can be removed. The pointer helper reloads the list when it changes. Every `frametop.*` overlay is always a real panel, never ignored by the "no size" check.
 
 Device rules are saved in `~/.config/frametop-input.json`. `input-settings/install.sh` installs the menu entry. Its launcher hands podman the real `XDG_RUNTIME_DIR` and user bus and gives the app the session's Wayland socket, because the desktop session runs on a private D-Bus and podman fails on it.
 

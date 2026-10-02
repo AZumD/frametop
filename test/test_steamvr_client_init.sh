@@ -71,6 +71,21 @@ else
   bad "missing screens/test/headless.sh"
 fi
 
+# Phase 2: Frametop's keyboard is built into ft-screens and starts as KWin's input method.
+has 'build/keyboard.o' "$root/screens/build.sh"
+has 'stb_truetype' "$root/screens/build.sh"
+has 'gbm' "$root/screens/build.sh"
+has 'vrkeyboard' "$root/screens/compositor.c"
+has 'ft_vr_keyboard_show' "$root/screens/vr.cpp"
+has 'keyboard::Destroy' "$root/screens/vr.cpp"
+has '\-\-inputmethod' "$root/session/frametop-session.sh"
+has 'QT_IM_MODULE' "$root/session/frametop-session.sh"
+has 'textfield' "$root/input/ft-textinput"
+bash -n "$root/session/frametop-session.sh" && ok "bash -n session/frametop-session.sh"
+# ft-pointer treats every frametop.* overlay as a real panel (the keyboard shares a 0x0 texture).
+has 'rfind("frametop\.", 0)' "$root/pointer/helper/ft-pointer.cpp"
+lacks 'rfind("frametop\.screen\.", 0) != 0' "$root/pointer/helper/ft-pointer.cpp"
+
 if [ "$fail" -ne 0 ]; then
   echo "steamvr client init checks failed" >&2
   exit 1

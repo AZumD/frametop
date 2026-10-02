@@ -16,5 +16,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 | `layout/ft_layout.py` | [FT_LAYOUT.md](FT_LAYOUT.md) |
 | `session/ft-launch.py` | [FT-LAUNCH.md](FT-LAUNCH.md) |
 | `layout/ft_desktop.py` | [FT_DESKTOP.md](FT_DESKTOP.md) |
+| `input/ft-textinput` | [FT_TEXTINPUT.md](FT_TEXTINPUT.md) |
+| `screens/keyboard.cpp` | [SCREENS_KEYBOARD.md](SCREENS_KEYBOARD.md) |
 
 Layout / Spatial Instruments CLI and profile format live in `docs/reference.md` (and `docs/design.md`). `ft-layout apply` still pushes visibility, KWin scales, and instruments when the HMD pose is not ready yet (see [FT_LAYOUT.md](FT_LAYOUT.md)). Display Settings → **Background** uses `frame-background`; recover-vr also clears a broken empty `steamvr-pending.path` that can black-screen SteamVR after the boot logo.

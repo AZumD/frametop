@@ -18,10 +18,18 @@ stb=fede005abaf93d9d7f3a679d1999b2db341b360f
   curl -fsSL "https://raw.githubusercontent.com/nothings/stb/$stb/stb_image.h" -o build/include/stb_image.h
   touch "build/include/stb_image-$stb"
 }
-g++ -std=c++17 -O2 -Wall -Wno-missing-field-initializers -Ibuild/include -c -o build/vr.o vr.cpp
-g++ -o build/ft-screens build/compositor.o build/vr.o \
-  $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) \
-  -L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64
+# stb_truetype: key labels on Frametop'\''s VR keyboard (keyboard.cpp).
+stbt=2c980bb59875b0d32144a71867fbdebb2f77cd20
+[ -f build/include/stb_truetype-$stbt ] || {
+  curl -fsSL "https://raw.githubusercontent.com/nothings/stb/$stbt/stb_truetype.h" -o build/include/stb_truetype.h
+  touch "build/include/stb_truetype-$stbt"
+}
+cxx="g++ -std=c++17 -O2 -Wall -Wno-missing-field-initializers -Wno-unused-parameter -Ibuild/include $(pkg-config --cflags egl glesv2 gbm libdrm)"
+$cxx -c -o build/vr.o vr.cpp
+$cxx -c -o build/keyboard.o keyboard.cpp
+vrlibs="$(pkg-config --libs egl glesv2 gbm) -L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64"
+g++ -o build/ft-screens build/compositor.o build/vr.o build/keyboard.o \
+  $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) $vrlibs
 cp -f actions.json build/actions.json
 cp -f bindings_frame_hmd.json bindings_hmd.json build/
 echo "built build/ft-screens"'
