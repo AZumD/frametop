@@ -278,10 +278,16 @@ class SourceWiring(unittest.TestCase):
         self.assertIn("each(word, [&](Screen &s) { s.alone = conceal; });", src)
         self.assertIn("!s.alone && s.controls > 0.02f", src,
                       "chrome keep-alive must not revive a concealed screen")
+        self.assertIn("(!s.floating || s.floatOn)", src,
+                      "chrome keep-alive must not revive idle float slots")
+        self.assertIn("!visible && shared && s.shown && !s.alone", src,
+                      "chrome keep-alive must not fight ModeVisible hide (games / dashboard)")
         # the instruments never look at `alone`
-        inst = src[src.index("void UpdateInstrumentVisibility()"):]
-        inst = inst[:inst.index("\n}\n")]
+        inst_start = src.index("void UpdateInstrumentVisibility() {")
+        inst = src[inst_start : src.index("\n}\n", inst_start) + 3]
         self.assertNotIn("alone", inst)
+        self.assertIn("!visible && shared && inst.controls > 0.02f", inst,
+                      "instrument chrome keep-alive also respects ModeVisible")
 
     def test_vr_cpp_keyboard_wiring(self):
         src = self.read("screens/vr.cpp")

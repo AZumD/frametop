@@ -72,11 +72,18 @@ class HeldDragRetarget(unittest.TestCase):
         self.assertIn("best < 1e8", body)
         self.assertIn("hit.fDistance < best", body)
 
-    def test_compositor_clears_before_cross_enter(self):
+    def test_compositor_enter_without_clearing_drag(self):
         c = read("screens/compositor.c")
         block = c[c.find("case FT_MOTION:") : c.find("case FT_SCROLL:")]
-        self.assertIn("notify_clear_focus", block)
         self.assertIn("x + 1", block)
+        # clear_focus mid-drag cancels Wayland DnD; only the FT_LEAVE path may clear
+        self.assertNotIn("notify_clear_focus", block)
+        self.assertIn("case FT_LEAVE:", c)
+        self.assertGreater(
+            c.find("notify_clear_focus", c.find("case FT_LEAVE:")),
+            c.find("case FT_LEAVE:"),
+            "FT_LEAVE still clears seat focus when leaving a panel",
+        )
 
     def test_pointer_ignore_guard_intact(self):
         p = read("pointer/helper/ft-pointer.cpp")
@@ -97,6 +104,14 @@ class FocusHandoff(unittest.TestCase):
         vr = read("screens/vr.cpp")
         self.assertIn("g_press.screen = index, g_press.x = sx, g_press.y = sy", vr)
         self.assertIn('DndLog("retarget"', vr)
+
+    def test_button_up_releases_on_retargeted_panel(self):
+        """SteamVR may deliver up to the press overlay; seat must release on g_press.screen."""
+        vr = read("screens/vr.cpp")
+        self.assertIn('DndLog("release-retarget"', vr)
+        self.assertIn("g_press.screen != index && !wasTitleCarry", vr)
+        # Override the event's screen to the last retarget before handle()
+        self.assertIn("e.screen = g_press.screen", vr)
 
     def test_enter_offset_so_motion_not_dropped(self):
         """wlroots drops motion to the enter position; enter must be one unit off."""
