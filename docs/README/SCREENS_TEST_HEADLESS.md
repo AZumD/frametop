@@ -25,10 +25,19 @@ screens/test/headless.sh stop
 - `--no-vr` — skip OpenVR / overlays / relay contact
 - `--control NAME` — abstract control socket (default `ft_screens`; tests use `ft_screens_test`)
 - `--socket NAME` — Wayland socket under `$XDG_RUNTIME_DIR`
+- `--spares N` — count of spare outputs after the real screens (floating windows; see [FT_FLOATD.md](FT_FLOATD.md))
+
+## Floating helpers
+
+```
+screens/test/headless.sh floatd          # start ft-floatd (@frametop_float_test)
+screens/test/headless.sh float list
+```
 
 ## Tests
 
 ```
+python3 test/test_float_screens_wiring.py
 bash test/test_steamvr_client_init.sh   # static: --no-vr / ft_screens_test present
 # On the Frame, after screens/build.sh:
 #   screens/test/headless.sh start
