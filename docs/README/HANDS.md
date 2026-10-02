@@ -9,7 +9,7 @@ Optional, experimental hand tracking for the Steam Frame. Camera capture (`ft-ca
 ## Opt-in
 
 - Not part of `./install.sh`.
-- Install once: `hands/run.sh install` (builds, `setcap` for ft-camd, installs **disabled** user units).
+- Install once: `hands/run.sh install` (builds, `setcap` for ft-camd via `frame_sudo` in `scripts/_env.sh`, installs **disabled** user units). From a PC, sudo can use a TTY prompt or `steamos_root_pwd` in the repo `.env`.
 - Runtime: `ft-handsctl on` / `off` / `status` / `log` / `cutouts on|off|state` / `gestures` (diagnostics only).
 - Services stop with SteamVR (`PartOf=steamvr.service`) and do not auto-start with the desktop.
 

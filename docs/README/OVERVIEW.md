@@ -7,6 +7,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 | Path | Doc |
 |------|-----|
 | `scripts/frame-background` | [FRAME-BACKGROUND.md](FRAME-BACKGROUND.md) |
+| `scripts/_env.sh` | [SCRIPTS_ENV.md](SCRIPTS_ENV.md) |
 | `scripts/openvr_settings.py` | [OPENVR_SETTINGS.md](OPENVR_SETTINGS.md) |
 | `scripts/make-equirect-test.py` | [MAKE-EQUIRECT-TEST.md](MAKE-EQUIRECT-TEST.md) |
 | `scripts/recover-vr.sh` | [RECOVER-VR.md](RECOVER-VR.md) |

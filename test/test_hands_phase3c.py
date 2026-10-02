@@ -55,6 +55,10 @@ class ControlAndInstall(unittest.TestCase):
         self.assertIn("systemctl --user disable", run)
         self.assertIn("setcap", run)
         self.assertIn("frametop-camd.service", run)
+        self.assertIn("frame_sudo", run)
+        env = read("scripts/_env.sh")
+        self.assertIn("frame_sudo()", env)
+        self.assertIn("steamos_root_pwd", env)
         install = read("install.sh")
         self.assertIn("Hand tracking, hands/, is deferred", install)
 
