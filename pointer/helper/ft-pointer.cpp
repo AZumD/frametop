@@ -1403,21 +1403,28 @@ int main() {
                 }
             }
 
-            // While left is held on a still FramePanel, let the locked ray retarget across other
-            // FramePanels (floating windows / their popups). Once that panel moves, the lock holds.
+            // While left is held on a FramePanel that isn't being carried, retarget the locked
+            // ray onto other FramePanels (screen↔float DnD). Soft-follow / yaw-follow nudge the
+            // pose every frame; treat only a real carry (~5 cm of origin motion) as "moved",
+            // not the 0.001 matrix noise that would clear pressKey immediately and freeze the
+            // drag behind the destination.
             if (leftHeld && !pressKey.empty()) {
                 vr::ETrackingUniverseOrigin uo;
                 vr::HmdMatrix34_t now{};
                 auto it = handles.find(pressKey);
                 bool still = it != handles.end() &&
                              overlay->GetOverlayTransformAbsolute(it->second, &uo, &now) == vr::VROverlayError_None;
-                for (int i = 0; still && i < 3; ++i)
-                    for (int j = 0; j < 4; ++j)
-                        if (std::fabs(now.m[i][j] - pressPose.m[i][j]) > 0.001f) still = false;
+                if (still) {
+                    const float dx = now.m[0][3] - pressPose.m[0][3], dy = now.m[1][3] - pressPose.m[1][3],
+                                dz = now.m[2][3] - pressPose.m[2][3];
+                    still = (dx * dx + dy * dy + dz * dz) < 0.05f * 0.05f;
+                }
                 if (still) {
                     Hit h;
                     for (const auto &[key, handle] : handles) {
-                        if (!visible[key] || !FramePanel(key)) continue;
+                        // Always test FramePanels: IsOverlayVisible across apps can flicker
+                        // false and would otherwise freeze dragDistance on the source panel.
+                        if (!FramePanel(key)) continue;
                         vr::VROverlayIntersectionParams_t params{};
                         params.vSource = {float(anchor.x), float(anchor.y), float(anchor.z)};
                         params.vDirection = {float(dir.x), float(dir.y), float(dir.z)};

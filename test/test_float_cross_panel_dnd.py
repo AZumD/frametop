@@ -61,6 +61,22 @@ class HeldDragRetarget(unittest.TestCase):
         self.assertIn('SendTo(out, "ft_screens", "up")', p)
         # Retarget updates locked distance onto another FramePanel
         self.assertIn("dragDistance = h.along, lastHit = h.key", p)
+        # Soft-follow must not clear pressKey on 0.001 matrix noise (5 cm carry threshold)
+        self.assertIn("0.05f * 0.05f", p)
+        self.assertNotIn("0.001f) still = false", p)
+
+    def test_catcher_uses_nearest_hit(self):
+        vr = read("screens/vr.cpp")
+        i = vr.find("void UpdateCatcher(")
+        body = vr[i : i + 1200]
+        self.assertIn("best < 1e8", body)
+        self.assertIn("hit.fDistance < best", body)
+
+    def test_compositor_clears_before_cross_enter(self):
+        c = read("screens/compositor.c")
+        block = c[c.find("case FT_MOTION:") : c.find("case FT_SCROLL:")]
+        self.assertIn("notify_clear_focus", block)
+        self.assertIn("x + 1", block)
 
     def test_pointer_ignore_guard_intact(self):
         p = read("pointer/helper/ft-pointer.cpp")
@@ -70,17 +86,17 @@ class HeldDragRetarget(unittest.TestCase):
 class FocusHandoff(unittest.TestCase):
     def test_leave_suppressed_while_held(self):
         vr = read("screens/vr.cpp")
-        self.assertIn("case vr::VREvent_FocusLeave:", vr)
-        # Both comment variants acceptable
-        self.assertTrue(
-            "keep KWin pointer while a button is held" in vr
-            or "KWin keeps the pointer while a button is held" in vr
-        )
-        i = vr.find("case vr::VREvent_FocusLeave:")
-        body = vr[i : i + 350]
-        self.assertIn("g_press.buttons", body)
-        self.assertIn("return", body)
-        self.assertIn("FT_LEAVE", body)
+        self.assertIn('DndLog("leave-suppressed"', vr)
+        self.assertIn("e.type = FT_LEAVE", vr)
+        # leave-suppressed only runs inside the g_press.buttons branch
+        i = vr.find('DndLog("leave-suppressed"')
+        self.assertGreater(i, 0)
+        self.assertIn("g_press.buttons", vr[max(0, i - 120) : i + 80])
+
+    def test_motion_updates_press_screen(self):
+        vr = read("screens/vr.cpp")
+        self.assertIn("g_press.screen = index, g_press.x = sx, g_press.y = sy", vr)
+        self.assertIn('DndLog("retarget"', vr)
 
     def test_enter_offset_so_motion_not_dropped(self):
         """wlroots drops motion to the enter position; enter must be one unit off."""
@@ -93,10 +109,6 @@ class FocusHandoff(unittest.TestCase):
             c,
             r"const double x = e->x / s->scale\[e->screen\]",
         )
-
-    def test_motion_updates_press_screen(self):
-        vr = read("screens/vr.cpp")
-        self.assertIn("if (g_press.buttons) g_press.screen = index", vr)
 
     def test_catcher_and_up_backstop(self):
         vr = read("screens/vr.cpp")

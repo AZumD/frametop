@@ -2330,6 +2330,20 @@ struct Press {
 Press g_press;
 vr::VROverlayHandle_t g_catcher = vr::k_ulOverlayHandleInvalid;
 bool g_catcherShown = false;
+int g_dndLogScreen = -1;  // last screen logged while a button was held (FT_DND_DEBUG)
+
+static bool DndDebug() {
+    static int on = -1;
+    if (on < 0) on = std::getenv("FT_DND_DEBUG") && std::getenv("FT_DND_DEBUG")[0] == '1' ? 1 : 0;
+    return on == 1;
+}
+
+static void DndLog(const char *msg, int screen = -1) {
+    if (!DndDebug()) return;
+    if (screen >= 0) std::printf("dnd %s screen=%d\n", msg, screen + 1);
+    else std::printf("dnd %s\n", msg);
+    std::fflush(stdout);
+}
 
 uint32_t ButtonBit(uint32_t linuxButton) { return 1u << (linuxButton - BTN_LEFT); }
 
@@ -2337,6 +2351,8 @@ void PressDown(vr::TrackedDeviceIndex_t dev, uint32_t button, int screen, double
     if (!g_press.buttons) g_press.device = dev;
     g_press.buttons |= ButtonBit(button);
     g_press.screen = screen, g_press.x = x, g_press.y = y;
+    DndLog("press", screen);
+    g_dndLogScreen = screen;
 }
 
 void ReleaseAway(uint32_t button, void (*handle)(const struct ft_event *, void *), void *data) {
@@ -2352,6 +2368,7 @@ void ReleaseAway(uint32_t button, void (*handle)(const struct ft_event *, void *
     e.x = g_press.x, e.y = g_press.y;
     handle(&e, data);
     std::printf("caught a release off the screens (button %u)\n", button);
+    DndLog("release-away", g_press.screen);
     if (g_press.buttons) return;
     e = ft_event{};
     e.type = FT_LEAVE;
@@ -2383,18 +2400,24 @@ void UpdateCatcher() {
     vr::VROverlayIntersectionParams_t params{};
     params.eOrigin = vr::TrackingUniverseStanding;
     for (int k = 0; k < 3; ++k) params.vSource.v[k] = l.m[k][3], params.vDirection.v[k] = -l.m[k][2];
+    // Nearest hit among our panels (map order alone can keep a farther source and leave the
+    // catcher thinking we're still on it while a nearer destination is under the laser).
+    double best = 1e9;
     for (auto &[i, s] : g_screens) {
         if (!s.visible) continue;
         std::vector<vr::VROverlayHandle_t> parts = s.All();
         for (const auto &[k, sub] : s.subs) parts.push_back(sub.overlay);
         for (auto o : parts) {
             vr::VROverlayIntersectionResults_t hit;
-            if (o != vr::k_ulOverlayHandleInvalid && vr::VROverlay()->ComputeOverlayIntersection(o, &params, &hit)) {
-                g_press.distance = std::max(0.05, double(hit.fDistance));
-                ShowCatcher(false);
-                return;
-            }
+            if (o != vr::k_ulOverlayHandleInvalid && vr::VROverlay()->ComputeOverlayIntersection(o, &params, &hit) &&
+                hit.fDistance > 0.05f && hit.fDistance < best)
+                best = hit.fDistance;
         }
+    }
+    if (best < 1e8) {
+        g_press.distance = std::max(0.05, best);
+        ShowCatcher(false);
+        return;
     }
     const double d = g_press.distance;
     const double pt[3] = {l.m[0][3] - l.m[0][2] * d, l.m[1][3] - l.m[1][2] * d, l.m[2][3] - l.m[2][2] * d};
@@ -4708,7 +4731,13 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                     ft_buffer_to_seat(buf_x, buf_y, s.width, s.height, surf_w, surf_h, s.outputScale, &sx, &sy);
                     if (ev.eventType == vr::VREvent_MouseMove) {
                         e.type = FT_MOTION;
-                        if (g_press.buttons) g_press.screen = index, g_press.x = sx, g_press.y = sy;
+                        if (g_press.buttons) {
+                            if (g_dndLogScreen != index) {
+                                DndLog("retarget", index);
+                                g_dndLogScreen = index;
+                            }
+                            g_press.screen = index, g_press.x = sx, g_press.y = sy;
+                        }
                     } else {
                         if (ev.eventType == vr::VREvent_MouseButtonUp) EndDragsBy(ev.trackedDeviceIndex);
                         e.type = FT_BUTTON;
@@ -4738,9 +4767,13 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                     e.dy = -ev.data.scroll.ydelta;
                     break;
                 case vr::VREvent_FocusLeave:
-                    if (g_press.buttons) return;  // keep KWin pointer while a button is held
+                    if (g_press.buttons) {
+                        DndLog("leave-suppressed", index);
+                        return;  // keep KWin pointer while a button is held
+                    }
                     if (sub) return;              // off a popup is usually onto its window
                     e.type = FT_LEAVE;
+                    DndLog("leave", index);
                     break;
                 default:
                     return;

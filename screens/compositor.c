@@ -311,6 +311,10 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
                 // pointer until the next move: a drag or press right after crossing onto
                 // another screen or floating panel would stay on the previous output. Entering
                 // one unit off makes the motion below go through (cross-panel DnD).
+                // Clear first so the destination surface gets a real leave→enter around a
+                // held button (Wayland DnD focus follows the seat).
+                if (s->pointer_focus)
+                    wlr_seat_pointer_notify_clear_focus(s->seat);
                 wlr_seat_pointer_notify_enter(s->seat, surface, x + 1, y);
                 s->pointer_focus = sc;
             }

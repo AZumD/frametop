@@ -10,9 +10,10 @@ Daemon for Frametop floating windows. Runs inside the nested Plasma session and 
 
 - `screens/compositor.c`: `--spares N`, spare toplevels call `ft_vr_float_create` / `ft_vr_float_output`; Meta+scroll on a spare sends `scale` to `@frametop_float`. Cross-panel drag/drop: on a focus change, enter is at `(x+1,y)` so the following motion at `(x,y)` is not dropped by wlroots (KWin nested otherwise keeps the old output's pointer).
 - `screens/vr.cpp`: overlays `frametop.float.N` (+ `.bar` / `.dock` / `.close` / `.sub.K`); control commands `float`, `unfloat`, `pose`, `sub`, `minimized`, `carry`. FocusLeave while a button is held does not clear KWin pointer; the catcher covers gaps; `up` is the helper's release backstop.
-- `pointer/helper/ft-pointer.cpp`: `FramePanel()` + held-drag retarget across `frametop.screen.*` / `frametop.float.*` (not `.bar`), and `up` on left release.
+- `pointer/helper/ft-pointer.cpp`: `FramePanel()` + held-drag retarget across `frametop.screen.*` / `frametop.float.*` (not `.bar`), and `up` on left release. Soft-follow pose noise must not clear `pressKey` (only ~5 cm of origin motion counts as a carry).
 - `layout/ft_layout.py` `outputs()`: drops `WL-*` at and after the configured screen count so layout never rearranges spares.
 - Session / Display Settings: `FLOAT_SLOTS`, `FLOAT_MARGIN` in `~/.config/frametop.conf` (see `docs/floating-windows.md`).
+- Debug: `FT_DND_DEBUG=1` on ft-screens logs `dnd press|retarget|leave-suppressed|release-away` transitions.
 
 ## Related
 

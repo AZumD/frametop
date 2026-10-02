@@ -10,7 +10,7 @@ Script / module: `pointer/helper/ft-pointer.cpp` (user service via `pointer/help
 
 `FramePanel()` treats `frametop.screen.N`, `frametop.float.N`, and `frametop.float.N.sub.K` as desktop panels the laser can retarget across while a press is held and the pressed overlay has not moved. Left release sends `up` to `@ft_screens` as a backstop for the catcher. `POINTER_IGNORE` still cannot drop any `frametop.*` key (Phase 2 hard guard).
 
-Cross-panel DnD also needs ft-screens to hand KWin pointer focus to the destination on enter (`x+1` then motion); see [FT_FLOATD.md](FT_FLOATD.md).
+Cross-panel DnD also needs ft-screens to hand KWin pointer focus to the destination on enter (`x+1` then motion); see [FT_FLOATD.md](FT_FLOATD.md). Soft-follow must not clear the helper's `pressKey` (carry threshold is ~5 cm of panel origin motion). Set `FT_DND_DEBUG=1` on ft-screens for transition logs (`dnd press|retarget|leave-suppressed|…`).
 
 ## Related
 
