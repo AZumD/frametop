@@ -28,11 +28,16 @@ The desktop's input method ([FT_TEXTINPUT.md](FT_TEXTINPUT.md)) sends `textfield
 
 `keyboard_toggle` ("Open/close keyboard") is a new action, before `key` in `ACTIONS`, for mouse buttons and Frame controller buttons. Both paths go through `do_action`, which sends `vrkeyboard toggle` on a press (unless the mode is `never`) and hands every other action to `Pointer.action`. A keyboard made by a program through uinput (frame-voice's, say) doesn't count as "connected": `probe` marks a node `uinput` when its sysfs path is under `/sys/devices/virtual/input/`, `Node.describe()` reports it, and the `no_keyboard` check skips it (as it does keyboards set to Ignore or Pointer).
 
+## Floating windows
+
+`float_toggle` and `dock_all` send `float pointer` / `dock all` to ft-floatd on `@frametop_float` (they work even when pointer mode is off). A rules file without `key_bindings` gets `DEFAULT_KEY_BINDINGS`: Meta+Shift+F (`42+125+33`) → `float_toggle`. A file that defines its own `key_bindings` object, even `{}`, does not get that default. Combinations are taken on passthrough keyboards before the key is typed; Meta is swallowed on the desktop for the combo so Plasma's launcher does not open. This fork does not ship gaze key bindings.
+
 ## Tests
 
 ```
 python3 test/test_input_relay_control.py   # needs Linux/WSL abstract AF_UNIX
 python3 test/test_vr_keyboard_relay.py     # modes, persist, uinput detection, keyboard_toggle
+python3 test/test_float_phase3.py          # float wiring, Meta+Shift+F, crop math
 bash test/test_boot_safety.sh
 bash test/test_steamvr_client_init.sh
 ```

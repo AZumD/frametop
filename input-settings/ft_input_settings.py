@@ -63,6 +63,7 @@ ACTION_LABELS = {
     "sens_up": "Faster pointer",
     "sens_down": "Slower pointer", "layout_reset": "Reset desktop screen layout",
     "screens_toggle": "Hide/show desktop screens", "keyboard_toggle": "Open/close keyboard",
+    "float_toggle": "Float/dock window", "dock_all": "Dock all floating windows",
     "profile_slot_1": "Apply profile slot 1", "profile_slot_2": "Apply profile slot 2",
     "profile_slot_3": "Apply profile slot 3", "profile_slot_4": "Apply profile slot 4",
     "profile_slot_5": "Apply profile slot 5", "profile_slot_6": "Apply profile slot 6",

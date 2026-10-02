@@ -82,7 +82,10 @@ def test_constants():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "rules.json")
         check("read_rules missing file keeps shape",
-              relay.read_rules(path) == {"devices": {}, "buttons": {}, "controller_buttons": {}})
+              relay.read_rules(path) == {
+                  "devices": {}, "buttons": {}, "controller_buttons": {},
+                  "key_bindings": dict(relay.DEFAULT_KEY_BINDINGS),
+              })
         with open(path, "w") as f:
             json.dump({"vr_keyboard": "button", "vr_keyboard_persist": False}, f)
         r = relay.read_rules(path)

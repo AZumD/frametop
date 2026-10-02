@@ -23,7 +23,9 @@ pointer_toggle, follow_toggle = head follow on or off, gaze_toggle = gaze mode o
 (the pointer goes where you look; see pointer/helper/ft-pointer.cpp), sens_up, sens_down,
 layout_reset = put the desktop screens back in their saved layout, screens_toggle = hide or show
 the desktop screens, profile_slot_1..6 / profile_next / profile_previous = apply named profile
-slots via ft-layout, keyboard_toggle = open or close Frametop's keyboard, key = pass through as a
+slots via ft-layout, keyboard_toggle = open or close Frametop's keyboard, float_toggle = float the
+desktop window under the pointer (else the active one) in VR or dock it if it floats, dock_all =
+put every floating window back (both go to ft-floatd on @frametop_float), key = pass through as a
 key, none).
 
 Frame controller buttons can be mapped too ("controller_buttons": {"right/a": action} in the
@@ -173,7 +175,8 @@ RULES_PATH = os.path.expanduser("~/.config/frametop-input.json")
 ACTIONS = ("left", "right", "middle", "back", "scroll_up", "scroll_down", "dashboard", "recenter",
            "pointer_toggle", "follow_toggle", "gaze_toggle", "sens_up", "sens_down", "layout_reset", "screens_toggle",
            "profile_slot_1", "profile_slot_2", "profile_slot_3", "profile_slot_4", "profile_slot_5",
-           "profile_slot_6", "profile_next", "profile_previous", "keyboard_toggle", "key", "none")
+           "profile_slot_6", "profile_next", "profile_previous", "keyboard_toggle", "float_toggle", "dock_all",
+           "key", "none")
 VR_KEYBOARD_MODES = ("always", "no_keyboard", "button", "never")  # when Frametop's keyboard opens
 HELPER = "\0ft_pointer_helper"
 # Frame controller buttons the pointer helper can read (pointer/helper/vrbuttons.h).
@@ -182,6 +185,24 @@ VR_BUTTONS = ("left/view", "left/dpad_up", "left/dpad_down", "left/dpad_left", "
               "right/bumper", "right/trigger", "right/grip", "right/thumbstick")
 VR_DEVICE = "frame_controller"  # the id controller buttons have in watch events
 SCREENS = "\0ft_screens"
+FLOAT = "\0frametop_float"  # ft-floatd; floating windows in the Frametop desktop
+# Actions for ft-floatd: work even when pointer mode is off.
+FLOAT_ACTIONS = {"float_toggle": b"float pointer", "dock_all": b"dock all"}
+# Key combinations a rules file without "key_bindings" gets. Meta+Shift+F floats/docks
+# a window (free on the Frametop desktop; apps rarely use Meta+Shift+F). Gaze shortcuts
+# are not included — this fork keeps attention opacity without gaze mode.
+DEFAULT_KEY_BINDINGS = {"42+125+33": "float_toggle"}  # Shift+Meta+F
+KEY_F24 = 194  # sent to the desktop with a Meta combination (see key_binding)
+# Key combinations ("key_bindings"): modifiers, each side's code folded into the left one's.
+MODIFIERS = {29: 29, 97: 29, 42: 42, 54: 42, 56: 56, 100: 56, 125: 125, 126: 125}
+
+
+def known_action(a):
+    return a in ACTIONS
+
+
+def needs_pointer(a):
+    return a not in FLOAT_ACTIONS
 KEYS = "\0frametop_keys"  # keys of keyboards grabbed for the desktop, for other readers
 FT_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "layout", "ft-layout")
 DEFAULT_BUTTONS = {BTN_LEFT: "left", BTN_RIGHT: "right", BTN_MIDDLE: "middle",
@@ -292,7 +313,12 @@ def read_config(path=os.path.expanduser("~/.config/frametop.conf")):
 def read_rules(path=RULES_PATH):
     """{"devices": {id: {"role", "name"}}, "buttons": {id: {"<code>": action}},
     "controller_buttons": {"<hand>/<button>": action}, "controller_in_games": bool,
-    "vr_keyboard": one of VR_KEYBOARD_MODES, "vr_keyboard_persist": bool}."""
+    "key_bindings": {"<code>+<code>...": action},
+    "vr_keyboard": one of VR_KEYBOARD_MODES, "vr_keyboard_persist": bool}.
+
+    A rules file without "key_bindings" gets DEFAULT_KEY_BINDINGS (Meta+Shift+F:
+    float_toggle); one with its own list, even an empty one, does not.
+    """
     try:
         with open(path) as f:
             rules = json.load(f)
@@ -301,6 +327,8 @@ def read_rules(path=RULES_PATH):
     rules.setdefault("devices", {})
     rules.setdefault("buttons", {})
     rules.setdefault("controller_buttons", {})
+    if not isinstance(rules.get("key_bindings"), dict):
+        rules["key_bindings"] = dict(DEFAULT_KEY_BINDINGS)
     return rules
 
 
@@ -684,13 +712,71 @@ def main():
             vr_keyboard("show")
 
     def do_action(action, value, now):
-        """A mapped mouse or controller button (pointer mode only)."""
+        """A mapped mouse or controller button (pointer mode only, except FLOAT_ACTIONS)."""
         if action == "keyboard_toggle":
             if value == 1 and vr_keyboard_mode() != "never":
                 vr_keyboard("toggle")
+        elif action in FLOAT_ACTIONS:
+            if value == 1:
+                try:
+                    screens_sock.sendto(FLOAT_ACTIONS[action], FLOAT)
+                except OSError:
+                    pass  # Frametop desktop / ft-floatd not running
+                log(action)
         else:
             state["pointer"].action(action, value, now)
 
+
+    held_modifiers = set()  # on any keyboard, folded (MODIFIERS)
+    held_meta = set()  # the Meta keys held, as they are (KEY_LEFTMETA, KEY_RIGHTMETA)
+    meta_hidden = set()  # held Meta keys the desktop was told came up (a combination; key_binding)
+    combos_down = {}  # key code -> the action its combination started (released with it)
+
+    def key_binding(code, value, now):
+        """A key from a keyboard: does it complete a key combination ("key_bindings")?
+
+        True if it was taken for one (then it isn't typed).
+        """
+        nonlocal meta_down
+        if code in MODIFIERS:
+            (held_modifiers.add if value else held_modifiers.discard)(MODIFIERS[code])
+            if code in (KEY_LEFTMETA, KEY_RIGHTMETA):
+                (held_meta.add if value else held_meta.discard)(code)
+                if value == 0 and code in meta_hidden:
+                    meta_hidden.discard(code)
+                    return True  # the desktop already had it come up (below)
+            return False
+        if value == 1 and code not in combos_down and meta_hidden:
+            # Another key while Meta is still held after a combination: the desktop gets Meta
+            # back first, so Meta+that key still works there.
+            for c in sorted(meta_hidden):
+                to_screens(c, 1)
+            meta_hidden.clear()
+        if value == 0 and code in combos_down:
+            action = combos_down.pop(code)
+            if state["pointer"] or not needs_pointer(action):
+                do_action(action, 0, now)
+            return True
+        if value != 1 or not state["rules"]["key_bindings"]:
+            return value == 2 and code in combos_down
+        combo = "+".join(str(c) for c in sorted(held_modifiers) + [code])
+        action = state["rules"]["key_bindings"].get(combo)
+        if not known_action(action) or action in ("key", "none"):
+            return False
+        combos_down[code] = action
+        if held_meta - meta_hidden:
+            # The desktop saw Meta go down. Swallow it there now so Plasma's launcher and
+            # Meta+mouse window move/resize don't fire; the real Meta release is dropped above.
+            meta_down = False
+            to_screens(KEY_F24, 1)
+            to_screens(KEY_F24, 0)
+            for c in sorted(held_meta - meta_hidden):
+                to_screens(c, 0)
+            meta_hidden.update(held_meta)
+        if state["pointer"] or not needs_pointer(action):
+            do_action(action, 1, now)
+        log(f"key combination {combo}: {action}")
+        return True
 
     screens_down = set()  # keys the desktop was told went down and not yet up (see reconcile_desktop_keys)
 

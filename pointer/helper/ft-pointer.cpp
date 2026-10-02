@@ -281,6 +281,19 @@ std::string ExeDir() {
     return p.substr(0, p.rfind('/'));
 }
 
+// A Frametop desktop panel the laser can drag across: a screen (frametop.screen.N), a floating
+// window (frametop.float.N), or a floating window's popup (frametop.float.N.sub.K), not a
+// control of theirs.
+bool FramePanel(const std::string &key) {
+    for (const char *prefix : {"frametop.screen.", "frametop.float."}) {
+        if (key.rfind(prefix, 0) != 0) continue;
+        const std::string rest = key.substr(std::strlen(prefix));
+        const size_t dot = rest.find('.');
+        return dot == std::string::npos || rest.compare(dot, 5, ".sub.") == 0;
+    }
+    return false;
+}
+
 void SendTo(int fd, const char *name, const std::string &msg) {
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -421,7 +434,7 @@ std::vector<std::string> ParseIgnore(const std::string &list) {
 }
 
 bool Ignored(const std::vector<std::string> &patterns, const std::string &key) {
-    if (key.rfind("frametop.", 0) == 0) return false;  // screens, keyboard, future panels
+    if (key.rfind("frametop.", 0) == 0) return false;  // screens, floats, keyboard, instruments
     for (const auto &p : patterns)
         if (fnmatch(p.c_str(), key.c_str(), FNM_NOESCAPE) == 0) return true;
     return false;
@@ -620,6 +633,11 @@ int main() {
     bool leftHeld = false, tilting = false, tiltStart = false, swallowedRight = false;
     double tiltYaw = 0, tiltPitch = 0;
     double dragDistance = 0, lastDistance = 1.5;  // drag lock: distance from the anchor at the press
+    // While left is held on a FramePanel that hasn't moved yet, retarget dragDistance across
+    // other FramePanels (floating windows span multiple overlays). Cleared once the pressed
+    // panel moves (title-bar carry / screen drag).
+    std::string pressKey;
+    vr::HmdMatrix34_t pressPose{};
     bool onVrSettings = false;       // the cursor is on the SteamVR Settings page (kept while dragging)
     bool catcherHidesHit = false;    // the laser-catching dot hides SteamVR's hit dot (Settings page)
     Clock::time_point dropHoldUntil{};  // after a left release: keep the drag pose this long
@@ -687,6 +705,14 @@ int main() {
         nudging = false;
         leftHeld = true;
         dragDistance = lastDistance;
+        pressKey.clear();
+        if (FramePanel(lastHit)) {
+            vr::ETrackingUniverseOrigin uo;
+            auto it = handles.find(lastHit);
+            if (it != handles.end() &&
+                overlay->GetOverlayTransformAbsolute(it->second, &uo, &pressPose) == vr::VROverlayError_None)
+                pressKey = lastHit;
+        }
         tiltYaw = tiltPitch = 0;  // a new drag starts untilted
         dropHoldUntil = {};
         pulseAt = Clock::now();
@@ -698,6 +724,9 @@ int main() {
         // Hold the drag pose (tilt, frozen distance) while SteamVR finishes the drop.
         dropHoldUntil = Clock::now() + std::chrono::milliseconds(500);
         SendTo(out, "ft_pointer", "btn trigger 0");
+        // ft-screens releases a button held on its screens in KWin even when SteamVR hands
+        // the release to some other overlay (its catcher usually gets it; this is the backstop).
+        SendTo(out, "ft_screens", "up");
         if (gazeBack) gazeOwns = true, gazeBack = false;
     };
     // The left button, from the relay's "btn trigger", with gaze mode's held-back press (see
@@ -1257,7 +1286,7 @@ int main() {
                 overlay->GetOverlayTextureSize(h, &tw, &th);
                 vr::VROverlayTransformType tt = vr::VROverlayTransform_Invalid;
                 overlay->GetOverlayTransformType(h, &tt);
-                // ft-screens' panels (frametop.screen.N, the keyboard) are 0x0 and absolute too
+                // ft-screens' panels (frametop.screen.N, frametop.float.N, the keyboard) are 0x0 and absolute too
                 // (a shared texture), but they're real panels of any size.
                 sceneGraph[key] = (tw == 0 || th == 0) && tt == vr::VROverlayTransform_Absolute &&
                                   key.rfind("frametop.", 0) != 0;
@@ -1366,6 +1395,37 @@ int main() {
                     }
                 }
             }
+
+            // While left is held on a still FramePanel, let the locked ray retarget across other
+            // FramePanels (floating windows / their popups). Once that panel moves, the lock holds.
+            if (leftHeld && !pressKey.empty()) {
+                vr::ETrackingUniverseOrigin uo;
+                vr::HmdMatrix34_t now{};
+                auto it = handles.find(pressKey);
+                bool still = it != handles.end() &&
+                             overlay->GetOverlayTransformAbsolute(it->second, &uo, &now) == vr::VROverlayError_None;
+                for (int i = 0; still && i < 3; ++i)
+                    for (int j = 0; j < 4; ++j)
+                        if (std::fabs(now.m[i][j] - pressPose.m[i][j]) > 0.001f) still = false;
+                if (still) {
+                    Hit h;
+                    for (const auto &[key, handle] : handles) {
+                        if (!visible[key] || !FramePanel(key)) continue;
+                        vr::VROverlayIntersectionParams_t params{};
+                        params.vSource = {float(anchor.x), float(anchor.y), float(anchor.z)};
+                        params.vDirection = {float(dir.x), float(dir.y), float(dir.z)};
+                        params.eOrigin = vr::TrackingUniverseStanding;
+                        vr::VROverlayIntersectionResults_t r{};
+                        if (overlay->ComputeOverlayIntersection(handle, &params, &r) && r.fDistance > 0.05f &&
+                            r.fDistance < h.along)
+                            h.along = r.fDistance, h.key = key;
+                    }
+                    if (h.along < 1e8) dragDistance = h.along, lastHit = h.key;
+                } else {
+                    pressKey.clear();  // carried: the lock holds for the rest of this press
+                }
+            }
+
             // While dragging: keep the press-time distance and show the non-interactive marker.
             // On a scene-graph plane or a panel's edge: the laser-catching dot goes 5 cm behind it.
             double distance = dragging ? dragDistance : (best < 1e8 ? best : freeDistance);
