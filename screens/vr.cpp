@@ -1734,7 +1734,8 @@ void UpdateVisibility() {
             visible = visFade > 0.02f;
         }
         // Keep chrome interactable even when the surface is fully transparent.
-        if (!visible && s.shown && s.controls > 0.02f) visible = true, visFade = 0.f;
+        // Concealed screens stay off: chrome must not revive them.
+        if (!visible && s.shown && !s.alone && s.controls > 0.02f) visible = true, visFade = 0.f;
         if (yield && visible && !ScreenKeepsThroughDashboard(i, s)) {
             visible = false;
             visFade = 0.f;

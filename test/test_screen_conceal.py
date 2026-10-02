@@ -276,6 +276,8 @@ class SourceWiring(unittest.TestCase):
                         "conceal/reveal before the hotkey's hide/show/toggle")
         self.assertIsNone(re.search(r'"hide %', src), "not 'hide N': older builds read hide* as the hotkey")
         self.assertIn("each(word, [&](Screen &s) { s.alone = conceal; });", src)
+        self.assertIn("!s.alone && s.controls > 0.02f", src,
+                      "chrome keep-alive must not revive a concealed screen")
         # the instruments never look at `alone`
         inst = src[src.index("void UpdateInstrumentVisibility()"):]
         inst = inst[:inst.index("\n}\n")]
