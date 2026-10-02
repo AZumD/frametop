@@ -71,10 +71,11 @@ get N    screens    head    state    key code value    scale N s
 toplevels    input N move|down|up|leave [x y [left|right|middle]]
 visibility always|dashboard|except_dashboard|gesture|toggle    wrist degrees    gesture left|right degrees
 hide | show | toggle    controllers always|outside_games|dashboard    ingames hide|visible
+conceal N|all    reveal N|all    concealed
 vrkeyboard show|hide|toggle|close
 ```
 
-`vrkeyboard` is described under Input relay.
+`conceal` takes a screen's panel off the headset on its own, whatever the visibility mode or hotkey say (windows stay on it; the flag is `"hidden"` in the layout, set by `ft-layout hide N` and the Shown switches in Display Settings); `concealed` lists them (`ok 2 3`). `vrkeyboard` is described under Input relay.
 
 `ft-screens --no-vr` skips OpenVR entirely (no overlays, no relay contact) for a disposable nested desktop beside the live one; see `screens/test/headless.sh` and [SCREENS_TEST_HEADLESS.md](README/SCREENS_TEST_HEADLESS.md). Production defaults (`@ft_screens`, VR on) are unchanged.
 ## Input relay

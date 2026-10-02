@@ -27,6 +27,9 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                         "hand": "left"},              ft-screens: tracked-device anchor (hand kept
                                                       for left/right for older readers)
                 "scale": 1.0,                         KWin output scale (1.0 = 100%)
+                "hidden": true,                       ft-screens: hidden on its own, whatever the
+                                                      visibility mode (ft-layout hide N); windows
+                                                      stay on the screen
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
    "instruments": [{"id": "clock"|"battery"|"storage"|"sd"|"date"|"media"|"image", "type": …,
@@ -60,6 +63,9 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout action NAME [--duration MS]   # semantic actions (chrome / input / Quickshell)
   ft-layout action list [--json]
   ft-layout toggle                   hide or show all screens (ft-screens)
+  ft-layout hide N|all               hide a screen on its own (it stays hidden whatever the
+  ft-layout show N|all               visibility mode or the hotkey say), or show it again
+  ft-layout hidden                   the screens hidden on their own
   ft-layout pin all|N left|right|head|head-rigid|yaw-follow|position-follow
   ft-layout opacity N ACTIVE [IDLE]  # live + layout; default idle=ACTIVE; also turns attention off
   ft-layout profile list [--json]
@@ -119,9 +125,10 @@ VISIBILITY = {"mode": "always", "wrist_angle": 60, "gesture_hand": "left", "gest
 DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
             "screens": [], "instruments": [], "panel_size": list(DEFAULT_PANEL)}
-# Spatial fields stored in a named profile (not resolution/scale/primary/visibility).
+# Spatial fields stored in a named profile (not resolution/scale/primary/visibility mode).
+# Per-screen "hidden" is spatial workspace state and travels with profiles.
 PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity",
-                       "active_opacity", "idle_opacity", "attention", "follow_deadzone")
+                       "active_opacity", "idle_opacity", "attention", "follow_deadzone", "hidden")
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 INSTRUMENT_ANCHORS = ("world", "head", "head-rigid", "yaw-follow", "position-follow")
@@ -328,7 +335,7 @@ def spatial_screen(entry):
     """Profile payload for one screen (spatial only)."""
     out = {}
     for k in PROFILE_SCREEN_KEYS:
-        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity", "follow_deadzone"):
+        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity", "follow_deadzone", "hidden"):
             continue
         if k in entry:
             out[k] = entry[k]
@@ -336,6 +343,8 @@ def spatial_screen(entry):
     out["opacity"] = round(active, 3)  # legacy readers
     out["active_opacity"] = round(active, 3)
     out["idle_opacity"] = round(idle, 3)
+    if entry.get("hidden"):
+        out["hidden"] = True
     pin = entry.get("pin")
     anchor = pin_anchor(pin)
     if anchor and anchor != "world" and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
@@ -1304,6 +1313,42 @@ def send_visibility(sock, layout):
     sock.ask(f"ingames {v['in_games']}")
 
 
+def send_hidden(sock, layout):
+    """Screens hidden on their own (ft-screens' conceal/reveal)."""
+    for i in range(screen_count(layout)):
+        word = "conceal" if screen_entry(layout, i).get("hidden") else "reveal"
+        try:
+            sock.ask(f"{word} {i + 1}")
+        except RuntimeError as e:
+            log(f"screens hidden on their own: {e}")  # an ft-screens from before conceal
+            return
+
+
+def set_hidden(which, hidden):
+    """Hide (or show) screen N (1-based) or "all" on its own: saved, and applied if the
+    desktop runs. Windows stay on the screen."""
+    layout = load_layout()
+    n = screen_count(layout)
+    picked = list(range(n)) if which == "all" else [int(which) - 1] if which.isdigit() else []
+    if not picked or not all(0 <= i < n for i in picked):
+        raise RuntimeError(f"no screen {which} (1 to {n})")
+    screens = layout.setdefault("screens", [])
+    while len(screens) < n:
+        screens.append({})
+    for i in picked:
+        if hidden:
+            screens[i]["hidden"] = True
+        else:
+            screens[i].pop("hidden", None)
+    save_layout(layout)
+    try:
+        sock = screens_socket()
+        for i in picked:
+            sock.ask(f"{'conceal' if hidden else 'reveal'} {i + 1}")
+    except RuntimeError as e:
+        log(f"saved; not applied now: {e}")
+
+
 def parse_get(reply):
     """ft-screens' "get": pose, size, curve, active/idle opacity, anchor, device->screen rel.
 
@@ -1584,6 +1629,7 @@ def apply_screens(wait=0, duration_ms=0):
             apply_opacity(sock, i + 1, t.get("opacity", DEFAULT_OPACITY), t.get("idle_opacity"))
             apply_attention(sock, i + 1, t.get("attention"))
             apply_follow_deadzone(sock, i + 1, t.get("follow_deadzone"))
+    send_hidden(sock, layout)
     try:
         sock.ask("vrkeyboard close")  # the keyboard, if open, goes too: a reset starts over
     except RuntimeError:
@@ -2516,6 +2562,10 @@ def merge_profile_into_layout(layout, profile):
             entry["follow_deadzone"] = screen_follow_deadzone(spatial)
         else:
             entry.pop("follow_deadzone", None)
+        if spatial.get("hidden"):
+            entry["hidden"] = True
+        else:
+            entry.pop("hidden", None)
         screens[i] = entry
     layout["screens"] = screens
     layout["mode"] = "custom"
@@ -3015,6 +3065,11 @@ def main(argv):
             print(screen_args())
         elif cmd == "toggle":
             log(screens_socket().ask("toggle"))
+        elif cmd in ("hide", "show") and len(argv) == 3:
+            set_hidden(argv[2], cmd == "hide")
+        elif cmd == "hidden":
+            layout = load_layout()
+            print(" ".join(str(i + 1) for i in range(screen_count(layout)) if screen_entry(layout, i).get("hidden")))
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
             kwin_follow()  # pinned screens go last
@@ -3129,6 +3184,7 @@ def main(argv):
                                 while screens_up(sock) < screen_count() and time.time() < deadline:
                                     time.sleep(1)
                                 send_visibility(sock, load_layout())
+                                send_hidden(sock, load_layout())
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                     else:
@@ -3156,6 +3212,7 @@ def main(argv):
                         if backend() == "screens":
                             try:
                                 send_visibility(screens_socket(), load_layout())
+                                send_hidden(screens_socket(), load_layout())
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                             try:

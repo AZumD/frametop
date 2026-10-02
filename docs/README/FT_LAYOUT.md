@@ -23,6 +23,24 @@ layout/ft-layout scale
 layout/ft-layout instrument list|enable|…
 ```
 
+## Hiding one screen at a time
+
+```
+layout/ft-layout hide N|all     # hidden on its own, whatever the visibility mode or hotkey say
+layout/ft-layout show N|all
+layout/ft-layout hidden         # the screens hidden on their own (1-based, space separated)
+```
+
+The flag is `"hidden": true` on the screen's entry in `~/.config/frametop-layout.json`
+(absent when shown). Named Spatial Profiles carry it via `PROFILE_SCREEN_KEYS`.
+`set_hidden` saves it and, if the desktop runs, sends `conceal N` / `reveal N` to
+ft-screens. `send_hidden` pushes the whole set; it runs at the end of `apply_screens`
+(after the screens are placed or transitioned) and on the `apply --wait` startup paths.
+An ft-screens from before `conceal` is logged and skipped. Windows stay on a hidden
+screen's KWin output; only the VR overlay is suppressed (`alone` in ft-screens). Spatial
+Instruments are unaffected. The CLI uses hide/show; the wire protocol uses
+conceal/reveal/concealed so it never collides with the global `hide` command.
+
 ## Tests
 
 ```

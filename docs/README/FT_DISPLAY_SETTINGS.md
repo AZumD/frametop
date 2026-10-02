@@ -28,6 +28,10 @@ Open a specific tab with `FT_DISPLAY_PAGE=layout|visibility|instruments|backgrou
 | `gesture` | While looking at a chosen controller |
 | `toggle` | Only after hotkey show |
 
+## Screens shown
+
+On the Visibility tab, under **Screens shown** (before "Screens on a wrist or head"), each screen has a **Shown / Hidden** switch (`backend.screensShown`, `backend.setScreenShown(index, shown)` → `ft_layout.set_hidden`). A hidden screen stays hidden whatever the visibility mode says, and the hotkey doesn't bring it back; the windows on it stay there. It is saved as `"hidden": true` in the layout and sent to ft-screens as `conceal N` / `reveal N` when the desktop runs. Spatial Instruments are not affected.
+
 ## Spatial Instruments UI
 
 Built-in types (Clock, Date, Battery, Media, Device storage, SD) show as a 2-column card grid. Previews copy the real ft-screens draw style: seven-segment clock, 5×7 + seven-segment date, five battery blocks (no percent), disk/SD icon + usage bar, media title + transport glyphs. Image/Launcher cards use a transparent-checker / square-icon stand-in. Enable on the card; **Configure…** opens a settings dialog.
@@ -47,4 +51,5 @@ python3 test/test_instrument_visibility.py
 python3 test/test_instrument_configure_dialog.py
 python3 test/test_gaze_attention_order.py
 python3 test/test_apply_without_head.py
+python3 test/test_screen_conceal.py
 ```

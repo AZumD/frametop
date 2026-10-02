@@ -2206,6 +2206,27 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
+                    Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Screens shown" }
+
+                    Repeater {
+                        model: backend.screensShown
+                        delegate: Controls.Switch {
+                            required property var modelData
+                            required property int index
+                            Kirigami.FormData.label: "Screen " + (index + 1) + ":"
+                            text: modelData ? "Shown" : "Hidden"
+                            checked: modelData
+                            onToggled: backend.setScreenShown(index, checked)
+                        }
+                    }
+                    Controls.Label {
+                        text: "A hidden screen stays hidden whatever the choices above say, and Meta+Shift+H doesn't bring it back. Windows on it stay there."
+                        opacity: 0.7
+                        font: Kirigami.Theme.smallFont
+                        wrapMode: Text.Wrap
+                        Layout.maximumWidth: Kirigami.Units.gridUnit * 26
+                    }
+
                     Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Screens on a wrist or head" }
 
                     RowLayout {

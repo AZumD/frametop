@@ -516,6 +516,7 @@ struct Screen {
     double curve = 0;             // cylinder radius in metres; 0 = flat
     const void *shown = nullptr;  // a frame arrived
     bool visible = false;         // shown in VR right now
+    bool alone = false;           // concealed: kept off the headset (windows stay on the screen)
     // Attention-aware opacity: final = attentionResolved * visibilityFade.
     // Legacy single "opacity" maps to active=idle=X with attention off.
     float activeOpacity = 1.f;
@@ -1722,7 +1723,7 @@ void UpdateVisibility() {
         ApplyOverlaySort(s.overlay, 0, dash);
         for (auto o : s.Controls()) ApplyOverlaySort(o, dash ? 0 : 1, dash);
 
-        bool visible = s.shown && (shared || s.drag != Drag::None);
+        bool visible = s.shown && (shared || s.drag != Drag::None) && !s.alone;
         float visFade = 1;
         Mat p;
         // Wrist fade is only for controller-pinned screens.
@@ -4544,6 +4545,8 @@ void ft_vr_keyboard_hide(void) {
 //   wrist <degrees>           a controller-pinned screen shows while you see its front within this
 //   gesture <left|right> <degrees>   the gesture mode: look within this of that controller
 //   hide | show | toggle      the manual switch (see g_manual)
+//   conceal <screen|all> | reveal <screen|all>   a screen hidden on its own, whatever the mode
+//   concealed     -> "ok [<screen> ...]"   the screens hidden on their own
 //   controllers always|outside_games|dashboard   when controllers' lasers work the screens
 //   ingames hide|visible      during a VR game, "always" acts like "only with the dashboard"
 //                             (hide), or stays as it is (visible)
@@ -4806,6 +4809,18 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
     } else if (std::sscanf(cmd, "gesture %15s %lf", hand, &w) == 2) {
         g_gestureHand = std::strcmp(hand, "right") == 0 ? "right" : "left";
         g_gestureAngle = std::clamp(w, 5.0, 90.0);
+        std::snprintf(reply, size, "ok");
+    } else if (std::strncmp(cmd, "concealed", 9) == 0) {
+        // Checked before "conceal %s": sscanf's space matches nothing, so "concealed" would parse as "conceal ed".
+        int len = std::snprintf(reply, size, "ok");
+        for (auto &[i, s] : g_screens)
+            if (len < size && s.alone) len += std::snprintf(reply + len, size - len, " %d", i + 1);
+    } else if (std::sscanf(cmd, "conceal %15s", word) == 1 || std::sscanf(cmd, "reveal %15s", word) == 1) {
+        const bool conceal = cmd[0] == 'c';
+        if (std::strcmp(word, "all") && !Find(std::atoi(word)))
+            return (void)std::snprintf(reply, size, "error no screen %s", word);
+        each(word, [&](Screen &s) { s.alone = conceal; });
+        UpdateVisibility();
         std::snprintf(reply, size, "ok");
     } else if (!std::strncmp(cmd, "hide", 4) || !std::strncmp(cmd, "show", 4) || !std::strncmp(cmd, "toggle", 6)) {
         const Mode eff = EffectiveMode();

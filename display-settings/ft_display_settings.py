@@ -927,6 +927,22 @@ class Backend(QObject):
             else:
                 self._ask_screens(f"gesture {v['gesture_hand']} {float(v['gesture_angle']):.1f}")
 
+    @Property("QVariantList", notify=changed)
+    def screensShown(self):
+        """For each screen, whether it shows (False: hidden on its own, ft-layout hide N)."""
+        layout = ft_layout.load_layout()
+        return [not ft_layout.screen_entry(layout, i).get("hidden") for i in range(ft_layout.screen_count(layout))]
+
+    @Slot(int, bool)
+    def setScreenShown(self, index, shown):
+        """Hide screen `index` (0-based) on its own, whatever the visibility mode, or show it.
+        Saved in the layout, and applied at once if the desktop runs."""
+        try:
+            ft_layout.set_hidden(str(index + 1), not shown)
+        except RuntimeError as e:
+            self.message.emit(f"Couldn't change the screen: {e}", True)
+        self.changed.emit()
+
     @Slot(str)
     def pinAll(self, hand):
         reply = self._ask_screens(f"pin all {hand}") if self._running else None

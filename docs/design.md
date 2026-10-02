@@ -158,6 +158,8 @@ The gamescope session leaves `QT_IM_MODULE=xim`, `GTK_IM_MODULE=xim` and `XMODIF
 
 The keyboard shares the Steam menu's space, so every 9 polls ft-screens looks at whether SteamVR's dashboard or Steam's keyboard overlay is up and moves the panel out of the way, then back to where it was (`g_steamInFront`, `g_keyboardAside`). It opens only with a head pose, since it is placed relative to the eyes. The pointer helper counts every `frametop.*` overlay as a real panel, because the keyboard's shared texture reports no size and the size check would drop it.
 
+A screen can also be taken off the headset alone (`conceal`, `"hidden"` in the layout) without touching the window on it, for a desktop screen that is wanted for the apps on it but not in view. It's a separate flag from the visibility mode, so no mode or hotkey reveals it.
+
 ## The desktop session
 
 The session is modeled on SteamOS's `steamos-nested-desktop` and runs beside it. It has its own runtime directory, config (`~/.config/frametop`), and state, so it never disturbs the stock desktop's layout or panels. It runs on a private D-Bus from `dbus-run-session`, which has two consequences. KDE only launches apps in systemd scopes when systemd is on the session bus, so everything started in the desktop lands in its systemd unit, and stopping the unit would kill all of it; `session/keep-apps.sh` moves those programs out first. And tools that need the real user bus, like podman and `distrobox-host-exec`, have to be pointed at it explicitly. Failed activations of `org.freedesktop.systemd1` on that private bus are expected and are not themselves the plasmashell crash.
