@@ -7,6 +7,8 @@ WIDTH=1920         # gamescope: pixels per screen (at most 1920x1080 worth)
 HEIGHT=1080
 PHYS_WIDTH=1.6     # gamescope: panel width in metres, docked
 REMOTE=0           # 1 = serve the desktop over VNC on the tailnet (port 5900; see README)
+FLOAT_SLOTS=8      # spare KWin outputs for floating windows (at most 16); change needs a desktop restart
+FLOAT_MARGIN=300   # pixels of margin around a floating window for menus (see docs/floating-windows.md)
 POINTER=0          # 1 = the mouse drives the universal 3D pointer (ft_pointer driver) instead of a plain mouse
 POINTER_SENSITIVITY=0.03   # degrees per mouse count
 POINTER_IDLE=30    # seconds without mouse use before the controllers get their laser back

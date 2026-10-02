@@ -2917,13 +2917,21 @@ def nested_env():
 
 
 def outputs(env):
-    """KWin's outputs, in screen order (WL-0, WL-1, ...)."""
+    """KWin's outputs for the screens, in screen order (WL-0, WL-1, ...).
+
+    Outputs after the configured screen count are spares for floating windows
+    (ft-floatd places them). Layout must never rearrange those.
+    """
     try:
         data = json.loads(subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, env=env,
                                          timeout=10).stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return []
     outs = [o for o in data.get("outputs", []) if o.get("connected")]
+    if backend() == "screens":
+        count = screen_count()
+        outs = [o for o in outs if not re.fullmatch(r"WL-(\d+)", o.get("name", "")) or
+                int(o["name"][3:]) < count]
     return sorted(outs, key=lambda o: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", o.get("name", ""))])
 
 
