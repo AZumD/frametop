@@ -38,6 +38,7 @@ screens/test/headless.sh float list
 
 ```
 python3 test/test_float_screens_wiring.py
+python3 test/test_float_cross_panel_dnd.py
 bash test/test_steamvr_client_init.sh   # static: --no-vr / ft_screens_test present
 # On the Frame, after screens/build.sh:
 #   screens/test/headless.sh start

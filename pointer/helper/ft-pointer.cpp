@@ -103,6 +103,13 @@
 // press and collision is frozen, so dragging past a panel's edge (resizing, moving)
 // doesn't jump the cursor to free space or swap in the laser-catching dot, which made
 // SteamVR's resize snap back.
+// A left release also goes to ft-screens ("up"), which releases a button held on its
+// screens in KWin if SteamVR gave the release to some other overlay.
+// Across Frametop's panels (a drag and drop, or a window moved from one screen or floating
+// window to another), the lock gives way: while the left button is held on one of ft-screens'
+// panels, the ray is still tested against ft-screens' panels, and the cursor goes onto
+// whichever it meets first. Not while that panel is being carried (its title bar or its bar):
+// then the ray would find what's behind it.
 //
 // Head follow (experimental, off by default; POINTER_FOLLOW=1, or the relay's "follow toggle"): the cursor
 // is carried by a reference direction, where the head faced when it last settled, and turns
