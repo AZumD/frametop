@@ -2,7 +2,8 @@
 # Install everything on the Steam Frame: the build container, Frametop (multi-screen
 # desktop, input relay, settings apps), and optionally the Bluetooth fixes and the
 # 3D-mouse SteamVR driver. Run it on the headset in a terminal, from this repo. It's
-# safe to re-run, for example after `git pull`.
+# safe to re-run, for example after `git pull`. (Hand tracking, hands/, is deferred: it
+# isn't offered here — install with hands/run.sh install, then ft-handsctl on.)
 # (It also works from a PC over SSH; see "Developing from a PC" in the README.)
 #
 # Usage: ./install.sh [--yes] [--no-bluetooth] [--with-pointer] [--no-pointer]

@@ -37,6 +37,10 @@
 //     own; also for flatscreen games, which aren't scene apps).
 //   - during a VR game the screens (and Spatial Instruments) hide unless the dashboard is
 //     open (g_inGames, default), or stay visible over it; the hotkey still shows them.
+//   - hand cutouts (handcut.cpp): where ft-hands (hands/) tracks a hand between an eye and a
+//     screen, that eye sees through the screen (to Room View). Only then is the screen
+//     drawn by us into a side-by-side buffer; otherwise its client buffer is shown as is.
+//     Floating windows skip cutouts (texture-bounds crops). Tracking is opt-in (ft-handsctl).
 //   - the catcher: a button pressed on a screen is released in KWin even when the laser
 //     lets go between panels (UpdateCatcher). Needed for floating-window title-bar carry
 //     and cross-panel releases.
@@ -48,8 +52,10 @@
 // and handle are placed whenever their screen moves.
 #include "vr.h"
 #include "coords.h"
+#include "handcut.h"
 #include "keyboard.h"
 
+#include <drm_fourcc.h>
 #include <openvr.h>
 
 #include <fcntl.h>
@@ -531,6 +537,10 @@ struct Screen {
     double curve = 0;             // cylinder radius in metres; 0 = flat
     const void *shown = nullptr;  // a frame arrived
     bool visible = false;         // shown in VR right now
+    const void *key = nullptr;    // the client buffer on it now, and its dmabuf (for cutouts)
+    ft_dmabuf buf{};
+    vr::SharedTextureHandle_t plain = 0;  // that buffer's SteamVR import
+    bool cutting = false;         // showing a cutout buffer (side by side) instead
     bool alone = false;           // concealed: kept off the headset (windows stay on the screen)
     // Attention-aware opacity: final = attentionResolved * visibilityFade.
     // Legacy single "opacity" maps to active=idle=X with attention off.
@@ -581,6 +591,7 @@ struct Screen {
     // A floating window's panel: the window's rectangle in the buffer, its title bar height,
     // and the density (metres per buffer pixel).
     bool floating = false;        // a spare output's panel
+    int floatSlot = 0;            // 1-based; overlay key frametop.float.N
     bool floatOn = false;         // ft-floatd has a window on it ("float" .. "unfloat")
     bool outputOn = false;        // KWin has the spare output turned on
     bool minimized = false;
@@ -618,6 +629,13 @@ struct Screen {
 };
 std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
+
+// Hand cutouts (optional; inert until ft-hands publishes /run/user/UID/frametop-hands/hands).
+bool g_cutouts = true;          // the cutouts command turns them off
+handcut::Hands g_hands;
+handcut::Renderer g_cutter;
+int g_cutterState = 0;          // 0 not tried, 1 ready, -1 unavailable
+std::map<const void *, vr::SharedTextureHandle_t> g_cutImports;
 
 // --- Spatial Instruments (ambient VR info; not desktop surfaces) ---
 enum class InstrumentType { Clock, Battery, Storage, Sd, Date, Media, Image, Launcher };
@@ -732,7 +750,8 @@ double g_wristAngle = 60;    // a pinned screen shows while you see its front wi
 double g_gestureAngle = 20;  // gesture: look within this of the controller
 std::string g_gestureHand = "left";
 Lasers g_lasers = Lasers::OutsideGames;  // when controllers' lasers work the screens (see the top)
-bool g_gameRunning = false;              // a scene app (VR game) is running
+bool g_sceneApp = false;                 // SteamVR scene application (VR game) — gates OutsideGames lasers
+bool g_gameRunning = false;              // scene app or visible flatscreen desktopgame — hides displays
 InGames g_inGames = InGames::Hide;       // during a VR game, the always mode acts like the dashboard mode
 
 // ---------------------------------------------------------------- chrome (bar, button, handle)
@@ -1113,20 +1132,21 @@ void PlaceChrome(Screen &s) {
     ChromeSize(s);
     const double bar = s.chrome, button = s.grip;
     const auto offsets = ControlOffsets(s);
-    vr::VROverlay()->SetOverlayWidthInMeters(s.bar, float(bar));
-    vr::VROverlay()->SetOverlayWidthInMeters(s.curveButton, float(button));
-    vr::VROverlay()->SetOverlayWidthInMeters(s.rollButton, float(button));
-    vr::VROverlay()->SetOverlayWidthInMeters(s.handle, float(s.grip));
-    vr::VROverlay()->SetOverlayWidthInMeters(s.anchorButton, float(button));
-    for (int i = 0; i < kSlotCount; ++i)
-        vr::VROverlay()->SetOverlayWidthInMeters(s.slotButton[i], float(button));
+    auto setW = [](vr::VROverlayHandle_t o, float w) {
+        if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->SetOverlayWidthInMeters(o, w);
+    };
+    setW(s.bar, float(bar));
+    setW(s.curveButton, float(button));
+    setW(s.rollButton, float(button));
+    setW(s.handle, float(s.grip));
+    setW(s.anchorButton, float(button));
+    for (int i = 0; i < kSlotCount; ++i) setW(s.slotButton[i], float(button));
     if (s.floating) {
-        if (s.dockButton != vr::k_ulOverlayHandleInvalid)
-            vr::VROverlay()->SetOverlayWidthInMeters(s.dockButton, float(button));
-        if (s.closeButton != vr::k_ulOverlayHandleInvalid)
-            vr::VROverlay()->SetOverlayWidthInMeters(s.closeButton, float(button));
+        setW(s.dockButton, float(button));
+        setW(s.closeButton, float(button));
     }
-    vr::VROverlay()->SetOverlayCurvature(s.bar, s.curve > 0 ? float(std::min(1.0, bar / (2 * M_PI * s.curve))) : 0.f);
+    if (s.bar != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayCurvature(s.bar, s.curve > 0 ? float(std::min(1.0, bar / (2 * M_PI * s.curve))) : 0.f);
     PlaceSubs(s);
     auto controls = s.Controls();
     if (s.pinned != kNone) {
@@ -1328,21 +1348,46 @@ double FacingAngle(const Mat &p, const Mat &head) {
 }
 
 // The screens' shared visibility for the mode (before a pinned screen's own facing rule).
-// The mode in effect: during a VR game (with g_inGames Hide), "always" becomes "only with
+// The mode in effect: during a SteamVR game (with g_inGames Hide), "always" becomes "only with
 // the dashboard open", so the screens stay out of the game until you open the dashboard.
 Mode EffectiveMode() {
     return g_gameRunning && g_inGames == InGames::Hide && g_mode == Mode::Always ? Mode::Dashboard : g_mode;
 }
 
-// A VR game starting or stopping (checked twice a second) resets the hide/show switch, whose
-// meaning depends on the mode in effect.
+// Flatscreen / gamescope sessions SteamVR shows as overlays (not scene apps). Keys look like
+// valve.steam.desktopgame.0. Require visibility: Steam often leaves the key registered after
+// exit, and treating a hidden key as "game running" turned off OutsideGames lasers on Frametop.
+bool FlatscreenGameVisible() {
+    auto visible = [](const char *key) {
+        vr::VROverlayHandle_t h = vr::k_ulOverlayHandleInvalid;
+        return vr::VROverlay()->FindOverlay(key, &h) == vr::VROverlayError_None &&
+               vr::VROverlay()->IsOverlayVisible(h);
+    };
+    for (int i = 0; i < 16; ++i) {
+        char key[64];
+        std::snprintf(key, sizeof key, "valve.steam.desktopgame.%d", i);
+        if (visible(key)) return true;
+    }
+    return visible("valve.steam.desktopgame");
+}
+
+// A SteamVR game starting or stopping (checked twice a second) resets the hide/show switch,
+// whose meaning depends on the mode in effect. Display hide covers scene apps and visible
+// flatscreen panels; controller lasers (OutsideGames) still follow scene apps only — flatscreen
+// games are not scene apps (see controllers dashboard mode in the file header).
 void UpdateGame() {
     if (g_tick % 45) return;
-    const bool running = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
-    if (running == g_gameRunning) return;
+    const bool scene = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
+    const bool flat = FlatscreenGameVisible();
+    const bool running = scene || flat;
+    if (scene == g_sceneApp && running == g_gameRunning) return;
+    const bool was = g_gameRunning;
+    g_sceneApp = scene;
     g_gameRunning = running;
-    g_manual = false;
-    std::printf("%s\n", running ? "a VR game started" : "the VR game ended");
+    if (running != was) {
+        g_manual = false;
+        std::printf("%s\n", running ? "a SteamVR game started" : "the SteamVR game ended");
+    }
 }
 
 bool ModeVisible() {
@@ -1840,9 +1885,11 @@ void UpdateVisibility() {
             visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
             visible = visFade > 0.02f;
         }
-        // Keep chrome interactable even when the surface is fully transparent.
-        // Concealed screens stay off: chrome must not revive them.
-        if (!visible && s.shown && !s.alone && s.controls > 0.02f) visible = true, visFade = 0.f;
+        // Keep chrome interactable when the surface is fully transparent, but never for
+        // concealed screens, idle float slots, or while ModeVisible says hide (e.g. a game).
+        if (!visible && shared && s.shown && !s.alone && s.controls > 0.02f &&
+            (!s.floating || s.floatOn))
+            visible = true, visFade = 0.f;
         if (yield && visible && !ScreenKeepsThroughDashboard(i, s)) {
             visible = false;
             visFade = 0.f;
@@ -1853,9 +1900,9 @@ void UpdateVisibility() {
 
 
 // Controllers' lasers on the screens (see the top): the flag follows the mode and whether a
-// VR game runs.
+// VR scene app runs (flatscreen desktopgame does not count — use controllers dashboard for that).
 void UpdateLasers() {
-    const bool want = g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_gameRunning);
+    const bool want = g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_sceneApp);
     for (auto &[i, s] : g_screens) {
         if (s.lasers == want) continue;
         s.lasers = want;
@@ -1923,7 +1970,8 @@ void UpdateControls() {
         // wanted: SteamVR's laser still hits them, and the hover event brings them in, for
         // any device's laser, whatever its shape.
         if (s.visible && !s.controlsUp) {
-            for (auto o : s.Controls()) vr::VROverlay()->ShowOverlay(o);
+            for (auto o : s.Controls())
+                if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->ShowOverlay(o);
             s.controlsUp = true;
             ApplyAlpha(s);
         }
@@ -2239,6 +2287,57 @@ void Push(Screen &s, double notches) {
 
 // ---------------------------------------------------------------- floating windows
 
+void DestroyOverlayHandle(vr::VROverlayHandle_t &o) {
+    if (o == vr::k_ulOverlayHandleInvalid) return;
+    vr::VROverlay()->DestroyOverlay(o);
+    o = vr::k_ulOverlayHandleInvalid;
+}
+
+// Spare float slots only create the main panel at start. Chrome (bar/dock/close/…) is created
+// on the first "float" and destroyed on "unfloat", so idle spares do not burn SteamVR's
+// overlay budget (which also blocks valve.steam.desktopgame.* flatscreen panels).
+void ReleaseFloatChrome(Screen &s) {
+    if (!s.floating) return;
+    DestroyOverlayHandle(s.bar);
+    DestroyOverlayHandle(s.curveButton);
+    DestroyOverlayHandle(s.rollButton);
+    DestroyOverlayHandle(s.handle);
+    DestroyOverlayHandle(s.dockButton);
+    DestroyOverlayHandle(s.closeButton);
+    s.controls = 0;
+    s.controlsUp = false;
+    s.hover[0] = s.hover[1] = s.hover[2] = s.hover[3] = false;
+    s.hoverDock = s.hoverClose = false;
+}
+
+void EnsureFloatChrome(Screen &s) {
+    if (!s.floating || s.bar != vr::k_ulOverlayHandleInvalid || s.floatSlot <= 0) return;
+    char prefix[64], label[64], key[80], name[80];
+    std::snprintf(prefix, sizeof prefix, "frametop.float.%d", s.floatSlot);
+    std::snprintf(label, sizeof label, "Floating window %d", s.floatSlot);
+    static const auto corner = CornerTexture(64);
+    static const auto curve = CurveTexture(64);
+    static const auto roll = RollTexture(64);
+    static const auto dock = DockTexture(64);
+    static const auto close = CloseTexture(64);
+    auto chrome = [&](const char *part, const char *what, const std::vector<uint8_t> &px, int w, int h) {
+        std::snprintf(key, sizeof key, "%s.%s", prefix, part);
+        std::snprintf(name, sizeof name, "%s: %s", label, what);
+        return MakeChrome(key, name, px, w, h);
+    };
+    s.bar = chrome("bar", "move", BarTexture(false), 256, 24);
+    if (s.bar != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayFlag(s.bar, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+    s.curveButton = chrome("curve", "curve", curve, 64, 64);
+    s.rollButton = chrome("roll", "roll", roll, 64, 64);
+    if (s.rollButton != vr::k_ulOverlayHandleInvalid)
+        vr::VROverlay()->SetOverlayFlag(s.rollButton, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
+    s.handle = chrome("resize", "resize", corner, 64, 64);
+    s.dockButton = chrome("dock", "back to the desktop", dock, 64, 64);
+    s.closeButton = chrome("close", "close", close, 64, 64);
+    ApplyAlpha(s);
+}
+
 void CropOverlay(vr::VROverlayHandle_t o, const Screen &s, int x, int y, int w, int h) {
     if (s.width <= 0 || s.height <= 0 || w <= 0 || h <= 0) return;
     vr::VRTextureBounds_t b = {float(x) / s.width, float(y) / s.height, float(x + w) / s.width,
@@ -2254,6 +2353,7 @@ void ApplyCrop(Screen &s) {
 }
 
 void SetFloat(Screen &s, double mpp, int x, int y, int w, int h, int title) {
+    EnsureFloatChrome(s);
     const bool first = !s.floatOn || s.cropW <= 0;
     const double oldW = s.metres, oldH = s.heightMetres();
     s.floatOn = true;
@@ -2276,6 +2376,7 @@ void Unfloat(Screen &s) {
     if (s.drag != Drag::None) EndDrag(s);
     for (auto &[k, sub] : s.subs) vr::VROverlay()->DestroyOverlay(sub.overlay);
     s.subs.clear();
+    ReleaseFloatChrome(s);
     s.floatOn = s.minimized = s.titleCarry = false;
     s.cropW = s.cropH = 0;
     s.resizeW = s.resizeH = 0;
@@ -2389,6 +2490,90 @@ void ShowCatcher(bool on) {
     g_catcherShown = on;
     if (on) vr::VROverlay()->ShowOverlay(g_catcher);
     else vr::VROverlay()->HideOverlay(g_catcher);
+}
+
+
+void SetScreenTexture(const Screen &s, vr::SharedTextureHandle_t handle) {
+    vr::Texture_t tex = {&handle, vr::TextureType_SharedTextureHandle, vr::ColorSpace_Gamma};
+    vr::VROverlay()->SetOverlayTexture(s.overlay, &tex);
+}
+
+bool CutterReady() {
+    if (g_cutterState) return g_cutterState > 0;
+    uint64_t mods[64];
+    const int n = ft_vr_modifiers(DRM_FORMAT_ABGR8888, mods, 64);
+    const bool ok = g_cutter.Init(std::vector<uint64_t>(mods, mods + n), [](const handcut::Output *o) {
+        auto it = g_cutImports.find(o);
+        if (it == g_cutImports.end()) return;
+        vr::VRIPCResourceManager()->UnrefResource(it->second);
+        g_cutImports.erase(it);
+    });
+    g_cutterState = ok ? 1 : -1;
+    std::printf(ok ? "hand cutouts ready\n" : "hand cutouts unavailable (see above)\n");
+    return ok;
+}
+
+vr::SharedTextureHandle_t ImportCutout(const handcut::Output *o) {
+    auto it = g_cutImports.find(o);
+    if (it != g_cutImports.end()) return it->second;
+    vr::DmabufAttributes_t a{};
+    a.unWidth = uint32_t(o->buf.width);
+    a.unHeight = uint32_t(o->buf.height);
+    a.unDepth = a.unMipLevels = a.unArrayLayers = a.unSampleCount = 1;
+    a.unFormat = o->buf.format;
+    a.ulModifier = o->buf.modifier;
+    a.unPlaneCount = uint32_t(o->buf.n_planes);
+    for (int i = 0; i < o->buf.n_planes && i < int(vr::MaxDmabufPlaneCount); ++i) {
+        a.plane[i].unOffset = o->buf.offset[i];
+        a.plane[i].unStride = o->buf.stride[i];
+        a.plane[i].nFd = o->buf.fd[i];
+    }
+    vr::SharedTextureHandle_t h = 0;
+    if (!vr::VRIPCResourceManager()->ImportDmabuf(vr::VRApplication_Overlay, &a, &h)) {
+        std::fprintf(stderr, "openvr: ImportDmabuf failed for a cutout buffer\n");
+        h = 0;
+    }
+    g_cutImports.emplace(o, h);
+    return h;
+}
+
+void StopCutting(Screen &s) {
+    if (!s.cutting) return;
+    vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SideBySide_Parallel, false);
+    vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_IgnoreTextureAlpha, true);
+    if (s.plain) SetScreenTexture(s, s.plain);
+    s.cutting = false;
+}
+
+// Floating windows don't get cutouts yet: their panel and popups show crops of the client
+// buffer (texture bounds), which a side-by-side buffer doesn't match.
+void UpdateCutouts() {
+    Mat head;
+    const bool haveHead = DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head);
+    const bool hands = g_cutouts && haveHead &&
+                       g_hands.Update(head, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                Clock::now().time_since_epoch()).count());
+    double eyes[2][3];
+    if (hands) handcut::EyePositions(head, eyes);
+    for (auto &[i, s] : g_screens) {
+        std::vector<handcut::Capsule2D> spots[2];
+        Mat p;
+        bool cut = hands && s.visible && !s.floating && s.key && s.width > 0 && ScreenPose(s, &p) &&
+                   handcut::Project({p, s.metres, s.heightMetres(), s.curve, s.width, s.height}, g_hands.capsules(),
+                                    eyes, spots);
+        const handcut::Output *out = cut && CutterReady() ? g_cutter.Composite(i, s.key, s.buf, spots) : nullptr;
+        const vr::SharedTextureHandle_t h = out ? ImportCutout(out) : 0;
+        if (!h) {
+            StopCutting(s);
+            continue;
+        }
+        if (!s.cutting) {
+            vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_IgnoreTextureAlpha, false);
+            vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SideBySide_Parallel, true);
+            s.cutting = true;
+        }
+        SetScreenTexture(s, h);
+    }
 }
 
 void UpdateCatcher() {
@@ -4388,7 +4573,7 @@ void UpdateInstrumentVisibility() {
             visFade = float(std::clamp((g_wristAngle - a) / kFade, 0.0, 1.0));
             visible = visFade > 0.02f;
         }
-        if (!visible && inst.controls > 0.02f) visible = true, visFade = 0.f;
+        if (!visible && shared && inst.controls > 0.02f) visible = true, visFade = 0.f;
         if (yield && visible && !InstrumentKeepsThroughDashboard(ii, inst)) {
             visible = false;
             visFade = 0.f;
@@ -4490,7 +4675,9 @@ void ft_vr_shutdown(void) {
             }
         if (auto *ipc = vr::VRIPCResourceManager()) {
             for (auto &[k, h] : g_imports) ipc->UnrefResource(h);
+            for (auto &[k, h] : g_cutImports) ipc->UnrefResource(h);
         }
+        g_cutImports.clear();
         keyboard::Destroy();
     } catch (...) {
         std::fprintf(stderr, "ft_vr_shutdown: overlay cleanup failed; still shutting down OpenVR\n");
@@ -4535,6 +4722,12 @@ bool MakePanel(Screen &s, const char *prefix, const char *label) {
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_IgnoreTextureAlpha, true);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    // Floating spares: only the main panel here. EnsureFloatChrome adds bar/dock/close when used.
+    if (s.floating) {
+        s.attentionResolved = s.activeOpacity;
+        ApplyAlpha(s);
+        return true;
+    }
     static const auto corner = CornerTexture(64);
     static const auto curve = CurveTexture(64);
     static const auto roll = RollTexture(64);
@@ -4549,20 +4742,13 @@ bool MakePanel(Screen &s, const char *prefix, const char *label) {
     s.rollButton = chrome("roll", "roll", roll, 64, 64);
     vr::VROverlay()->SetOverlayFlag(s.rollButton, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     s.handle = chrome("resize", "resize", corner, 64, 64);
-    if (s.floating) {
-        static const auto dock = DockTexture(64);
-        static const auto close = CloseTexture(64);
-        s.dockButton = chrome("dock", "back to the desktop", dock, 64, 64);
-        s.closeButton = chrome("close", "close", close, 64, 64);
-    } else {
-        s.anchorButton = chrome("anchor", "anchor", AnchorTexture(64, AnchorMode::World), 64, 64);
-        for (int i = 0; i < kSlotCount; ++i) {
-            char part[16];
-            std::snprintf(part, sizeof part, "slot%d", i + 1);
-            char what[32];
-            std::snprintf(what, sizeof what, "profile %d", i + 1);
-            s.slotButton[i] = chrome(part, what, DigitTexture(64, i + 1, false), 64, 64);
-        }
+    s.anchorButton = chrome("anchor", "anchor", AnchorTexture(64, AnchorMode::World), 64, 64);
+    for (int i = 0; i < kSlotCount; ++i) {
+        char part[16];
+        std::snprintf(part, sizeof part, "slot%d", i + 1);
+        char what[32];
+        std::snprintf(what, sizeof what, "profile %d", i + 1);
+        s.slotButton[i] = chrome(part, what, DigitTexture(64, i + 1, false), 64, 64);
     }
     s.attentionResolved = s.activeOpacity;
     ApplyAlpha(s);
@@ -4595,6 +4781,7 @@ void ft_vr_float_create(int index, int slot) {
     if (!g_vr) return;
     Screen &s = g_screens[index];
     s.floating = true;
+    s.floatSlot = slot;
     s.metres = 0.5;
     char prefix[64], label[64];
     std::snprintf(prefix, sizeof prefix, "frametop.float.%d", slot);
@@ -4610,6 +4797,7 @@ void ft_vr_float_output(int index, bool on) {
 void ft_vr_screen_destroy(int index) {
     auto it = g_screens.find(index);
     if (it == g_screens.end()) return;
+    if (g_cutterState == 1) g_cutter.DropPanel(index);
     for (auto &[k, sub] : it->second.subs) vr::VROverlay()->DestroyOverlay(sub.overlay);
     for (auto o : it->second.All())
         if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(o);
@@ -4656,9 +4844,11 @@ bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *b)
         std::printf("screen %d: buffer %dx%d (surface %dx%d)\n", index + 1, s.width, s.height, s.surfaceWidth,
                     s.surfaceHeight);
     }
+    s.key = key, s.buf = *b, s.plain = it->second;
+    // While cutting, the next tick draws the new buffer with the cutouts (never floating).
+    if (!s.cutting) SetScreenTexture(s, it->second);
     vr::SharedTextureHandle_t handle = it->second;
     vr::Texture_t tex = {&handle, vr::TextureType_SharedTextureHandle, vr::ColorSpace_Gamma};
-    vr::VROverlay()->SetOverlayTexture(s.overlay, &tex);
     for (const auto &[k, sub] : s.subs) vr::VROverlay()->SetOverlayTexture(sub.overlay, &tex);
     s.shown = key;  // UpdateVisibility shows it on the next tick
     return true;
@@ -4693,6 +4883,9 @@ double ft_vr_screen_output_scale(int index) {
 
 void ft_vr_forget(const void *key) {
     if (!g_vr) return;
+    if (g_cutterState == 1) g_cutter.Forget(key);
+    for (auto &[i, s] : g_screens)
+        if (s.key == key) s.key = nullptr;
     auto it = g_imports.find(key);
     if (it == g_imports.end()) return;
     vr::VRIPCResourceManager()->UnrefResource(it->second);
@@ -4743,7 +4936,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                         e.type = FT_BUTTON;
                         e.button = LinuxButton(ev.data.mouse.button);
                         e.pressed = ev.eventType == vr::VREvent_MouseButtonDown;
-                        if (!e.pressed && s.titleCarry) sx = s.carryX, sy = s.carryY, s.titleCarry = false;
+                        const bool wasTitleCarry = s.titleCarry;
+                        if (!e.pressed && wasTitleCarry) sx = s.carryX, sy = s.carryY, s.titleCarry = false;
                         if (e.pressed) {
                             PressDown(ev.trackedDeviceIndex, e.button, index, sx, sy);
                             // Floating title bar: carry the panel; KWin sees no motion until release.
@@ -4753,6 +4947,19 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                                 StartDrag(s, Drag::Move, ev.trackedDeviceIndex);
                             }
                         } else {
+                            // SteamVR often delivers the up to the press-time overlay even after the
+                            // laser (and g_press.screen) moved to another panel. Releasing on the
+                            // press overlay re-enters it and leaves the Wayland drag stuck on the
+                            // seat; finish the drop at the last retargeted panel instead.
+                            if ((g_press.buttons & ButtonBit(e.button)) && g_press.screen >= 0 &&
+                                g_press.screen != index && !wasTitleCarry) {
+                                e.screen = g_press.screen;
+                                sx = g_press.x;
+                                sy = g_press.y;
+                                DndLog("release-retarget", g_press.screen);
+                            } else {
+                                DndLog("release", index);
+                            }
                             g_press.buttons &= ~ButtonBit(e.button);
                             if (!g_press.buttons) g_press.upAt = -1;
                         }
@@ -4790,7 +4997,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             if (s.hover[k] != on) s.hover[k] = on, ApplyAlpha(s);
         };
         // The bar: move (and push/pull with the wheel while moving).
-        while (vr::VROverlay()->PollNextOverlayEvent(s.bar, &ev, sizeof ev)) {
+        while (s.bar != vr::k_ulOverlayHandleInvalid &&
+               vr::VROverlay()->PollNextOverlayEvent(s.bar, &ev, sizeof ev)) {
             hover(0);
             if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
                 StartDrag(s, Drag::Move, ev.trackedDeviceIndex);
@@ -4801,7 +5009,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                 Push(s, ev.data.scroll.ydelta);
         }
         // The corner: resize.
-        while (vr::VROverlay()->PollNextOverlayEvent(s.handle, &ev, sizeof ev)) {
+        while (s.handle != vr::k_ulOverlayHandleInvalid &&
+               vr::VROverlay()->PollNextOverlayEvent(s.handle, &ev, sizeof ev)) {
             hover(3);
             if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
                 StartDrag(s, Drag::Resize, ev.trackedDeviceIndex);
@@ -4811,7 +5020,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             }
         }
         // The curve button.
-        while (vr::VROverlay()->PollNextOverlayEvent(s.curveButton, &ev, sizeof ev)) {
+        while (s.curveButton != vr::k_ulOverlayHandleInvalid &&
+               vr::VROverlay()->PollNextOverlayEvent(s.curveButton, &ev, sizeof ev)) {
             hover(1);
             if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
                 ToggleCurve(s);
@@ -4821,7 +5031,8 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             }
         }
         // The roll button: drag around like a knob, or scroll.
-        while (vr::VROverlay()->PollNextOverlayEvent(s.rollButton, &ev, sizeof ev)) {
+        while (s.rollButton != vr::k_ulOverlayHandleInvalid &&
+               vr::VROverlay()->PollNextOverlayEvent(s.rollButton, &ev, sizeof ev)) {
             hover(2);
             if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
                 StartDrag(s, Drag::Roll, ev.trackedDeviceIndex);
@@ -4940,6 +5151,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateGuides();
     UpdateInstrumentAttention(step);
     TickInstruments(step);
+    UpdateCutouts();
     UpdateCatcher();
 }
 
@@ -4962,7 +5174,7 @@ bool ft_vr_keyboard_show(int index) {
     const double fx = -head.m[0][2], fz = -head.m[2][2], n = std::sqrt(fx * fx + fz * fz) + 1e-9;
     const double at[3] = {head.m[0][3] + fx / n * kKeyboardAhead, head.m[1][3] - kKeyboardBelow,
                           head.m[2][3] + fz / n * kKeyboardAhead};
-    keyboard::SetLasers(g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_gameRunning));
+    keyboard::SetLasers(g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_sceneApp));
     g_steamInFront = SteamInFront();
     if (g_steamInFront) {
         g_asidePose = FacingPose(at, head);
@@ -5372,6 +5584,20 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         else return (void)std::snprintf(reply, size, "error modes: always outside_games dashboard");
         UpdateLasers();
         std::snprintf(reply, size, "ok %s", LasersName());
+    } else if (std::sscanf(cmd, "cutouts %15s", word) == 1) {
+        char arg[16] = "";
+        double ms = 0;
+        if (!std::strcmp(word, "on")) g_cutouts = true;
+        else if (!std::strcmp(word, "off")) g_cutouts = false;
+        else if (!std::strcmp(word, "predict") && std::sscanf(cmd, "cutouts predict %15s", arg) == 1 &&
+                 (!std::strcmp(arg, "on") || !std::strcmp(arg, "off")))
+            g_hands.SetPrediction(!std::strcmp(arg, "on"), g_hands.leadMs());
+        else if (!std::strcmp(word, "lead") && std::sscanf(cmd, "cutouts lead %lf", &ms) == 1)
+            g_hands.SetPrediction(g_hands.predicting(), ms);
+        else if (std::strcmp(word, "state") != 0)
+            return (void)std::snprintf(reply, size, "error cutouts on|off|state|predict on|off|lead <ms>");
+        std::snprintf(reply, size, "ok %s predict %s lead %.0f ms cutter %d", g_cutouts ? "on" : "off",
+                      g_hands.predicting() ? "on" : "off", g_hands.leadMs(), g_cutterState);
     } else if (std::strncmp(cmd, "state", 5) == 0) {
         std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
                       g_gestureHand.c_str(), g_gestureAngle, LasersName(), g_gameRunning ? 1 : 0,
