@@ -404,7 +404,8 @@ private:
 
 // POINTER_IGNORE: overlay keys the pointer passes through, as if they weren't there
 // (display-only panels such as a performance overlay). Comma-separated shell patterns
-// (fnmatch, no escapes), so "vendor.app*" covers an app's overlays.
+// (fnmatch, no escapes), so "vendor.app*" covers an app's overlays. Frametop's own
+// overlays (frametop.*) are never ignored, even if a hand-edited config says so.
 std::vector<std::string> ParseIgnore(const std::string &list) {
     std::vector<std::string> out;
     size_t at = 0;
@@ -420,6 +421,7 @@ std::vector<std::string> ParseIgnore(const std::string &list) {
 }
 
 bool Ignored(const std::vector<std::string> &patterns, const std::string &key) {
+    if (key.rfind("frametop.", 0) == 0) return false;  // screens, keyboard, future panels
     for (const auto &p : patterns)
         if (fnmatch(p.c_str(), key.c_str(), FNM_NOESCAPE) == 0) return true;
     return false;

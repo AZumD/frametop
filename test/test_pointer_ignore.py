@@ -46,7 +46,9 @@ def parse_ignore(text: str) -> list[str]:
 
 
 def ignored(patterns: list[str], key: str) -> bool:
-    """Mirror of Ignored: fnmatch(pattern, key, FNM_NOESCAPE) for any pattern."""
+    """Mirror of Ignored: frametop.* is never ignored; else any fnmatch (FNM_NOESCAPE)."""
+    if key.startswith("frametop."):
+        return False
     return any(fnmatch.fnmatchcase(key, p) for p in patterns)
 
 
@@ -81,7 +83,15 @@ MATCH_CASES = [
     ("vendor.app\\*", "vendor.app*", False),
     ("Vendor.App", "vendor.app", False),  # case-sensitive
     (",,,", "anything", False),
-    ("frametop.screen.1", "frametop.screen.1", True),  # the helper would honour it; the settings app never offers it
+    # Hand-edited POINTER_IGNORE must not disable Frametop's own overlays.
+    ("frametop.screen.1", "frametop.screen.1", False),
+    ("frametop.*", "frametop.screen.1", False),
+    ("frametop.*", "frametop.keyboard", False),
+    ("*", "frametop.screen.1", False),
+    ("*", "frametop.keyboard", False),
+    ("*", "frametop.some-future-panel", False),
+    ("*", "vendor.app.panel", True),
+    ("vendor.app*", "vendor.app.panel", True),
 ]
 
 
@@ -98,6 +108,10 @@ def test_source_wiring():
     check("includes <fnmatch.h>", "#include <fnmatch.h>" in src)
     check("ParseIgnore defined", "std::vector<std::string> ParseIgnore(const std::string &list)" in src)
     check("Ignored uses fnmatch with FNM_NOESCAPE", "fnmatch(p.c_str(), key.c_str(), FNM_NOESCAPE) == 0" in src)
+    ignored_fn = extract(src, "bool Ignored(")
+    check("Ignored refuses frametop.* before fnmatch",
+          'key.rfind("frametop.", 0) == 0' in ignored_fn
+          and ignored_fn.index('key.rfind("frametop.", 0) == 0') < ignored_fn.index("fnmatch("))
     check("POINTER_IGNORE read in loadConfig",
           re.search(r'conf\.find\("POINTER_IGNORE"\)[\s\S]{0,120}ignore = ParseIgnore', src) is not None)
     check("overlays command answered through Request",
