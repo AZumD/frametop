@@ -29,7 +29,7 @@ def main():
         f"visibility {mode}",
         f"wrist {float(v.get('wrist_angle', 60)):.1f}",
         f"gesture {v.get('gesture_hand', 'left')} {float(v.get('gesture_angle', 20)):.1f}",
-        f"controllers {v.get('controllers', 'hide')}",
+        f"controllers {v.get('controllers', 'outside_games')}",
         f"ingames {v.get('in_games', 'hide')}",
     ]
     for i, s in enumerate(layout.get("screens") or []):
