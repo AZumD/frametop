@@ -97,19 +97,23 @@ This is an early release, tested on one Steam Frame (SteamOS 0.3.0 build 2026092
 
 If you're using this fork, please report problems here rather than to the upstream Frametop repository unless you've reproduced the problem on upstream Frametop as well.
 
-In a terminal on the headset, run:
+In a terminal on the headset, from your Frametop checkout, run:
 
 ```
-cd ~/frametop && scripts/report.sh
+scripts/report.sh
 ```
 
 This writes `frametop-report-<date>.txt` with version numbers, service states, settings, and recent logs. Bluetooth addresses and the headset's serial number are masked. Then [open an issue](https://github.com/AZumD/frametop/issues), describe what you did, what you expected, and what happened, and attach the file.
 
 ## Update
 
+From your Frametop checkout on the Frame:
+
 ```
-cd ~/frametop && git pull && ./install.sh
+git pull && ./install.sh
 ```
+
+(PC development syncs to `~/dev/frametop` on the Frame via `scripts/sync.sh`; see below.)
 
 ## Uninstall
 

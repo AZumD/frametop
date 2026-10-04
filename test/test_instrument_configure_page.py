@@ -2,7 +2,7 @@
 """Configure must open a pushed ScrollablePage (not an empty Kirigami.Dialog).
 
 Run:
-  python3 test/test_instrument_configure_dialog.py
+  python3 test/test_instrument_configure_page.py
 """
 
 from __future__ import annotations

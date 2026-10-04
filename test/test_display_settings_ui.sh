@@ -37,9 +37,19 @@ has 'Kirigami.AbstractCard' "$qml"
 has 'PreviewPlate' "$qml"
 has 'Seven-segment HH:MM' "$qml"
 has 'Configure…' "$qml"
-has 'Kirigami.Dialog' "$qml"
 has 'Built-in' "$qml"
 has 'drawDigit' "$qml"
+
+# Instrument Configure uses a pushed page (Dialog opened empty on the Frame).
+# Restart confirmation still legitimately uses Kirigami.Dialog.
+has 'id: instrumentEditPage' "$qml"
+has 'pageStack.push(instrumentEditPage)' "$qml"
+has 'title: "Restart the desktop?"' "$qml"
+if grep -q 'id: editSheet' "$qml"; then
+  bad "obsolete editSheet Dialog still present"
+else
+  ok "no obsolete editSheet Dialog"
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "display-settings UI checks failed" >&2
