@@ -13,8 +13,6 @@ to the input relay over its control socket (@frametop_relay):
   - Keyboard: when Frametop's keyboard opens (vr_keyboard / vr_keyboard_persist in the rules).
   - Ignored panels: SteamVR overlays the pointer passes through (POINTER_IGNORE), by app or
     one by one. The helper lists them (@ft_pointer_helper "overlays").
-  - Gaze: the pointer's gaze mode (@ft_pointer_helper "gaze") and the gaze service
-    (gaze/ft-gazed, @ft_gazed: status, forget, reload).
   - Bluetooth: paired devices, and re-applying the Bluetooth LE fixes after pairing.
   - A warning on every page when SteamVR won't load the ft_pointer driver (blocked after a
     crash, disabled, or SteamVR in safe mode) or hasn't loaded it (@ft_pointer doesn't answer
@@ -43,13 +41,10 @@ RULES_PATH = os.path.expanduser("~/.config/frametop-input.json")
 CONF_PATH = os.path.expanduser("~/.config/frametop.conf")
 RELAY = "\0frametop_relay"
 HELPER = "\0ft_pointer_helper"
-GAZED = "\0ft_gazed"
 DRIVER = "\0ft_pointer"  # the ft_pointer driver's control socket, bound while SteamVR has it loaded
 # SteamVR's settings; older installs keep them under Steam's config.
 VRSETTINGS_PATHS = [os.path.expanduser("~/.config/openvr/config/steamvr.vrsettings"),
                     os.path.expanduser("~/.steam/steam/config/steamvr.vrsettings")]
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GAZE_PROBE = os.path.join(REPO, "gaze", "probe", "ft-gazeprobe")
 BTN_MISC = 0x100
 # Header names that mark the start of a range, not a real key (BTN_MOUSE == BTN_LEFT).
 RANGE_ALIASES = {"BTN_MISC", "BTN_MOUSE", "BTN_JOYSTICK", "BTN_GAMEPAD", "BTN_DIGI", "BTN_WHEEL",
@@ -59,7 +54,7 @@ ACTION_LABELS = {
     "left": "Left click", "right": "Right click", "middle": "Middle click", "back": "Back",
     "scroll_up": "Scroll up", "scroll_down": "Scroll down", "dashboard": "Toggle SteamVR dashboard",
     "recenter": "Recenter pointer", "pointer_toggle": "Pointer on/off",
-    "follow_toggle": "Head follow on/off (experimental)", "gaze_toggle": "Gaze pointer on/off (experimental)",
+    "follow_toggle": "Head follow on/off (experimental)",
     "sens_up": "Faster pointer",
     "sens_down": "Slower pointer", "layout_reset": "Reset desktop screen layout",
     "screens_toggle": "Hide/show desktop screens", "keyboard_toggle": "Open/close keyboard",
@@ -90,13 +85,6 @@ CONTROLLER_BUTTONS = {
     "right/thumbstick": "Right stick click",
 }
 CONTROLLER_ACTIONS = [a for a in ACTION_LABELS if a not in ("key", "none")]
-# Gaze mode settings (pointer helper), like POINTER_SETTINGS.
-GAZE_SETTINGS = [
-    ("POINTER_GAZE_RETAKE", "Look away to hand back", 5, 1, 45, 0.5, "°"),
-    ("POINTER_GAZE_NUDGE_MAX", "Largest nudge to learn", 8, 1, 30, 0.5, "°"),
-    ("POINTER_GAZE_HOLD", "Hold still to drag", 0.5, 0.1, 2.0, 0.05, "s"),
-    ("POINTER_GAZE_SHOW", "Dot shows after moving", 1.0, 0.0, 5.0, 0.1, "s"),
-]
 # Pointer settings: key, label, default, min, max, step, unit.
 POINTER_SETTINGS = [
     ("POINTER_SENSITIVITY", "Speed", 0.03, 0.005, 0.12, 0.001, "°/count"),
@@ -218,7 +206,6 @@ class Backend(QObject):
     pointerChanged = Signal()
     bluetoothChanged = Signal()
     controllersChanged = Signal()
-    gazeChanged = Signal()
     driverChanged = Signal()
     panelsChanged = Signal()
     activity = Signal(str)  # device id
@@ -237,10 +224,6 @@ class Backend(QObject):
         self._capture_vr = False
         self._vr = {}  # the helper's vrstatus, {} when it doesn't answer
         self._vr_at = 0.0
-        self._gaze = {}  # ft-gazed's status, {} when it isn't running
-        self._gaze_prev = None  # the status before, for rates
-        self._gaze_at = 0.0
-        self._gaze_mode = None  # the helper's gaze mode: True, False, None (no answer)
         self._driver_block = ""  # set by _check_driver
         self._panels = None  # SteamVR's overlays, from the helper; None until it answers
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -276,18 +259,11 @@ class Backend(QObject):
     def _refresh(self):
         self._send("devices")
         self._send("vrstatus", HELPER)
-        self._send("gaze ?", HELPER)
-        if not self._send("status", GAZED) and self._gaze:
-            self._gaze, self._gaze_prev = {}, None
-            self.gazeChanged.emit()
         now = time.monotonic()
         # No answer for a while: that side isn't running (any more).
         if self._vr and now - self._vr_at > 5:
             self._vr = {}
             self.controllersChanged.emit()
-        if self._gaze_mode is not None and now - self._gaze_at > 5:
-            self._gaze_mode = None
-            self.gazeChanged.emit()
 
     def _check_driver(self):
         block = driver_block()
@@ -303,18 +279,9 @@ class Backend(QObject):
                 data = self.sock.recv(65536)
             except BlockingIOError:
                 return
-            text = data.decode(errors="replace")
-            if text in ("ok on", "ok off"):  # the helper's answer to "gaze ?" (from an unbound socket)
-                self._gaze_mode = text == "ok on"
-                self._gaze_at = time.monotonic()
-                self.gazeChanged.emit()
-                continue
             try:
                 msg = json.loads(data)
             except ValueError:
-                continue
-            if isinstance(msg, dict) and "samples" in msg and "t" not in msg:  # ft-gazed's status
-                self._gaze_status(msg)
                 continue
             if not isinstance(msg, dict):
                 continue
@@ -720,88 +687,6 @@ class Backend(QObject):
             self.message.emit(f"SteamVR global input from overlays {'on' if on else 'off'}", False)
         else:
             self.message.emit("The pointer helper isn't running (frametop-pointer.service)", True)
-
-    # --- gaze ---
-    def _gaze_status(self, status):
-        now = time.monotonic()
-        prev = self._gaze_prev
-        # Rates over the last poll: samples per second, and the share with only one eye.
-        if prev and now - prev[0] > 0.5 and status["samples"] >= prev[1]["samples"]:
-            n = status["samples"] - prev[1]["samples"]
-            status["rate"] = n / (now - prev[0])
-            status["one_eye_share"] = (status["one_eye"] - prev[1]["one_eye"]) / n if n else 0.0
-        elif self._gaze:
-            status.setdefault("rate", self._gaze.get("rate"))
-            status.setdefault("one_eye_share", self._gaze.get("one_eye_share"))
-        if not prev or now - prev[0] > 0.5:
-            self._gaze_prev = (now, status)
-        self._gaze = status
-        self.gazeChanged.emit()
-
-    @Property("QVariantMap", notify=gazeChanged)
-    def gazeStatus(self):
-        return self._gaze
-
-    @Property(bool, notify=gazeChanged)
-    def gazeServiceRunning(self):
-        return bool(self._gaze)
-
-    @Property(int, notify=gazeChanged)
-    def gazeMode(self):
-        """The helper's gaze mode now: 1 on, 0 off, -1 no answer (helper not running)."""
-        return -1 if self._gaze_mode is None else int(self._gaze_mode)
-
-    @Property(bool, notify=gazeChanged)
-    def gazeDefault(self):
-        return read_conf().get("POINTER_GAZE", "0") not in ("", "0")
-
-    @Slot(bool)
-    def setGazeMode(self, on):
-        """On or off now and from now on (POINTER_GAZE); a mapped button toggles it until restart."""
-        write_conf_value("POINTER_GAZE", "1" if on else "0")
-        self._send(f"gaze {'on' if on else 'off'}", HELPER)
-        self.reload_timer.start()
-        self.gazeChanged.emit()
-
-    @Property("QVariantList", notify=pointerChanged)
-    def gazeSettings(self):
-        conf = read_conf()
-        out = []
-        for key, label, default, lo, hi, step, unit in GAZE_SETTINGS:
-            try:
-                value = float(conf.get(key, default))
-            except ValueError:
-                value = default
-            out.append({"key": key, "label": label, "value": value, "min": lo, "max": hi, "step": step,
-                        "unit": unit, "default": default})
-        return out
-
-    @Slot()
-    def forgetGazeLessons(self):
-        if self._send("forget", GAZED):
-            self.message.emit("Forgot what the pointer's nudges taught; the calibration stays", False)
-        else:
-            self.message.emit("The gaze service isn't running (frametop-gaze.service)", True)
-
-    @Slot()
-    def reloadGazeCalibration(self):
-        if self._send("reload", GAZED):
-            self.message.emit("The gaze service read the calibration again", False)
-        else:
-            self.message.emit("The gaze service isn't running (frametop-gaze.service)", True)
-
-    @Slot()
-    def openGazeProbe(self):
-        """Calibrate in ft-gazeprobe (a GTK app on the host, fullscreen on a Frametop screen)."""
-        runner = ["distrobox-host-exec"] if shutil.which("distrobox-host-exec") else []
-        env = [f"{k}={os.environ[k]}" for k in ("WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS")
-               if os.environ.get(k)]
-        try:
-            subprocess.Popen(runner + ["env"] + env + [GAZE_PROBE], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            self.message.emit("Opening the gaze probe: calibrate there, then close it", False)
-        except OSError as e:
-            self.message.emit(f"Couldn't open the gaze probe: {e}", True)
 
     # --- bluetooth ---
     @Property("QVariantList", notify=bluetoothChanged)

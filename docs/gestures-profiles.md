@@ -35,16 +35,10 @@ Head fallback is **debug only**. Production attention fading requires valid eye 
 
 OpenVR eye samples often drop for tens of milliseconds. ft-screens keeps the last valid ray for ~450 ms (`held` in `gaze state` / debug) so attention stay put through those gaps.
 
-### Desktop gaze pointer (upstream)
-
-Pointer-follow-gaze for the whole desktop lives in upstream `gaze/` (`ft-gazed`, `ft-gazectl`, probe). Enable with `POINTER_GAZE=1` / Input Settings → Gaze, not the removed fork `GAZE_POINTER_*` / `ft-layout gaze pointer` path. Screen attention opacity still uses ft-screens' own OpenVR eye samples (`ft-layout gaze state`).
-
-See `gaze/README.md`.
-
 ## Opacity / attention
 
 Per screen: `activeOpacity`, `idleOpacity`, `attentionEnabled` (+ fade timings). Legacy `opacity: X` → both active and idle = X, attention off. Final alpha = `attentionResolved × visibilityFade` in one composer inside ft-screens. Fade-in / fade-out speeds (`attention.in_ms` / `attention.out_ms`) are set in Frametop Display Settings when gaze attention is on — there is no VR chrome opacity slider.
 
 ## Free-air gestures (later)
 
-Reliable bare-hand profile flicks remain risky. Prefer chrome + controller actions now; add pinch confirmation once hand tracking is solid.
+Reliable bare-hand profile flicks remain risky. Prefer chrome + controller actions now.

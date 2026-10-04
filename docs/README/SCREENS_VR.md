@@ -24,4 +24,6 @@ OpenVR side of Frametop: virtual screen and floating-window panels, chrome, Spat
 python3 test/test_overlay_budget_and_games.py
 python3 test/test_screen_conceal.py
 python3 test/test_float_phase3.py
+python3 test/test_gaze_attention_order.py
+python3 test/test_gaze_pointer_removed.py
 ```

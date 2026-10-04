@@ -2,10 +2,11 @@
 
 Hand tracking from the headset's own cameras. It's deferred: it costs a lot of the headset's CPU and needs more work, so `install.sh` doesn't offer it and the README doesn't list it. It still builds and runs, installed by hand (below), for working on it.
 
-It serves two things in Frametop:
+It serves Frametop today for:
 
 - **Hand cutouts:** where your hand is between an eye and a screen, that eye sees the room through the screen (ft-screens, `screens/handcut.cpp`), so your hands show over the screens the way they do on a Vision Pro.
-- **Pinches and grips:** with `POINTER_HANDS=1`, the pointer helper takes them as clicks and drags. Look at something and pinch to click it, with the eye tracker doing the looking (`gaze/`), or close your hand to press and drag what the pointer is on. See "Pinches and grips in the pointer" below.
+
+Pinch/grip detection still publishes to the `gestures` mmap for diagnostics (`ft-handsctl gestures`). Driving the 3D pointer from those gestures (`POINTER_HANDS`) is deferred and not wired in this tree.
 
 Two programs, each a user service that stops when SteamVR does:
 
@@ -37,15 +38,13 @@ Settings in `~/.config/frametop.conf` (`FT_<name>` in the environment overrides 
 - `HANDS_CAMERAS` (`auto`), `HANDS_BRIGHT` (`all`), `HANDS_BRIGHT_ON` (40), `HANDS_BRIGHT_OFF` (25): which cameras ft-hands tracks with, as `--cams`, `--bright`, `--bright-on` and `--bright-off` (see ft-hands). `HANDS_CAMERAS=mono` also keeps ft-camd off the colour cameras.
 - `HANDS_COLOR_LEFT` (`color_video0`), `HANDS_COLOR_CROP` (`subtract`): how the colour module's calibration maps onto its images, as `--color-left` and `--color-crop`.
 
-The pointer helper's `POINTER_HANDS` and `POINTER_PINCH_*`/`POINTER_GRIP_*` settings are in "Pinches and grips in the pointer" below.
-
 Files, all in `/run/user/UID/frametop-hands/` (private to the user; not `/run/user/UID/frametop/`, which the desktop session deletes whenever it starts):
 
 | File | Written by | Layout | Read by |
 | --- | --- | --- | --- |
 | `cam-ring` | ft-camd | `camd/fhring.h` | ft-hands, `tools/ring.py` |
 | `hands` | ft-hands | `include/fh_hands.h` | ft-screens (`screens/handcut.cpp`) |
-| `gestures` | ft-hands | `include/fh_gestures.h` | the pointer helper (`pointer/helper/ft-pointer.cpp`), `tools/watch_gestures.py` |
+| `gestures` | ft-hands | `include/fh_gestures.h` | `tools/watch_gestures.py` (pointer integration deferred) |
 
 The source keeps the `fh_` names and magic strings of frame-hands, the project it started as, so recordings made with it still work.
 
@@ -149,24 +148,9 @@ ft-hands detects a pinch per hand (`track/pinch.h`) and publishes it to the gest
 - The pinch point is between the index and middle knuckles, which hold still while the fingers open and close. The tips' midpoint moved 1-2 cm as a pinch opened, which dragged every release off its press. A drag is the pinch point now, minus where it was when the pinch began, both turned into the room with the HMD pose at their capture times.
 - `tools/watch_gestures.py` prints begins, ends and drag offsets live, and `--distance` prints each hand's distance.
 
-## Pinches and grips in the pointer
+## Pinches and grips in the pointer (deferred)
 
-With `POINTER_HANDS=1`, the pointer helper (`pointer/helper/ft-pointer.cpp`) reads the gestures file every frame. It's off by default.
-
-- **Pinch to click.** In gaze mode a pinch works like the mouse's press: the pointer stops where the gaze put it, and the click comes when the pinch opens, where the pointer is then. A quick tap clicks where you looked. Held, the pinching hand moves the pointer to correct the gaze, and the correction is a lesson for the gaze tracker, as with the mouse.
-- **Without gaze mode,** a pinch is a real press, like the mouse's button: pressed when it closes, released when it opens, and while it's held the hand drags the pointer. A tap is still a click where the pointer is.
-- **Grip to drag.** Closing the hand presses where the pointer is, the hand moves the pointer, and opening the hand releases. So a title bar moves its window, a panel's grab bar carries the panel, and text gets selected.
-- A pinch ended by losing the hand, or by a grip taking over, doesn't click.
-- The hand's movement is taken in the room, from where the eye was when the gesture began, so turning your head doesn't move the pointer. The first gesture while the pointer is off only wakes it. Gestures are ignored in a VR game (unless the dashboard is up), with the headset off, and while the mouse's button is held.
-
-Settings in `~/.config/frametop.conf`:
-
-- `POINTER_HANDS` (0): 1 turns pinches and grips on.
-- `POINTER_PINCH_GAIN` (0.5): a held pinch moves the pointer this many times the hand's angle, seen from the eye. Under 1 gives precision.
-- `POINTER_PINCH_DEADZONE` (1.5): how many degrees the pinching hand moves before the pointer does, so a tap's jitter and the pinch point shifting as the fingers close don't move it.
-- `POINTER_GRIP_GAIN` (1): a grip moves the pointer this many times the hand's angle.
-- `POINTER_GRIP_BELOW` (0.35): grips that begin more than this many metres below the eyes are ignored, because hands resting on a desk curl like a loose fist. Pinches have no such limit: deliberate ones sat 0.35-0.45 m below the eyes with the elbow resting.
-- `POINTER_PINCH_TYPING` (1): no pinch begins within this many seconds of a key press, because typing touches thumb to index.
+`POINTER_HANDS` / pinch-click / grip-drag in the pointer helper are not implemented in this tree. ft-hands still detects pinches and grips and publishes them for diagnostics; do not enable `POINTER_HANDS` in `frametop.conf`.
 
 ## Recordings
 
@@ -212,5 +196,5 @@ To try the hand cutouts without restarting the desktop, `screens/build/ft-handte
 - **The colour cameras can't be used while the headset is worn.** The colour module then writes only a half-size image into the top-left quarter of its buffers, and ft-camd drops those frames. So the service runs the mono cameras only, and tracking in bright light, where the mono cameras see dark hands, doesn't get the colour pair's help.
 - **The colour calibration mapping isn't settled.** Which colour camera is `passthrough_left` (`HANDS_COLOR_LEFT`) and how the module's crop applies (`HANDS_COLOR_CROP`) still need `tools/check_color.py` on a recording with a lit, textured view.
 - **Depth when one camera loses the hand.** A hand seen in one camera drifts 10% per update toward the one-camera depth guess (`kMonoDepthGain`, 0.1, in `track/tracker.cpp`). In the 2026-09-30 replays that was worse than keeping the last distance (see "3D" above). A smaller gain, such as 0.02, is the next thing to try.
-- **Pinches aren't reliable enough for everyday use yet.** That's why hand tracking stays off until `ft-handsctl on`, and `POINTER_HANDS` is 0 by default.
+- **Pinches aren't reliable enough for everyday use yet.** That's why hand tracking stays off until `ft-handsctl on`, and pointer pinch/grip integration stays deferred.
 - **Floating windows don't get hand cutouts.** Their panels show crops of the client buffer, which the cutouts' side-by-side buffer doesn't match (`screens/vr.cpp`, `UpdateCutouts`).

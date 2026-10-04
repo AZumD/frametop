@@ -5190,9 +5190,6 @@ void ft_vr_keyboard_hide(void) {
     if (g_vr) keyboard::Hide();
 }
 
-// Future pinch / finger tracking should call these (gaze selects; pinch confirms). Not wired yet.
-//   activateCurrentGazeTarget()  — chrome → semantic action; screen → desktop click at UV
-//   beginGazeDrag() / updateGazeDrag(delta) / endGazeDrag()
 // Control commands (datagrams on @ft_screens, replies to the sender):
 //   place <screen> <x> <y> <z> <yaw> <pitch> <roll>   centre (standing universe) and facing
 //   width <screen> <metres>
@@ -5205,9 +5202,6 @@ void ft_vr_keyboard_hide(void) {
 //   attention <screen> on|off [inMs outMs dwellMs holdMs]
 //   deadzone <screen> on|off [degrees [metres]]   soft-follow glance dead zone
 //   gaze state|debug on|off|fallback head|fallback off
-//   gaze pointer on|off|feature on|off|button|state|timeout <s>|deadzone <px>|filter …
-//       |caloffset <u> <v>|calibrate start|cancel|reset|state
-//       headset-button gaze mouse; idle-out on click silence; UV calibration bias
 //   get <screen>  -> "ok ... width height curve activeOpacity idleOpacity anchor [rel...]"
 //   screens       -> "ok <count> <index>:<pixels w>x<h>:<metres> ..."
 //   head          -> "ok x y z yaw"

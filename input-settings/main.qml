@@ -22,7 +22,6 @@ Kirigami.ApplicationWindow {
             Kirigami.Action { text: "Keyboard"; icon.name: "input-keyboard-virtual"; onTriggered: root.show(keyboardPage) },
             Kirigami.Action { text: "Pointer"; icon.name: "transform-move"; onTriggered: root.show(pointerPage) },
             Kirigami.Action { text: "Ignored panels"; icon.name: "view-hidden"; onTriggered: root.show(ignorePage) },
-            Kirigami.Action { text: "Gaze"; icon.name: "view-visible"; onTriggered: root.show(gazePage) },
             Kirigami.Action { text: "Bluetooth"; icon.name: "preferences-system-bluetooth"; onTriggered: root.show(bluetoothPage) }
         ]
     }
@@ -56,9 +55,9 @@ Kirigami.ApplicationWindow {
         pageStack.push(page)
     }
 
-    // FT_INPUT_PAGE=buttons|controllers|keyboard|pointer|ignore|gaze|bluetooth opens the app on that page.
+    // FT_INPUT_PAGE=buttons|controllers|keyboard|pointer|ignore|bluetooth opens the app on that page.
     pageStack.initialPage: ({ buttons: buttonsPage, controllers: controllersPage, keyboard: keyboardPage,
-                              pointer: pointerPage, ignore: ignorePage, gaze: gazePage,
+                              pointer: pointerPage, ignore: ignorePage,
                               bluetooth: bluetoothPage })[startPage] || devicesPage
 
     Connections {
@@ -759,143 +758,6 @@ Kirigami.ApplicationWindow {
                 text: "Saved as POINTER_IGNORE in ~/.config/frametop.conf, and applied at once. A whole app is "
                       + "its key followed by *, which also covers panels it opens later. Frametop's own screens "
                       + "aren't listed."
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- Gaze
-    Component {
-        id: gazePage
-        Kirigami.ScrollablePage {
-            id: gpage
-            title: "Gaze"
-            header: DriverWarning {}
-            property var status: backend.gazeStatus
-            actions: [
-                Kirigami.Action {
-                    text: "Calibrate…"
-                    icon.name: "crosshairs"
-                    tooltip: "Open the gaze probe to calibrate (fullscreen on a Frametop screen)"
-                    onTriggered: backend.openGazeProbe()
-                },
-                Kirigami.Action {
-                    text: "Reload calibration"
-                    icon.name: "view-refresh"
-                    enabled: backend.gazeServiceRunning
-                    onTriggered: backend.reloadGazeCalibration()
-                },
-                Kirigami.Action {
-                    text: "Forget nudges"
-                    icon.name: "edit-clear-history"
-                    enabled: backend.gazeServiceRunning
-                    tooltip: "Drop what your mouse nudges taught; the calibration stays"
-                    onTriggered: backend.forgetGazeLessons()
-                }
-            ]
-
-            Kirigami.FormLayout {
-                Kirigami.InlineMessage {
-                    Layout.fillWidth: true
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 30
-                    visible: true
-                    type: Kirigami.MessageType.Warning
-                    text: "Gaze mode is experimental. The pointer goes where you look and the mouse does the last bit; "
-                          + "moving the mouse takes over, looking well away hands it back. A small nudge and a click "
-                          + "teach the gaze service where it was off."
-                }
-                Controls.Switch {
-                    Kirigami.FormData.label: "Gaze pointer:"
-                    text: backend.gazeMode < 0 ? "Pointer helper not running" : "Pointer goes where you look"
-                    enabled: backend.gazeMode >= 0
-                    checked: backend.gazeMode > 0
-                    onToggled: backend.setGazeMode(checked)
-                }
-                Controls.Label {
-                    visible: backend.gazeMode >= 0 && (backend.gazeMode > 0) !== backend.gazeDefault
-                    text: "Toggled by a button; it starts " + (backend.gazeDefault ? "on" : "off") + " after a restart."
-                    opacity: 0.7
-                    font: Kirigami.Theme.smallFont
-                }
-                Repeater {
-                    model: backend.gazeSettings
-                    delegate: RowLayout {
-                        required property var modelData
-                        Kirigami.FormData.label: modelData.label + ":"
-                        Controls.Slider {
-                            id: gslider
-                            from: modelData.min
-                            to: modelData.max
-                            stepSize: modelData.step
-                            value: modelData.value
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            onMoved: backend.setPointerSetting(modelData.key, value)
-                        }
-                        Controls.Label {
-                            text: gslider.value.toFixed(modelData.step < 0.1 ? 2 : 1) + " " + modelData.unit
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-                        }
-                        Controls.ToolButton {
-                            icon.name: "edit-undo"
-                            display: Controls.AbstractButton.IconOnly
-                            text: "Default (" + modelData.default + ")"
-                            Controls.ToolTip.text: text
-                            Controls.ToolTip.visible: hovered
-                            onClicked: { gslider.value = modelData.default; backend.setPointerSetting(modelData.key, modelData.default) }
-                        }
-                    }
-                }
-
-                Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Gaze service" }
-
-                Controls.Label {
-                    Kirigami.FormData.label: "Service:"
-                    text: backend.gazeServiceRunning
-                          ? (gpage.status.ft_gaze ? "running" : "running, eye tracker reader restarting")
-                          : "not running (frametop-gaze.service, starts with SteamVR)"
-                    color: backend.gazeServiceRunning ? Kirigami.Theme.textColor : Kirigami.Theme.negativeTextColor
-                }
-                Controls.Label {
-                    visible: backend.gazeServiceRunning
-                    Kirigami.FormData.label: "Headset:"
-                    text: gpage.status.headset_on ? "on" : "off"
-                }
-                Controls.Label {
-                    visible: backend.gazeServiceRunning
-                    Kirigami.FormData.label: "Tracking:"
-                    text: gpage.status.rate === undefined || gpage.status.rate === null ? "…"
-                          : Math.round(gpage.status.rate) + " samples/s"
-                            + (gpage.status.one_eye_share > 0.5 ? " · only one eye tracked" : "")
-                    color: gpage.status.one_eye_share > 0.5 ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
-                    Controls.ToolTip.text: "Only one eye tracked: reseat the headset or check the lenses. It still works, "
-                                           + "probably less precisely."
-                    Controls.ToolTip.visible: gpage.status.one_eye_share > 0.5 && ghover.hovered
-                    HoverHandler { id: ghover }
-                }
-                Controls.Label {
-                    visible: backend.gazeServiceRunning
-                    Kirigami.FormData.label: "Calibration:"
-                    text: gpage.status.calibration_samples > 0
-                          ? gpage.status.calibration_samples + " points (" + gpage.status.model + ")"
-                          : "none yet: use Calibrate…"
-                }
-                Controls.Label {
-                    visible: backend.gazeServiceRunning
-                    Kirigami.FormData.label: "Learned from nudges:"
-                    text: gpage.status.lessons + (gpage.status.lessons === 1 ? " nudge" : " nudges")
-                          + (gpage.status.refused > 0 ? " (" + gpage.status.refused + " too far off, ignored)" : "")
-                }
-            }
-
-            footer: Controls.Label {
-                padding: Kirigami.Units.largeSpacing
-                wrapMode: Text.Wrap
-                opacity: 0.7
-                text: "Map a mouse button (Buttons) or a controller button (Controllers) to \"Gaze pointer on/off\" "
-                      + "to switch it on the fly. A click waits for the release: if the gaze is off, drag onto the target "
-                      + "with the button held and let go there. Hold still to drag: hold a press this long without moving "
-                      + "to drag something instead. Look away to hand back: how far from the pointer you look before the "
-                      + "gaze takes it back from the mouse. Largest nudge to learn: bigger mouse moves before a click "
-                      + "are treated as using the mouse, not correcting the gaze."
             }
         }
     }

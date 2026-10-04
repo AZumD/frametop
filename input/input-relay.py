@@ -19,8 +19,7 @@ keyboard node for its extra buttons). Roles, from ~/.config/frametop-input.json
   ignore       not grabbed, only observed for identification in the settings app
 Buttons and keys of pointer devices go through a per-device map to actions
 (left, right, middle, back, scroll_up, scroll_down, dashboard, recenter,
-pointer_toggle, follow_toggle = head follow on or off, gaze_toggle = gaze mode on or off
-(the pointer goes where you look; see pointer/helper/ft-pointer.cpp), sens_up, sens_down,
+pointer_toggle, follow_toggle = head follow on or off, sens_up, sens_down,
 layout_reset = put the desktop screens back in their saved layout, screens_toggle = hide or show
 the desktop screens, profile_slot_1..6 / profile_next / profile_previous = apply named profile
 slots via ft-layout, keyboard_toggle = open or close Frametop's keyboard, float_toggle = float the
@@ -35,9 +34,6 @@ It only takes the buttons the relay tells it to ("vrbind <button>..." to @ft_poi
 sent on start, reload, and when the helper says "vrhello"), and only while no game runs,
 unless "controller_in_games" is true in the rules file (then a mapped button no longer
 reaches games; see pointer/helper/vrbuttons.h).
-
-In gaze mode outside games, the helper keeps the pointer ("gazeawake 1", repeated every 5
-seconds; "gazeawake 0" or silence ends it): the pointer isn't released when the mouse is idle.
 
 Keys also go to ft-screens (@ft_screens, the Frametop desktop's compositor), which
 types them into the desktop screen that has focus: from pass-through keyboards, and
@@ -81,7 +77,7 @@ Control socket (abstract datagram @frametop_relay, JSON replies to the sender):
   reload            re-read both config files, re-apply roles, tell the helper
   vrcapture <s>     take every controller button for s seconds (0: stop), so the settings
                     app can capture one; watchers see them as events with id frame_controller
-  vrbtn, vrhello, gazeawake   from the pointer helper (above)
+  vrbtn, vrhello   from the pointer helper (above)
   textfield 1|0     from the desktop's input method (above)
 
 Runs on the Frame host as a user service (frametop-input-relay.service). The
@@ -173,7 +169,7 @@ def eviocguniq(length):
 VIRTUAL_PREFIX = "frametop virtual"
 RULES_PATH = os.path.expanduser("~/.config/frametop-input.json")
 ACTIONS = ("left", "right", "middle", "back", "scroll_up", "scroll_down", "dashboard", "recenter",
-           "pointer_toggle", "follow_toggle", "gaze_toggle", "sens_up", "sens_down", "layout_reset", "screens_toggle",
+           "pointer_toggle", "follow_toggle", "sens_up", "sens_down", "layout_reset", "screens_toggle",
            "profile_slot_1", "profile_slot_2", "profile_slot_3", "profile_slot_4", "profile_slot_5",
            "profile_slot_6", "profile_next", "profile_previous", "keyboard_toggle", "float_toggle", "dock_all",
            "key", "none")
@@ -189,8 +185,7 @@ FLOAT = "\0frametop_float"  # ft-floatd; floating windows in the Frametop deskto
 # Actions for ft-floatd: work even when pointer mode is off.
 FLOAT_ACTIONS = {"float_toggle": b"float pointer", "dock_all": b"dock all"}
 # Key combinations a rules file without "key_bindings" gets. Meta+Shift+F floats/docks
-# a window (free on the Frametop desktop; apps rarely use Meta+Shift+F). Gaze shortcuts
-# are not included — this fork keeps attention opacity without gaze mode.
+# a window (free on the Frametop desktop; apps rarely use Meta+Shift+F).
 DEFAULT_KEY_BINDINGS = {"42+125+33": "float_toggle"}  # Shift+Meta+F
 KEY_F24 = 194  # sent to the desktop with a Meta combination (see key_binding)
 # Key combinations ("key_bindings"): modifiers, each side's code folded into the left one's.
@@ -427,7 +422,6 @@ class Pointer:
         self.wake_counts = wake_counts
         self.pending = 0
         self.pending_since = 0.0
-        self.gaze_awake_until = 0.0  # the helper's gaze mode keeps the pointer until then
 
     def send(self, command):
         try:
@@ -494,9 +488,6 @@ class Pointer:
         elif name == "follow_toggle":
             self.send("follow toggle")  # until the next restart; the setting is POINTER_FOLLOW
             log("head follow toggled")
-        elif name == "gaze_toggle":
-            self.send("gaze toggle")  # until the next restart; the setting is POINTER_GAZE
-            log("gaze mode toggled")
         elif name == "screens_toggle":
             try:
                 self.sock.sendto(b"toggle", SCREENS)
@@ -546,7 +537,7 @@ class Pointer:
         if self.scroll_until is not None and now >= self.scroll_until:
             self.send("scroll 0 0")
             self.scroll_until = None
-        if self.active and now - self.last_used > self.idle and now >= self.gaze_awake_until:
+        if self.active and now - self.last_used > self.idle:
             self.send("hide")
             self.active = False
             log("pointer off (idle)")
@@ -658,7 +649,6 @@ def main():
             log("pointer mode off: pointer devices feed the virtual mouse and keyboard")
 
     load_config()
-    # If gaze-pointer was already holding gpio-keys, re-open with new grab settings.
     meta_down = False  # Meta pressed with no other key yet: a tap toggles the dashboard
     screens_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
 
@@ -975,10 +965,6 @@ def main():
                     continue
                 if cmd == "textfield" and len(words) == 2:
                     text_field(words[1] == "1")
-                    continue
-                if cmd == "gazeawake" and len(words) == 2:
-                    if state["pointer"]:
-                        state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
                     continue
                 if not addr:
                     continue  # unbound sender, nowhere to reply

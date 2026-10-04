@@ -12,22 +12,15 @@ has() { grep -q -- "$1" "$2" && ok "has $1 in $(basename "$2")" || bad "missing 
 lacks() { if grep -q -- "$1" "$2"; then bad "unexpected $1 in $2"; else ok "lacks $1 in $(basename "$2")"; fi; }
 
 pointer_svc="$root/pointer/helper/frametop-pointer.service"
-gaze_svc="$root/gaze/frametop-gaze.service"
 
 has 'After=steamvr.service' "$pointer_svc"
 has 'PartOf=steamvr.service' "$pointer_svc"
 has 'Requisite=steamvr.service' "$pointer_svc"
 lacks 'Requires=steamvr.service' "$pointer_svc"
 
-has 'After=steamvr.service' "$gaze_svc"
-has 'PartOf=steamvr.service' "$gaze_svc"
-has 'Requisite=steamvr.service' "$gaze_svc"
-lacks 'Requires=steamvr.service' "$gaze_svc"
-
 # Overlay clients probe Background first, then Overlay (never Overlay alone as first Init).
 for f in \
   "$root/pointer/helper/ft-pointer.cpp" \
-  "$root/gaze/ft-gaze.cpp" \
   "$root/screens/vr.cpp"
 do
   if ! grep -q 'VRApplication_Background' "$f"; then

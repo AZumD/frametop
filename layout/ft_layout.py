@@ -2799,7 +2799,8 @@ def gaze_cmd(argv):
               file=sys.stderr)
         return 2
     if argv[2] == "pointer":
-        print("error: fork gaze-pointer removed; use upstream gaze/ (POINTER_GAZE / ft-gazectl)",
+        print("error: desktop gaze-pointer removed; use ft-layout gaze state|debug|fallback "
+              "for screen attention",
               file=sys.stderr)
         return 2
     reply = screens_socket().ask("gaze " + " ".join(argv[2:]))

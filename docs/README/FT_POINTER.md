@@ -16,10 +16,15 @@ Cross-panel DnD also needs ft-screens to hand KWin pointer focus to the destinat
 
 [FT_FLOATD.md](FT_FLOATD.md), [INPUT-RELAY.md](INPUT-RELAY.md), `docs/floating-windows.md`.
 
+## Notes
+
+The experimental MAGIC desktop gaze-pointer mode (top-level `gaze/` service, Input Settings → Gaze page) was removed. Eye-gaze attention opacity remains in ft-screens / Display Settings.
+
 ## Tests
 
 ```
 python3 test/test_pointer_ignore.py
+python3 test/test_gaze_pointer_removed.py
 python3 test/test_float_phase3.py
 python3 test/test_float_cross_panel_dnd.py
 bash test/test_steamvr_client_init.sh
