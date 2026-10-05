@@ -20,6 +20,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 | `display-settings/ft_display_settings.py` | [FT_DISPLAY_SETTINGS.md](FT_DISPLAY_SETTINGS.md) |
 | `layout/ft_layout.py` | [FT_LAYOUT.md](FT_LAYOUT.md) |
 | `session/ft-launch.py` | [FT-LAUNCH.md](FT-LAUNCH.md) |
+| `session/ft-game-run` / `ft_game_run.py` | [FT-GAME-RUN.md](FT-GAME-RUN.md) |
 | `layout/ft_desktop.py` | [FT_DESKTOP.md](FT_DESKTOP.md) |
 | `input/input-relay.py` | [INPUT-RELAY.md](INPUT-RELAY.md) |
 | `input/ft-textinput` | [FT_TEXTINPUT.md](FT_TEXTINPUT.md) |
@@ -31,5 +32,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 | `float/ft_apps.py` | [FT_APPS.md](FT_APPS.md) |
 | `hands/` | [HANDS.md](HANDS.md) |
 | `test/run-unit.sh` | [RUN-UNIT.md](RUN-UNIT.md) |
+| Stage 3 Steam→Tovakai game routing | [STEAM_GAME_ROUTING.md](STEAM_GAME_ROUTING.md) |
+| `test/_probe_game_routing_*.sh` / `_arm_game_routing_*.sh` / `_verify_game_routing_phase5.sh` | [_PROBE_GAME_ROUTING_PHASE0.md](_PROBE_GAME_ROUTING_PHASE0.md), [_ARM_GAME_ROUTING_PHASE5.md](_ARM_GAME_ROUTING_PHASE5.md) |
 
 Layout / Spatial Instruments CLI and profile format live in `docs/reference.md` (and `docs/design.md`). `ft-layout apply` still pushes visibility, KWin scales, and instruments when the HMD pose is not ready yet (see [FT_LAYOUT.md](FT_LAYOUT.md)). Display Settings → **Background** uses `frame-background`; recover-vr also clears a broken empty `steamvr-pending.path` that can black-screen SteamVR after the boot logo. Launcher Configure writes/removes apps in-process in Display Settings (then host-syncs VR) so remove and the “application not available” warning stay reliable inside distrobox — see [FT_DISPLAY_SETTINGS.md](FT_DISPLAY_SETTINGS.md). SteamVR overlay clients (ft-pointer, ft-screens) probe as Background before Overlay and use `Requisite=steamvr.service` so they cannot bootstrap a rogue vrserver; see `docs/design.md`. Floating windows use spare KWin outputs (`FLOAT_SLOTS`), `ft-floatd`, and `frametop.float.N` panels — see [FT_FLOATD.md](FT_FLOATD.md) and `docs/floating-windows.md`. Optional hand tracking (`hands/`, `ft-handsctl`) and screen hand cutouts are experimental and off by default — see [HANDS.md](HANDS.md).

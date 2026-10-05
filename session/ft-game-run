@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""tovakai-game-run: load nested Frametop display env, then exec Steam's command.
+
+Steam remains the launcher (Proton, runtime, tracking). This only redirects
+DISPLAY / WAYLAND_DISPLAY / XDG_RUNTIME_DIR (and XAUTHORITY if present) at the
+outer wrap point so the game window can connect to nested KWin/Xwayland.
+
+Usage (Steam launch options):
+  /path/to/ft-game-run %command%
+
+Process name target: ft-game-run (≤15 chars).
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+from ft_game_run import (  # noqa: E402
+    apply_overrides,
+    nested_display_overrides,
+    plasmashell_env_path,
+    summarize_env,
+)
+
+LOG = os.environ.get("FT_GAME_RUN_LOG", "/tmp/frametop-game-run.log")
+
+
+def log(msg: str) -> None:
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} ft-game-run: {msg}\n"
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
+    sys.stderr.write(line)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        log("usage: ft-game-run <steam-command...>")
+        return 2
+    cmd = argv[1:]
+    try:
+        path = plasmashell_env_path()
+        overrides = nested_display_overrides(path)
+    except Exception as e:
+        log(f"refusing launch: {e}")
+        return 1
+    env = apply_overrides(dict(os.environ), overrides)
+    log(f"env_file={path} overrides={summarize_env(overrides)} argv0={cmd[0]!r} argc={len(cmd)}")
+    # Replace this process with Steam's unchanged command.
+    try:
+        os.execvpe(cmd[0], cmd, env)
+    except OSError as e:
+        log(f"exec failed: {e} cmd0={cmd[0]!r}")
+        return 127
+    return 0  # unreachable
+
+
+if __name__ == "__main__":
+    # Prefer argv0 ft-game-run when invoked via `python3 ft-game-run`.
+    sys.exit(main(sys.argv) or 0)
