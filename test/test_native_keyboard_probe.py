@@ -29,6 +29,8 @@ class NativeKeyboardProbeTests(unittest.TestCase):
         self.assertIn("pgrep -x vrserver", self.sh)
         self.assertNotIn("systemctl --user restart", self.sh)
         self.assertNotIn("pkill", self.sh)
+        self.assertIn('root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)', self.sh)
+        self.assertNotIn('\\\\${BASH_SOURCE[0]}', self.sh)
 
     def test_program_name_fits_pgrep_limit(self):
         self.assertIn("ft-kbprobe", self.sh)

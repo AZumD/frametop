@@ -5,7 +5,7 @@
 # SteamVR must already be running.
 set -euo pipefail
 
-root=$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$root/scripts/_env.sh"
 
 if ! on_frame 'pgrep -x vrserver >/dev/null'; then
