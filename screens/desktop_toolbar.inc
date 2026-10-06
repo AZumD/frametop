@@ -105,6 +105,10 @@ struct DesktopToolbar : FollowState, AttentionState, MoveDrag {
     // Config sides (CLI); built into modules[] at Ensure.
     std::vector<ToolbarMod> leftMods, centerMods, rightMods;
     std::vector<ToolbarModule> modules;
+    // Stable OpenVR handles for toolbar cells. Task-list changes repaint/reposition these
+    // instead of destroy+recreate under the same key in one frame (which can leave a
+    // transparent-but-clickable overlay on SteamVR).
+    std::map<std::string, vr::VROverlayHandle_t> cellPool;
     bool visible = false;
     bool dashHidden = false;
     float lastAlpha = -1.f;
@@ -429,11 +433,44 @@ void KillOverlay(vr::VROverlayHandle_t &o) {
     o = vr::k_ulOverlayHandleInvalid;
 }
 
-// Drop the module cells only. The backing and move bar stay so a task-list rebuild
-// (launching from Start) never flashes a blank / missing bar.
+vr::VROverlayHandle_t ToolbarCellOverlay(const char *key, const char *name,
+                                                  const std::vector<uint8_t> &px, int w, int h) {
+    auto it = g_toolbar.cellPool.find(key);
+    if (it == g_toolbar.cellPool.end()) {
+        const auto o = MakeChrome(key, name, px, w, h);
+        if (o != vr::k_ulOverlayHandleInvalid) g_toolbar.cellPool.emplace(key, o);
+        return o;
+    }
+
+    auto &o = it->second;
+    if (o == vr::k_ulOverlayHandleInvalid) {
+        o = MakeChrome(key, name, px, w, h);
+        return o;
+    }
+
+    vr::VROverlay()->SetOverlayName(o, name);
+    const auto err =
+        vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
+    if (err != vr::VROverlayError_None) {
+        std::fprintf(stderr, "toolbar: SetOverlayRaw failed for %s: %s\n", key,
+                     vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
+        // Handle really became unusable: only then fall back to recreation. Normal task
+        // rebuilds never take this path, so same-frame key churn is avoided.
+        KillOverlay(o);
+        o = MakeChrome(key, name, px, w, h);
+        return o;
+    }
+    vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
+    const vr::HmdVector2_t scale = {{float(w), float(h)}};
+    vr::VROverlay()->SetOverlayMouseScale(o, &scale);
+    return o;
+}
+
+// Drop the module model only. Cell overlays are pooled and merely hidden so a task-list
+// rebuild can repaint/reposition the same OpenVR handles without destroy/recreate races.
 void DestroyToolbarCells() {
-    for (auto &m : g_toolbar.modules)
-        for (auto &b : m.buttons) KillOverlay(b.o);
+    for (auto &[key, o] : g_toolbar.cellPool)
+        if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->HideOverlay(o);
     g_toolbar.modules.clear();
     g_toolbar.built = false;
     g_toolbar.anyHover = false;
@@ -442,6 +479,8 @@ void DestroyToolbarCells() {
 
 void DestroyToolbarOverlays() {
     DestroyToolbarCells();
+    for (auto &[key, o] : g_toolbar.cellPool) KillOverlay(o);
+    g_toolbar.cellPool.clear();
     KillOverlay(g_toolbar.backing);
     KillOverlay(g_toolbar.grab);
     g_toolbar.backingTexH = g_toolbar.backingBandPx = 0;
@@ -528,7 +567,7 @@ void EnsureToolbar() {
             }
             std::snprintf(key, sizeof key, "frametop.toolbar.m%zu.c%zu", g_toolbar.modules.size(), mod.buttons.size());
             std::snprintf(name, sizeof name, "Toolbar %s", b.label.c_str());
-            b.o = MakeChrome(key, name, face, texW, texH);
+            b.o = ToolbarCellOverlay(key, name, face, texW, texH);
             mod.buttons.push_back(std::move(b));
         };
 
@@ -998,9 +1037,9 @@ void RefaceAnchor(const std::string &action) {
     if (!action.empty()) RefaceTaskbarButtons(action.c_str());
 }
 
-// The task set changed: rebuild the strip (its width changes). Not mid-drag.
-// Keep the backing and move bar — destroying them left a blank bar for a frame (or for
-// good, if the arch re-upload was skipped) right when an app launched from Start.
+// The task set changed: rebuild the strip model (its width changes). Not mid-drag.
+// Backing, move bar and cell overlay handles stay alive. Cells are hidden, repainted and
+// repositioned in place so SteamVR never sees same-key destroy/create churn during launch.
 void RebuildToolbarForTasks() {
     if (!g_taskbar.rebuild || g_toolbar.drag != Drag::None || !g_toolbar.enabled) return;
     g_taskbar.rebuild = false;

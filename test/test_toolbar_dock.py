@@ -242,6 +242,11 @@ class CppGuards(unittest.TestCase):
         # (a blank backing was the footgun that made the bar vanish).
         self.assertIn("void DestroyToolbarCells()", self.tb)
         self.assertIn("DestroyToolbarCells();", self.tb)
+        self.assertIn("cellPool", self.tb)
+        self.assertIn("ToolbarCellOverlay(", self.tb)
+        cells = self.tb.split("void DestroyToolbarCells()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("HideOverlay", cells)
+        self.assertNotIn("KillOverlay", cells)
         self.assertIn("ArchTexture(arch, texW, texH)", self.tb)
         self.assertNotIn("start from a blank texture", self.tb)
         self.assertIn("interactUntil", self.tb)
