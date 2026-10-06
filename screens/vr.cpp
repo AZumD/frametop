@@ -1376,10 +1376,11 @@ double FacingAngle(const Mat &p, const Mat &head) {
 }
 
 // The screens' shared visibility for the mode (before a pinned screen's own facing rule).
-// The mode in effect: during a SteamVR game (with g_inGames Hide), "always" becomes "only with
-// the dashboard open", so the screens stay out of the game until you open the dashboard.
+// During a SteamVR/flat game, In games = hide owns visibility regardless of the normal
+// desktop mode: yield to the game while its dashboard is closed, show with the dashboard,
+// and still allow the manual hotkey override through Mode::Dashboard.
 Mode EffectiveMode() {
-    return g_gameRunning && g_inGames == InGames::Hide && g_mode == Mode::Always ? Mode::Dashboard : g_mode;
+    return g_gameRunning && g_inGames == InGames::Hide ? Mode::Dashboard : g_mode;
 }
 
 // Flatscreen / gamescope theater panels (not scene apps). Steam uses both legacy
@@ -5320,8 +5321,8 @@ void ft_vr_keyboard_hide(void) {
 //                             own): carry the panel with the pressing laser until the release
 //   up                        pointer helper: left button came up off our overlays
 //   controllers always|outside_games|dashboard   when controllers' lasers work the screens
-//   ingames hide|visible      during a VR game, "always" acts like "only with the dashboard"
-//                             (hide), or stays as it is (visible)
+//   ingames hide|visible      during a VR/flat game, hide makes every normal visibility mode
+//                             yield to the game until the dashboard/manual override shows it
 //   state         -> "ok <mode> <manual 0|1> <wrist deg> <gesture hand> <gesture deg>
 //                     <controllers> <game running 0|1> <ingames> <app_activity>"
 // (size <screen> <w> <h> and key <code> <value> are handled in compositor.c.) Screens are

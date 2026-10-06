@@ -62,6 +62,12 @@ class SteamVrGameDetection(unittest.TestCase):
         self.assertIn("AppBlocksOutsideGamesLasers", lasers)
         self.assertNotIn("g_sceneApp", lasers)
 
+    def test_ingames_hide_overrides_every_base_visibility_mode(self):
+        vr = read("screens/vr.cpp")
+        effective = vr[vr.index("Mode EffectiveMode()") : vr.index("// Flatscreen / gamescope")]
+        self.assertIn("g_gameRunning && g_inGames == InGames::Hide ? Mode::Dashboard : g_mode", effective)
+        self.assertNotIn("g_mode == Mode::Always", effective)
+
     def test_docs_mention_flatscreen(self):
         ref = read("docs/reference.md")
         self.assertRegex(ref, re.compile(r"desktopgame|flatscreen|AppActivity", re.I))

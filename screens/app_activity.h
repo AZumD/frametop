@@ -43,9 +43,10 @@ inline const char *AppActivityName(AppActivity a) {
 }
 
 // How many UpdateGame samples (≈0.5 s each) of "dashboard open without a visible
-// desktopgame" are required before releasing a flat-game latch. Bridges one-sample
-// glitches when entering gamepad mode without treating leftover keys as a game.
-constexpr int kFlatLatchClearSamples = 2;
+// desktopgame" are required before releasing a flat-game latch. Steam's Enter gamepad
+// mode can keep this transition state for more than a second, so hold for ~3 seconds.
+// Leftover hidden keys still do not arm a latch on their own.
+constexpr int kFlatLatchClearSamples = 6;
 
 // sceneApp: GetCurrentSceneProcessId() != 0
 // flatVisible / flatRegistered: valve.steam.desktopgame[.N] FindOverlay + IsOverlayVisible

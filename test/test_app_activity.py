@@ -82,7 +82,7 @@ class AppActivityLogic(unittest.TestCase):
 
     def test_header_constants(self):
         h = read("screens/app_activity.h")
-        self.assertIn("kFlatLatchClearSamples = 2", h)
+        self.assertIn("kFlatLatchClearSamples = 6", h)
         self.assertIn("FlatGamePresentation", h)
         self.assertIn("AppBlocksOutsideGamesLasers", h)
         self.assertIn("dashboardVisible", h)

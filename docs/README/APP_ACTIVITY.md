@@ -17,7 +17,7 @@ laser flags share one decision (not separate `GetCurrentSceneProcessId` vs lefto
 - Holds `FlatGamePresentation` while that key stays registered and the dashboard is
   closed — Steam's "Enter gamepad mode" calls `hideDashboard` and often hides the
   theater overlay; without the latch Frametop would reappear and steal controllers.
-- Releases after two samples of dashboard open without a visible theater (or when the
+- Releases after six samples (~3 s) of dashboard open without a visible theater (or when the
   overlay key is gone). Leftover hidden keys never arm the latch by themselves.
 - OutsideGames lasers: blocked for `VrScene`, and for `FlatGamePresentation` only while
   the dashboard is closed (gamepad mode). Theater + open dashboard still allows lasers.
