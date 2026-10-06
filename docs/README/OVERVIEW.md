@@ -6,6 +6,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 
 | Path | Doc |
 |------|-----|
+| `VERSION` / `CHANGELOG.md` | [VERSION.md](VERSION.md), [CHANGELOG.md](CHANGELOG.md), [RELEASE_0_1_0.md](RELEASE_0_1_0.md) |
 | `scripts/frame-background` | [FRAME-BACKGROUND.md](FRAME-BACKGROUND.md) |
 | `scripts/_env.sh` | [SCRIPTS_ENV.md](SCRIPTS_ENV.md) |
 | `scripts/openvr_settings.py` | [OPENVR_SETTINGS.md](OPENVR_SETTINGS.md) |
@@ -49,6 +50,7 @@ Frametop tools and docs for the Steam Frame nested desktop.
 | `test/test_desktop_toolbar.py` / `test_toolbar_dock.py` / `test_taskbar_model.py` / `test_app_activity.py` | [TEST_DESKTOP_TOOLBAR.md](TEST_DESKTOP_TOOLBAR.md), [TEST_TOOLBAR_DOCK.md](TEST_TOOLBAR_DOCK.md), [TEST_TASKBAR_MODEL.md](TEST_TASKBAR_MODEL.md), [TEST_APP_ACTIVITY.md](TEST_APP_ACTIVITY.md) |
 | `test/test_overlay_budget_and_games.py` / `test_screen_conceal.py` | [TEST_OVERLAY_BUDGET_AND_GAMES.md](TEST_OVERLAY_BUDGET_AND_GAMES.md), [TEST_SCREEN_CONCEAL.md](TEST_SCREEN_CONCEAL.md) |
 | `test/test_revive_desktop.sh` | [TEST_REVIVE_DESKTOP.md](TEST_REVIVE_DESKTOP.md) |
+| `test/test_release_packaging.sh` | [TEST_RELEASE_PACKAGING.md](TEST_RELEASE_PACKAGING.md) |
 | `scripts/sync.sh` | [SYNC.md](SYNC.md) |
 | `test/test_ft_layout_lf.py` / `test_launcher_wrappers_lf.py` | [TEST_FT_LAYOUT_LF.md](TEST_FT_LAYOUT_LF.md), [TEST_LAUNCHER_WRAPPERS_LF.md](TEST_LAUNCHER_WRAPPERS_LF.md) |
 | `test/_audit_stage_bugfixes*.sh` | [_AUDIT_STAGE_BUGFIXES.md](_AUDIT_STAGE_BUGFIXES.md) |

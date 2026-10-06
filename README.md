@@ -1,23 +1,26 @@
 # Frametop
 
-> **Experimental personal fork of [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop).**
->
-> This fork builds on the original Frametop with spatial profiles, additional anchoring and follow modes, Steam Frame eye-gaze-driven screen attention, desktop recovery, pointer-scaling fixes, and other experiments around using the Steam Frame as a spatial desktop.
->
-> Development on this fork is heavily AI-assisted and primarily tested on my own setup. Expect rough edges. For the original project and upstream-supported version, use [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop).
+**Version 0.1.0** — first named cut of this fork ([CHANGELOG](CHANGELOG.md), [release notes](docs/README/RELEASE_0_1_0.md)).
+
+> Personal fork of [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop). Development is heavily AI-assisted and primarily tested on one Steam Frame. For the upstream-supported project, use [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop).
+
+## 0.1.0 shell
+
+Cold start → multi-screen Plasma in SteamVR with a **spatial desktop toolbar** (Start / Tasks / Displays / Tray, on by default) → apps → enter a flat or VR game without stealing controllers → if the nested desktop does not come back, **`./desktops.sh revive`** (does not restart SteamVR).
 
 ## What's different in this fork?
 
 Compared with upstream Frametop, this fork currently adds:
 
+- Spatial desktop toolbar and taskbar (`ft-taskbar`), with screen dock-to-dashbar
 - Named spatial screen profiles with animated switching
 - Head-soft, head-rigid, yaw-follow, and position-follow anchors
-- Direct profile-slot controls and shared semantic layout actions
 - Steam Frame eye-gaze attention with configurable opacity transitions
 - Soft-follow glance dead zone; gaze freezes only head-soft (yaw/position keep moving)
 - Spatial Instruments (clock, media, image, launcher, …) and a SteamVR Background tab
-- Plasma shell watchdog and recovery without restarting the whole desktop
-- Safer desktop restart: SIGTERM `ft-screens` before tearing down the unit so SteamVR does not crash-loop
+- AppActivity ownership for flatscreen / VR-scene hide and OutsideGames lasers
+- `desktops.sh revive` after games or SteamVR bounces
+- Plasma shell watchdog and safer desktop restart (SIGTERM `ft-screens` before the unit)
 - Correct pointer mapping across fractional KDE display scales
 - Safer opt-in handling and recovery for the optional SteamVR pointer driver
 
@@ -82,7 +85,7 @@ Restarting the desktop (Restart desktop in Frametop Display Settings, or `./desk
 
 ## Known limitations
 
-This is an early release, tested on one Steam Frame (SteamOS 0.3.0 build 20260922, SteamVR 2.17.10).
+**0.1.0**, tested on one Steam Frame (SteamOS 0.3.0 build 20260922, SteamVR 2.17.10). See [docs/README/RELEASE_0_1_0.md](docs/README/RELEASE_0_1_0.md) for the smoke checklist and deferred items.
 
 - A SteamOS or SteamVR update can break parts of it until Frametop catches up. If something stops working after an update, please report it.
 - The first install downloads 1–2 GB for the build container and compiles everything on the headset, which takes several minutes.

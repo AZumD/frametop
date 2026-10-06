@@ -24,6 +24,7 @@ Includes pointer/gaze/follow, Spatial Instruments, float wiring, chrome layout, 
 | `test_taskbar_model.py` | [TEST_TASKBAR_MODEL.md](TEST_TASKBAR_MODEL.md) |
 | `test_app_activity.py` | [TEST_APP_ACTIVITY.md](TEST_APP_ACTIVITY.md) |
 | `test_revive_desktop.sh` | [TEST_REVIVE_DESKTOP.md](TEST_REVIVE_DESKTOP.md) |
+| `test_release_packaging.sh` | [TEST_RELEASE_PACKAGING.md](TEST_RELEASE_PACKAGING.md) |
 
 ## Related
 

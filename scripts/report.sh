@@ -16,7 +16,9 @@ section() { printf '\n===== %s\n' "$*"; }
 section Versions
 grep -E '^(PRETTY_NAME|VERSION_ID|BUILD_ID|VARIANT_ID)=' /etc/os-release
 grep -m1 -o 'vrcompositor [0-9.]* startup' $logs/vrcompositor.txt 2>/dev/null || echo "SteamVR: not found"
+if [ -f "$repo/VERSION" ]; then echo "Frametop VERSION: $(tr -d '[:space:]' < "$repo/VERSION")"; else echo "Frametop VERSION: (missing)"; fi
 git -C "$repo" log -1 --format='Frametop %h (%cd)' --date=short 2>/dev/null || echo "Frametop: not a git checkout"
+git -C "$repo" describe --tags --always 2>/dev/null || true
 ~/.local/bin/distrobox version 2>/dev/null || echo "distrobox: not installed"
 podman container inspect -f 'dev container: running={{.State.Running}} image={{.ImageName}}' dev 2>/dev/null || echo "dev container: missing"
 

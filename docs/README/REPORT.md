@@ -4,7 +4,7 @@ Script: `scripts/report.sh`
 
 ## Purpose
 
-Collect a Frametop bug-report bundle on the Frame: OS/SteamVR versions, service states, settings, and recent logs. Bluetooth addresses and the headset serial are masked.
+Collect a Frametop bug-report bundle on the Frame: OS/SteamVR versions, the repo `VERSION` file, git describe, service states, settings, and recent logs. Bluetooth addresses and the headset serial are masked.
 
 ## Usage
 
