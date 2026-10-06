@@ -22,17 +22,12 @@ for cmd in (b"state", b"toolbar taskbar", b"toolbar overlays"):
     s.settimeout(2)
     s.bind(f"\0ft_toolbar_diag_{os.getpid()}_{id(s)}")
     try:
-        for dest in (b"\0ft_screens-0", b"\0ft_screens"):
-            try:
-                s.sendto(cmd, dest)
-                data = s.recv(65535)
-                print(cmd.decode(), "->")
-                print(data.decode(errors="replace"))
-                break
-            except (TimeoutError, socket.timeout):
-                continue
-        else:
-            print(cmd.decode(), "-> no ft-screens reply")
+        s.sendto(cmd, b"\0ft_screens")
+        data = s.recv(65535)
+        print(cmd.decode(), "->")
+        print(data.decode(errors="replace"))
+    except (TimeoutError, socket.timeout, ConnectionRefusedError, OSError) as e:
+        print(cmd.decode(), "-> no ft-screens reply:", e)
     finally:
         s.close()
 PY
