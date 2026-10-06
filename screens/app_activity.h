@@ -30,8 +30,14 @@ inline bool IsDesktopgameOverlayKey(const char *key) {
     constexpr char prefix[] = "valve.steam.desktopgame";
     constexpr std::size_t prefixLen = sizeof(prefix) - 1;
     const std::size_t len = std::strlen(key);
-    if (len < prefixLen || std::strncmp(key, prefix, prefixLen) != 0) return false;
-    return len == prefixLen || key[prefixLen] == '.';
+    if (len == prefixLen) return std::strncmp(key, prefix, prefixLen) == 0;
+    if (len <= prefixLen + 1 || std::strncmp(key, prefix, prefixLen) != 0 || key[prefixLen] != '.')
+        return false;
+    // Root theater overlays use a numeric suffix (legacy slot or Steam app id).
+    // Child overlays such as .<appid>.thumb and .<appid>.layer1 must not own AppActivity.
+    for (const char *p = key + prefixLen + 1; *p; ++p)
+        if (*p < '0' || *p > '9') return false;
+    return true;
 }
 
 inline const char *AppActivityName(AppActivity a) {

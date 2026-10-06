@@ -88,6 +88,7 @@ class AppActivityLogic(unittest.TestCase):
         self.assertIn("dashboardVisible", h)
         self.assertIn("IsDesktopgameOverlayKey", h)
         self.assertIn("valve.steam.desktopgame", h)
+        self.assertIn("Child overlays", h)
 
     def test_harness_when_gxx_available(self):
         if not shutil.which("g++"):
