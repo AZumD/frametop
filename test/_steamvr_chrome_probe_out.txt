@@ -1,0 +1,552 @@
+﻿===== PATHS =====
+EXISTS /opt/steamvr
+  entries: 12
+EXISTS /opt/steamvr/resources
+  entries: 33
+EXISTS /opt/steamvr/resources/webinterface
+  entries: 5
+EXISTS /opt/steamvr/resources/webinterface/dashboard
+  entries: 36
+EXISTS /opt/steamvr/resources/webinterface/dashboard/css
+  entries: 10
+EXISTS /opt/steamvr/resources/webinterface/dashboard/images
+  entries: 24
+EXISTS /opt/steamvr/content/vrmonitor
+  entries: 7
+EXISTS /opt/steamvr/content/vrmonitor/stylesheets
+  entries: 4
+EXISTS /opt/steamvr/content/vrmonitor/textures
+  entries: 1
+EXISTS /opt/steamvr/content/vrmonitor/icons
+  entries: 184
+EXISTS /home/steamos/steamvr
+  entries: 1
+EXISTS /home/steamos/.local/share/Steam
+  entries: 44
+EXISTS /home/steamos/.steam/steam
+  entries: 44
+
+===== FILENAME SEARCH resize/drag/grab/title/chrome/handle/corner/window =====
+/opt/steamvr/bin/linuxarm64/vrurlhandler
+/opt/steamvr/bin/vrwebhelper/linuxarm64/chrome_100_percent.pak
+/opt/steamvr/bin/vrwebhelper/linuxarm64/chrome_200_percent.pak
+/opt/steamvr/drivers/htc/resources/icons/vive_tracker_with_handle.svg
+/opt/steamvr/resources/icon_steamvr_desktopgame.png
+/opt/steamvr/resources/icon_steamvr_desktopgame.svg
+/opt/steamvr/resources/shaders/d3d11/tracked_camera_reprojection_simplified_monochrome_nv12_ps.fxo
+/opt/steamvr/resources/shaders/d3d11/tracked_camera_reprojection_simplified_monochrome_ps.fxo
+/opt/steamvr/resources/shaders/d3d11/tracked_camera_reprojection_simplified_sharpen_monochrome_nv12_ps.fxo
+/opt/steamvr/resources/shaders/d3d11/tracked_camera_reprojection_simplified_sharpen_monochrome_ps.fxo
+/opt/steamvr/resources/shaders/vulkan/tracked_camera_reprojection_simplified_monochrome_nv12_ps.spv
+/opt/steamvr/resources/shaders/vulkan/tracked_camera_reprojection_simplified_monochrome_ps.spv
+/opt/steamvr/resources/shaders/vulkan/tracked_camera_reprojection_simplified_sharpen_monochrome_nv12_ps.spv
+/opt/steamvr/resources/shaders/vulkan/tracked_camera_reprojection_simplified_sharpen_monochrome_ps.spv
+/opt/steamvr/resources/webinterface/dashboard/sounds/dashboard_fiddle_grab.wav
+
+===== vrmonitor stylesheets / textures =====
+total 68
+drwxr-xr-x 1 root root   162 Oct  1 08:57 .
+drwxr-xr-x 1 root root   114 Oct  1 08:57 ..
+-rwxr-xr-x 1 root root 60768 Oct  1 04:53 vrmonitor_common.qss
+-rwxr-xr-x 1 root root  3337 Oct  1 04:53 vrmonitor_common_osx.qss
+-rwxr-xr-x 1 root root     0 Oct  1 04:53 vrmonitor_desktop.qss
+-rwxr-xr-x 1 root root    19 Oct  1 04:53 vrmonitor_vr.qss
+total 608
+drwxr-xr-x 1 root root     28 Oct  1 08:57 .
+drwxr-xr-x 1 root root    114 Oct  1 08:57 ..
+-rwxr-xr-x 1 root root 619034 Oct  1 04:53 card_intro.png
+/opt/steamvr/content/vrmonitor/icons/icon_close.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_widget_close.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_widget_close16.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_widget_close16_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_widget_close_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_dock.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_dock16.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_dock16_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_dock_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_fullscreen.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_fullscreen16.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_fullscreen16_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_headsetview_window_fullscreen_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_close.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_close16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_close_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_close_hover16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_minimize.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_minimize16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_minimize_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_minimize_hover16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin.svg
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin_hover16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pinned.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pinned16.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pinned16.svg
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pinned_hover.png
+/opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pinned_hover16.png
+/opt/steamvr/content/vrmonitor/icons/pairing_buttons.png
+/opt/steamvr/content/vrmonitor/icons/slider_bar.png
+/opt/steamvr/content/vrmonitor/icons/slider_bar_hover.png
+
+===== CSS: border-radius / rgba / hover counts =====
+-- /opt/steamvr/resources/webinterface/dashboard/css/chunk~66c0d1388.css radii --
+      2 border-radius:calc(.5*var(--handle-length))
+      2 border-radius:50%
+      1 border-radius:var(--settings-control-inner-border-radius)}.SliderControl.Color:not(:hover):not(.Sliding) .Track{opacity:.8}.SliderControl .Track .Detent{position:absolute
+      1 border-radius:var(--settings-control-inner-border-radius)
+      1 border-radius:var(--inputborderradius)
+      1 border-radius:calc(.5*var(--track-thickness))
+      1 border-radius:100px
+      1 border-radius:1.5rem
+-- /opt/steamvr/resources/webinterface/dashboard/css/chunk~93a8598f9.css radii --
+      5 border-radius:50%
+      4 border-radius:9001px
+      3 border-radius:20px
+      3 border-radius:10px
+      2 border-radius:5px
+      2 border-radius:25px
+      2 border-radius:.05rem
+      1 border-radius:var(--settings-border-radius)}.DashboardMain .ControlBar>div{margin-top:auto
+-- /opt/steamvr/resources/webinterface/dashboard/css/chunk~b48d3fba7.css radii --
+      6 border-radius:var(--settings-control-inner-border-radius)
+      4 border-radius:50%
+      3 border-radius:var(--settings-button-image-border-radius)
+      3 border-radius:0
+      1 border-radius:var(--settings-subsection-border-radius)}.SettingsMain .Subsection:not(:first-child){margin-top:calc(.5*var(--settings-control-spacing))}.SettingsMain .Subsection{margin-bottom:var(--settings-control-spacing)}.SettingsMain .SettingsItem .Subsection{margin-bottom:0}.SettingsMain .Subsection.WithStem{margin-right:calc(-1*var(--settings-subsection-stem-padding))
+      1 border-radius:var(--settings-control-outer-border-radius)
+      1 border-radius:var(--settings-control-inner-border-radius)}.VisualizerControl .MenuSVG{top:0
+      1 border-radius:var(--settings-control-inner-border-radius)}.SettingsMain .Modal.CameraTest .Label.CameraStatus{padding:var(--settings-control-spacing)
+-- /opt/steamvr/resources/webinterface/dashboard/css/controllerbindingui.css radii --
+      9 border-radius:50%
+      3 border-radius:2px
+      2 border-radius:var(--settings-control-inner-border-radius)
+      2 border-radius:4px
+      2 border-radius:20px
+      1 border-radius:var(--app-image-border-radius)}.AppSelectContainer:hover{background:var(--buttonhover)}.AppSelectName{color:var(--text-color)
+      1 border-radius:calc(var(--app-select-container-padding) + var(--app-image-border-radius))}.AppSelectContainer:first-child{margin-top:0}.AppSelectContainer .AppImage{--height: 4.5rem
+      1 border-radius:9001px
+-- /opt/steamvr/resources/webinterface/dashboard/css/debugcommands.css radii --
+      4 border-radius:50%
+      2 border-radius:20px
+      1 border-radius:var(--inputborderradius)
+      1 border-radius:9001px
+      1 border-radius:4px
+      1 border-radius:2px
+      1 border-radius:12px}.controllerstatus_ControllerAppIconLoaded_xXhlY{position:static
+      1 border-radius:10px}.legacydashboardframecontrols_FrameControlsContainer_27B1e .legacydashboardframecontrols_Section_1KwWq.legacydashboardframecontrols_WideGapBefore_1lLW2{margin-left:30px}.legacydashboardframecontrols_FrameControlsContainer_27B1e .ButtonControl{background-color:none
+-- /opt/steamvr/resources/webinterface/dashboard/css/keyboard.css radii --
+      1 border-radius:4px}.VRKBDone{background-color:#23272d
+-- /opt/steamvr/resources/webinterface/dashboard/css/notificationtoast.css radii --
+      1 border-radius:5px
+-- /opt/steamvr/resources/webinterface/dashboard/css/settings_desktop.css radii --
+      3 border-radius:50%
+      2 border-radius:20px
+      1 border-radius:9001px
+      1 border-radius:4px
+      1 border-radius:12px}.controllerstatus_ControllerAppIconLoaded_xXhlY{position:static
+      1 border-radius:10px}.legacydashboardframecontrols_FrameControlsContainer_27B1e .legacydashboardframecontrols_Section_1KwWq.legacydashboardframecontrols_WideGapBefore_1lLW2{margin-left:30px}.legacydashboardframecontrols_FrameControlsContainer_27B1e .ButtonControl{background-color:none
+      1 border-radius:10px}.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_LearnMoreButton_2KROR{background:linear-gradient(to right, #3D4450 0%, #3D4450 60%)}.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_BlueButton_2-ssY:active,.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_BlueButton_2-ssY:enabled,.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_BlueButton_2-ssY.guidedtour_steamframe_Primary_1MsHt,.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_BlueButton_2-ssY{background:linear-gradient(to right, #1A9FFF 0%, #1A9FFF 60%)}>.guidedtour_steamframe_ButtonContainer_2bj_L .guidedtour_steamframe_BlueButton_2-ssY:hover{background:linear-gradient(to right, #1A9FFF 0%, #1A9FFF 60%)
+      1 border-radius:10px
+-- /opt/steamvr/resources/webinterface/dashboard/css/systemreportviewer.css radii --
+      1 border-radius:100px
+-- /opt/steamvr/resources/webinterface/dashboard/css/systemui.css radii --
+      8 border-radius:10px
+      2 border-radius:50%
+      2 border-radius:32px}.persistentnotifications_CastingVRScreenNotification_22Xoq{display:flex
+      2 border-radius:.4em
+      1 border-radius:5px
+      1 border-radius:32px
+      1 border-radius:2px}.framedevui_DevUI_2_sz9 input:hover,.framedevui_DevUI_2_sz9 button:hover,.framedevui_FrameMainContent_3yJ1O input:hover,.framedevui_FrameMainContent_3yJ1O button:hover{background:#bbb}.framedevui_DevUI_2_sz9 input:active,.framedevui_DevUI_2_sz9 button:active,.framedevui_FrameMainContent_3yJ1O input:active,.framedevui_FrameMainContent_3yJ1O button:active{background:#000
+      1 border-radius:.2rem
+-- /opt/steamvr/content/vrmonitor/stylesheets/vrmonitor_common.qss radii --
+     21 border-radius: 2px
+      1 border-radius: 10px
+
+===== steamvr.css CSS variables =====
+--color_background: #262626
+--color_text_primary: #CCCCCC
+--color_text_secondary: #888888
+--color_text_active: #9DC112
+--color_text_inactive: #777777
+--color_text_warning: #D94453
+--color_text_attention: #E6BE42
+--color_header_link: #CCCCCC
+--color_header_link_hover: #FFFFFF
+--color_header_link_active: #888888
+--color_seperator: #636363
+--color_command_link: #6ea9d7
+--color_command_link_hover: #8ad4ff
+--color_overlay: rgba( 38, 38, 38, 0.9 )
+--color_flyout_cursor: #4C4C4C
+--gradient_dialog: linear-gradient( to bottom, rgb( 28, 36, 41 ), rgb( 25, 25, 25 ) )
+--color_messagebox_title: var( --color_text_primary )
+--color_messagebox_text: var( --color_text_primary )
+--color_button_background: rgb( 60, 60, 60 )
+
+===== systemui.css color / radius extracts =====
+radii: ['.2rem', '.4em', '10px', '2px}.framedevui_DevUI_2_sz9 input:hover,.framedevui_DevUI_2_sz9 button:hover,.framedevui_FrameMainContent_3yJ1O input:hover,.framedevui_FrameMainContent_3yJ1O button:hover{background:#bbb}.framedevui_DevUI_2_sz9 input:active,.framedevui_DevUI_2_sz9 button:active,.framedevui_FrameMainContent_3yJ1O input:active,.framedevui_FrameMainContent_3yJ1O button:active{background:#000', '32px', '32px}.persistentnotifications_CastingVRScreenNotification_22Xoq{display:flex', '50%', '5px']
+rgba count 5
+  rgba(0,0,0,.9)
+  rgba(255,255,255,.1)
+  rgba(255,255,255,.5)
+  rgba(50,0,0,.75)
+  rgba(97,97,97,.75)
+hex count 17
+  #000
+  #0056d6
+  #060a0e
+  #0bf
+  #0e141b
+  #111
+  #1a9fff
+  #222
+  #23262e
+  #2bff00
+  #3d4450
+  #67707b
+  #b8bcbf
+  #bbb
+  #dcdedf
+  #eee
+  #fff
+hover rules 7
+  .roomsetup_ButtonBase_38CEZ:hover{background:#3d4450;color:#eee}
+  .roomsetup_ButtonControl_1i1cC:hover{background:#3d4450;color:#eee}
+  .roomsetup_Colorful_S1-ba:hover{background:#1a9fff}
+  .roomsetup_CloseButtonIcon_3AWs7 svg:hover{color:#eee}
+  .loadingthrobber_LoadingRoot_2I3sR .loadingthrobber_ButtonRow_XE-wi .loadingthrobber_ButtonControl_1lDDn:hover{background-color:#0bf}
+  .framedevui_DevUI_2_sz9 input:hover,.framedevui_DevUI_2_sz9 button:hover,.framedevui_FrameMainContent_3yJ1O input:hover,.framedevui_FrameMainContent_3yJ1O button:hover{background:#bbb}
+  .inputfocusdevui_DevUI_22N_K input:hover,.inputfocusdevui_DevUI_22N_K button:hover,.inputfocusdevui_DevUI_22N_K .inputfocusdevui_Button_SbI2k:hover{background:#bbb}
+
+===== chunk CSS: search chrome-ish class names =====
+chunk~66c0d1388.css: keywords ['Handle', 'corner', 'drag', 'handle']
+chunk~93a8598f9.css: keywords ['Corner', 'Grab', 'Handle', 'Resize', 'corner', 'grab', 'handle', 'resize']
+  chunk~93a8598f9.css :: .frameresizehandle_ResizeHandleButton_3BhgE{--resize-co
+  chunk~93a8598f9.css :: rner-size: 128px;--resize-corner-thickness: 10px;--resi
+  chunk~93a8598f9.css :: ion:relative;width:calc(var(--resize-corner-size) + var(--resize-c
+  chunk~93a8598f9.css :: -offset)*2);height:calc(var(--resize-corner-size) + var(--resize-c
+  chunk~93a8598f9.css :: er-offset)*2);padding:0}.frameresizehandle_ResizeCorner_35BU5{posi
+  chunk~93a8598f9.css :: tion:absolute;right:var(--resize-corner-offset);bottom:var(--r
+  chunk~93a8598f9.css :: set);display:flex;width:var(--resize-corner-size);height:var(--res
+  chunk~93a8598f9.css :: ize-corner-size);cursor:nwse-resize}.frameresizehandle_ResizeSVG_
+  chunk~93a8598f9.css :: ition:all .08s ease-out}.frameresizehandle_ResizeHandleButton_3Bhg
+  chunk~93a8598f9.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W{color:#fff;transform
+  chunk~93a8598f9.css :: :scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  chunk~93a8598f9.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+  chunk~93a8598f9.css :: 2857142857}.frameresizehandle_ResizeHandleButton_3BhgE.frameresize
+  chunk~93a8598f9.css :: andle_ForceActive_3gxMM .frameresizehandle_ResizeSVG_1uH2W{color:#
+  chunk~93a8598f9.css :: ff;transform:scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  chunk~93a8598f9.css :: E.frameresizehandle_ForceActive_3gxMM .fram
+  chunk~93a8598f9.css :: eresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+chunk~b48d3fba7.css: keywords ['Handle']
+controllerbindingui.css: keywords ['Corner', 'Grab', 'Handle', 'Resize', 'TitleBar', 'corner', 'grab', 'handle', 'resize']
+  controllerbindingui.css :: .frameresizehandle_ResizeHandleButton_3BhgE{--resize-co
+  controllerbindingui.css :: rner-size: 128px;--resize-corner-thickness: 10px;--resi
+  controllerbindingui.css :: ion:relative;width:calc(var(--resize-corner-size) + var(--resize-c
+  controllerbindingui.css :: -offset)*2);height:calc(var(--resize-corner-size) + var(--resize-c
+  controllerbindingui.css :: er-offset)*2);padding:0}.frameresizehandle_ResizeCorner_35BU5{posi
+  controllerbindingui.css :: tion:absolute;right:var(--resize-corner-offset);bottom:var(--r
+  controllerbindingui.css :: set);display:flex;width:var(--resize-corner-size);height:var(--res
+  controllerbindingui.css :: ize-corner-size);cursor:nwse-resize}.frameresizehandle_ResizeSVG_
+  controllerbindingui.css :: ition:all .08s ease-out}.frameresizehandle_ResizeHandleButton_3Bhg
+  controllerbindingui.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W{color:#fff;transform
+  controllerbindingui.css :: :scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  controllerbindingui.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+  controllerbindingui.css :: 2857142857}.frameresizehandle_ResizeHandleButton_3BhgE.frameresize
+  controllerbindingui.css :: andle_ForceActive_3gxMM .frameresizehandle_ResizeSVG_1uH2W{color:#
+  controllerbindingui.css :: ff;transform:scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  controllerbindingui.css :: E.frameresizehandle_ForceActive_3gxMM .fram
+  controllerbindingui.css :: eresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+  controllerbindingui.css :: :left;flex-direction:row}.PageTitleBar{display:flex;flex-grow:0;flex
+  controllerbindingui.css :: Wrapper{padding-top:1rem}.PageTitleBar .TitleBarMainRow{background:v
+  controllerbindingui.css :: center;min-height:4.5rem}.PageTitleBar .PageSubTitle{text-align:cent
+  controllerbindingui.css :: er;font-size:1rem}.PageTitleBar .PageTitleLabel{width:100%}.P
+  controllerbindingui.css :: ageTitleBar .PageTitleLabel.SingleTitle{a
+  controllerbindingui.css :: :var(--button-fade-time)}.PageTitleBar .PageTitleBackButton{margin-l
+  controllerbindingui.css :: .5rem;padding-right:1rem}.PageTitleBar .TitleBarSection.RightBackBut
+  controllerbindingui.css :: ton{opacity:0}.PageTitleBar .OptionsButton{font-size:1rem
+  controllerbindingui.css :: :var(--button-fade-time)}.PageTitleBar .PageTitleBackButton:hover{ba
+  controllerbindingui.css :: ckbuttonbackgroundhover)}.PageTitleBar .PageTitleBackButton .ActionB
+  controllerbindingui.css :: opacity:.8;padding:.4rem}.PageTitleBar .PageTitleBackButton:hover .A
+  controllerbindingui.css :: ionButtonImage{opacity:1}.PageTitleBar .NoSteamWarning{background:va
+  controllerbindingui.css :: tonInput{margin-top:1rem}.SaveTitleBar .Title{margin-left:.5rem}.Sav
+  controllerbindingui.css :: apper textarea{max-width:100%;resize:vertical}.SaveDialogWrapper{w
+  controllerbindingui.css :: ange]:focus{outline:none}.PoseTitleBar,.SaveTitleBar{width:100%;marg
+  controllerbindingui.css :: modalheaderbottomborder)}.SaveTitleBar{margin:0}.PoseMainContent{hei
+debugcommands.css: keywords ['Corner', 'Grab', 'Handle', 'Resize', 'corner', 'grab', 'handle', 'resize']
+  debugcommands.css :: .frameresizehandle_ResizeHandleButton_3BhgE{--resize-co
+  debugcommands.css :: rner-size: 128px;--resize-corner-thickness: 10px;--resi
+  debugcommands.css :: ion:relative;width:calc(var(--resize-corner-size) + var(--resize-c
+  debugcommands.css :: -offset)*2);height:calc(var(--resize-corner-size) + var(--resize-c
+  debugcommands.css :: er-offset)*2);padding:0}.frameresizehandle_ResizeCorner_35BU5{posi
+  debugcommands.css :: tion:absolute;right:var(--resize-corner-offset);bottom:var(--r
+  debugcommands.css :: set);display:flex;width:var(--resize-corner-size);height:var(--res
+  debugcommands.css :: ize-corner-size);cursor:nwse-resize}.frameresizehandle_ResizeSVG_
+  debugcommands.css :: ition:all .08s ease-out}.frameresizehandle_ResizeHandleButton_3Bhg
+  debugcommands.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W{color:#fff;transform
+  debugcommands.css :: :scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  debugcommands.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+  debugcommands.css :: 2857142857}.frameresizehandle_ResizeHandleButton_3BhgE.frameresize
+  debugcommands.css :: andle_ForceActive_3gxMM .frameresizehandle_ResizeSVG_1uH2W{color:#
+  debugcommands.css :: ff;transform:scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  debugcommands.css :: E.frameresizehandle_ForceActive_3gxMM .fram
+  debugcommands.css :: eresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+settings_desktop.css: keywords ['Corner', 'Grab', 'Handle', 'Resize', 'corner', 'grab', 'handle', 'resize']
+  settings_desktop.css :: .frameresizehandle_ResizeHandleButton_3BhgE{--resize-co
+  settings_desktop.css :: rner-size: 128px;--resize-corner-thickness: 10px;--resi
+  settings_desktop.css :: ion:relative;width:calc(var(--resize-corner-size) + var(--resize-c
+  settings_desktop.css :: -offset)*2);height:calc(var(--resize-corner-size) + var(--resize-c
+  settings_desktop.css :: er-offset)*2);padding:0}.frameresizehandle_ResizeCorner_35BU5{posi
+  settings_desktop.css :: tion:absolute;right:var(--resize-corner-offset);bottom:var(--r
+  settings_desktop.css :: set);display:flex;width:var(--resize-corner-size);height:var(--res
+  settings_desktop.css :: ize-corner-size);cursor:nwse-resize}.frameresizehandle_ResizeSVG_
+  settings_desktop.css :: ition:all .08s ease-out}.frameresizehandle_ResizeHandleButton_3Bhg
+  settings_desktop.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W{color:#fff;transform
+  settings_desktop.css :: :scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  settings_desktop.css :: E:hover .frameresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+  settings_desktop.css :: 2857142857}.frameresizehandle_ResizeHandleButton_3BhgE.frameresize
+  settings_desktop.css :: andle_ForceActive_3gxMM .frameresizehandle_ResizeSVG_1uH2W{color:#
+  settings_desktop.css :: ff;transform:scale(1.4)}.frameresizehandle_ResizeHandleButton_3Bhg
+  settings_desktop.css :: E.frameresizehandle_ForceActive_3gxMM .fram
+  settings_desktop.css :: eresizehandle_ResizeSVG_1uH2W path{stroke-width:4.
+systemreportviewer.css: keywords ['Handle', 'TitleBar', 'corner']
+  systemreportviewer.css :: ;bottom:0;left:0;right:0}.PageTitleBar{display:flex;flex-grow:0;flex
+
+===== JS non-chunk search =====
+controllerbindingui.js: 8 hits
+  ),i.createElement("div",{className:"PageTitleBar"+(B.W.IsSteamAvailable?"":" NoSteam")},i.createElem
+  v",{className:"FlexFullWidthRowCentered TitleBarMainRow"},i.createElement("div",{className:"TitleBar
+  Row"},i.createElement("div",{className:"TitleBarSection"},e&&i.createElement("div",{className:"Butto
+  ent("div",{className:"AllCaps PageTitle TitleBarSection FlexColumn"},i.createElement("div",{classNam
+  )),t&&i.createElement("div",{className:"TitleBarSection"},i.createElement(m.Ay,{content:(0,d.we)("#B
+  teElement("div",{className:"FlexRow PoseTitleBar"},i.createElement("img",{className:"ActionButtonIma
+  teElement("div",{className:"FlexRow SaveTitleBar"},i.createElement("img",{className:"ActionButtonIma
+  teElement("div",{className:"FlexRow SaveTitleBar"},i.createElement("img",{className:"ActionButtonIma
+systemui.js: 3 hits
+  edUniformDashboardHeight:void 0}get showResizeHandle(){var e,t,o;if(null!==(o=s.Q.GetOverlayFlag(nul
+  ,(0,n.Cg)([i.computed],u.prototype,"showResizeHandle",null);class m extends r.d{constructor(e){super
+  l),s.createElement(V.X,null),v.size.showResizeHandle&&s.createElement(I.W,null))))})));function j(e,
+chunk~2e670652e.js: 3 hits
+  edUniformDashboardHeight:void 0}get showResizeHandle(){var e,t,o;if(null!==(o=s.Q.GetOverlayFlag(nul
+  ,(0,r.Cg)([i.computed],d.prototype,"showResizeHandle",null);class u extends n.d{constructor(e){super
+  l),s.createElement(D.X,null),v.size.showResizeHandle&&s.createElement(I.W,null))))})));function j(e,
+chunk~8012d0c89.js: 12 hits
+  hContainer_3xgmy"}},7785:e=>{e.exports={ResizeHandleButton:"frameresizehandle_ResizeHandleButton_3Bh
+  e=>{e.exports={ResizeHandleButton:"frameresizehandle_ResizeHandleButton_3BhgE",ResizeCorner:"framere
+  ={ResizeHandleButton:"frameresizehandle_ResizeHandleButton_3BhgE",ResizeCorner:"frameresizehandle_Re
+  eHandleButton_3BhgE",ResizeCorner:"frameresizehandle_ResizeCorner_35BU5",ResizeSVG:"frameresizehandl
+  dle_ResizeCorner_35BU5",ResizeSVG:"frameresizehandle_ResizeSVG_1uH2W",ForceActive:"frameresizehandle
+  ndle_ResizeSVG_1uH2W",ForceActive:"frameresizehandle_ForceActive_3gxMM"}},8327:e=>{e.exports={Contro
+  overlay",V="valve.steam",I="valve.steam.desktopgame",L="valve.steam.gamepadui.main",O="valve.steam.g
+  7),m=r(7785),p=r.n(m);function h(e){var{cornerRadius:t=10}=e,r=(0,n.Tt)(e,["cornerRadius"]);const a=
+  var{cornerRadius:t=10}=e,r=(0,n.Tt)(e,["cornerRadius"]);const a=`\n\t\tM 34 4\n\t\tV ${34-t}\n\t\tA 
+  ,only_visible_with_laser:!0,debug_name:"ResizeHandle",hide_lasermouse_when_clicking:!0,explicitSGID:
+
+===== binary strings (arm64) =====
+-- vrdashboard --
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEmc
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6resizeEmw
+in Json::Value::resize(): requires arrayValue
+-- vrcompositor --
+CHmdWindowSDL::ResizeWindow - failed to resize swapchain
+CHmdWindowVulkanWSI::ResizeWindow - failed to resize swapchain
+N19CSceneGraphRenderer20CSGResizeHandleStateE
+N2sg13CResizeHandleE
+Resized downsampled warp textures to: %d
+Resized warp grid mesh to: %d
+St23_Sp_counted_ptr_inplaceIN19CSceneGraphRenderer20CSGResizeHandleStateESaIS1_ELN9__gnu_cxx12_Lock_policyE2EE
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEm
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEmc
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6resizeEmw
+frame-resize-displacement
+frame-resize-scale-factor
+frame-resize-scale-max
+frame-resize-scale-min
+ignore-resize-amount
+in Json::Value::resize(): requires arrayValue
+override-pre-resize-main-panel-height
+resize-handle
+valve.steam.desktopgame.
+-- vrmonitor --
+1OnTreeHeaderResized( int, int, int )
+2sectionResized( int, int, int )
+OnTreeHeaderResized
+_ZN11QHeaderView13resizeSectionEii
+_ZN11QScrollArea11resizeEventEP12QResizeEvent
+_ZN13QOpenGLWidget11resizeEventEP12QResizeEvent
+_ZN17QAbstractItemView11resizeEventEP12QResizeEvent
+_ZN7QDialog11resizeEventEP12QResizeEvent
+_ZN7QWidget11resizeEventEP12QResizeEvent
+_ZN7QWidget6resizeERK5QSize
+_ZN9QComboBox11resizeEventEP12QResizeEvent
+_ZN9QTextEdit11resizeEventEP12QResizeEvent
+_ZN9QTreeView22resizeColumnToContentsEi
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEmc
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6resizeEmw
+in Json::Value::resize(): requires arrayValue
+-- vrserver --
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEm
+_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6resizeEmc
+_ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE6resizeEmw
+in Json::Value::resize(): requires arrayValue
+mg_iobuf_resize
+
+===== dashboard images icons list =====
+back_arrow.png
+controller_model_battery_1.png
+controller_model_battery_2.png
+controller_model_battery_3.png
+controller_model_battery_4.png
+controller_model_charging.png
+controller_model_charging_red.png
+controller_model_empty.png
+controller_model_left.png
+controller_model_low.png
+controller_model_right.png
+icon_add.png
+icon_camera.png
+icon_close.png
+icon_close_black.png
+icon_close_inverse.png
+icon_controls.png
+icon_controls.svg
+icon_globe.png
+icon_home.png
+icon_move.png
+icon_multitasking_view.png
+icon_multitasking_view.svg
+icon_power.png
+icon_quit.png
+icon_return.png
+icon_settings.png
+icon_showdesktop.png
+icon_theater_large.png
+icon_theater_white.png
+icon_volume.png
+icon_volume_mute.png
+mirror_left.png
+mirror_right.png
+notification_steamcog.png
+quicklaunch_play.png
+svr_app_quit.svg
+svr_chat.svg
+svr_controller.svg
+svr_controller_charge.svg
+svr_controller_power.svg
+svr_controller_quit.svg
+svr_desktop.svg
+svr_desktop_alt.svg
+svr_desktop_white.svg
+svr_eye.svg
+svr_eye_alt.svg
+svr_items.svg
+svr_keyboard.svg
+svr_keyboard_alt.svg
+svr_legacy.svg
+svr_library.svg
+svr_library_a.svg
+svr_library_b.svg
+svr_library_c.svg
+svr_library_d.svg
+svr_lightmode.svg
+svr_lightmode_alt.svg
+svr_lights_off.svg
+svr_lights_on.svg
+svr_menu.svg
+svr_menu_a.svg
+svr_menu_b.svg
+svr_menu_c.svg
+svr_menu_d.svg
+svr_mic_active.svg
+svr_mic_mute.svg
+svr_more.svg
+svr_more_alt.svg
+svr_nightmode.svg
+svr_people_a.svg
+svr_people_b.svg
+svr_play.svg
+svr_power.svg
+svr_power_alt.svg
+svr_recenter.svg
+svr_reset_tracking.svg
+svr_room_setup.svg
+svr_screen_curvature_off.svg
+svr_screen_curvature_on.svg
+svr_screen_share_local.svg
+svr_screen_share_local_off.svg
+svr_settings.svg
+svr_store.svg
+svr_svr_quit.svg
+svr_svr_quit_alt.svg
+svr_svrhome_quit.svg
+svr_svrhome_quit_alt.svg
+svr_theater.svg
+svr_theater_off.svg
+svr_volume.svg
+svr_volume_mirror.svg
+svr_volume_mirror_mute.svg
+svr_volume_mute.svg
+turnsignal.svg
+vert_battery_1.png
+vert_battery_2.png
+vert_battery_3.png
+vert_battery_4.png
+vert_charging.png
+vert_charging_red.png
+vert_low.png
+vr_steam.svg
+
+===== SVG geometry samples (bindingui + svr icons) =====
+svg count 134
+bindingcallouts/button_menu.svg: vb=0 0 75 75 fills=[] strokes=[] size=542
+bindingui/icon_settings.svg: vb=0 0 13.3 13.2 fills=[] strokes=[] size=2799
+icons/svr_controller_power.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1491
+icons/svr_desktop.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=718
+icons/svr_desktop_alt.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=825
+icons/svr_desktop_white.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=784
+icons/svr_eye.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=757
+icons/svr_eye_alt.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=700
+icons/svr_keyboard.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1304
+icons/svr_keyboard_alt.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1284
+icons/svr_menu.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=786
+icons/svr_menu_a.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=809
+icons/svr_menu_b.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=768
+icons/svr_menu_c.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=768
+icons/svr_menu_d.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=768
+icons/svr_more.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1098
+icons/svr_more_alt.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1304
+icons/svr_power.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=937
+icons/svr_power_alt.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=669
+icons/svr_recenter.svg: vb=0 0 1074.67 1109.49 fills=[] strokes=[] size=3256
+icons/svr_settings.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1537
+icons/svr_volume.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1146
+icons/svr_volume_mirror.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=1356
+icons/svr_volume_mirror_mute.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=983
+icons/svr_volume_mute.svg: vb=0 0 1024 1024 fills=[] strokes=[] size=776
+
+===== home steamvr tree =====
+/home/steamos/steamvr
+/home/steamos/steamvr/input
+
+===== screenshot / capture constraints notes =====
+ssh : bash: line 176: $'\r': command not found
+At C:\Users\Antho\AppData\Local\Temp\ps-script-b7f0086e-063a-440c-a15c-a5b0acf833fb.ps1:103 char:52
++ ... _chrome_probe.sh" | ssh -o BatchMode=yes frame "bash -s" 2>&1 | Out-F ...
++                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (bash: line 176: $'\r': command not found:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+/Screenshot_
+IVRScreenshots_001
+OnScreenshotSubmitted
+OnScreenshotTaken
+OnScreenshotTriggered
+STEAMSCREENSHOTS_INTERFACE_VERSION003
+SubmitScreenShotToSteam
+gpu_profiler_capture
+screenshotType
+screenshots
+
+===== DONE =====

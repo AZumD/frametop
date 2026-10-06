@@ -1,0 +1,57 @@
+﻿=== FULL MainControlBar render (~4k) ===
+className:"ControlBar MainControlBar"},o.createElement("div",{className:"Section Left"},C&&o.createElement(Pe,{legacyImageUrl:"/dashboard/images/icons/svr_menu_c.svg",label:(0,c.we)("#Menu"),style:we.Small,onClick:()=>ot.Z.showPopoverMenu(1),onMouseEnter:ot.Z.clearPopoverMenuTimeout,onMouseLeave:()=>ot.Z.startPopoverMenuTimeout(500)}),o.createElement(Ee,{style:we.Small},T&&o.createElement(De,{label:(0,c.we)("#Library"),legacyImageUrl:"/dashboard/images/icons/svr_items.svg",active:(null===(p=null===(m=d.SW.activeFrame)||void 0===m?void 0:m.activePage)||void 0===p?void 0:p.summonOverlayKey)==u.Sx,onClick:this.onLegacyQuickLaunchButtonClick}),B&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_desktop_alt.svg",label:ne.Q.desktopFrames.length>1?(0,c.we)("#Desktops"):(0,c.we)("#Desktop"),active:ot.Z.isLegacyDesktopTrayActive,enabled:ne.Q.desktopFrames.length>0,onClick:()=>this.switchToLegacyDashboardDesktopFrame()})),o.createElement(Ee,{style:we.Small},o.createElement(o.Fragment,null,e.map(this.renderExternalOverlayDashboardBarButton),t.length>0&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_more.svg",label:(0,c.we)("#X_More_Overlays",t.length),active:2==ot.Z.activeLegacyDashboardPopover,onClick:()=>ot.Z.showPopoverMenu(2),onMouseEnter:ot.Z.clearPopoverMenuTimeout,onMouseLeave:()=>ot.Z.startPopoverMenuTimeout(500)})))),o.createElement("div",{className:"Section Center"},P!=i.HWH.None&&o.createElement("div",{className:"NowPlayingSpacer"},o.createElement(g.l,{allowableParentSelectors:[".DashboardMain"]},o.createElement(i.eyj,{color:d.SW.DashboardBarTint},o.createElement(i.dLy,{translation:{z:.02}},o.createElement(i.Zkm,{debug_name:"NowPlayingButton",interactive:!0,curvature_origin_id:I,meters_per_pixel:u.iZ},o.createElement("div",{className:"ControlBar"},o.createElement(Ve,{label:V?(0,c.we)("#SteamVR_Home"):(0,c.we)("#Now_Playing"),active:(null===(b=null===(h=d.SW.activeFrame)||void 0===h?void 0:h.activePage)||void 0===b?void 0:b.summonOverlayKey)==u.dw,legacyImageUrl:O,onClick:()=>this.switchToOverlayInternal(u.dw)})))))))),o.createElement("div",{className:"Section Right"},o.createElement(Ee,{style:we.Small},(null===(S=K.DZ[8])||void 0===S?void 0:S.isValid)&&o.createElement(De,{icon:{enum:3},additionalClassNames:"CenterImageLarge",label:(0,c.we)("#Button_Recenter"),onClick:()=>{var e;null===(e=K.DZ[8])||void 0===e||e.Invoke()}}),(null===(y=K.DZ[10])||void 0===y?void 0:y.isValid)&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_room_setup.svg",additionalClassNames:"CenterImageLarge",label:(0,c.we)("#RoomSetup"),onClick:()=>{var e;null===(e=K.DZ[10])||void 0===e||e.Invoke()}}),(null===(f=K.DZ[4])||void 0===f?void 0:f.isValid)&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_eye.svg",label:(0,c.we)("#Toggle_Room_View"),onClick:()=>{(0,D.s)(!D.c.roomViewShowing)},active:D.c.roomViewShowing,enabled:null===VRHTML||void 0===VRHTML?void 0:VRHTML.VROverlayInternal.HasCameraRoomViewCapability()}),o.createElement(Oe,{active:ot.Z.isLegacyVolumeTrayActive,onShowTray:()=>ot.Z.showPopoverMenu(3),onHideTray:()=>ot.Z.showPopoverMenu(0),onMouseEnter:ot.Z.clearPopoverMenuTimeout,onMouseLeave:()=>ot.Z.startPopoverMenuTimeout(500)})),E&&o.createElement(Pe,{icon:{enum:16},active:(null===(w=null===(R=d.SW.activeFrame)||void 0===R?void 0:R.activePage)||void 0===w?void 0:w.summonOverlayKey)==u.Wt,enabled:M.JJ.HasFramesWithAssociatedSummonKeys(u.Wt),label:(0,c.we)("#VRSettings"),style:we.Small,centerPanelAnchorID:"VolumeButton",onClick:()=>this.switchToOverlayInternal(u.Wt)}))),this.renderLegacyDashboardBarTrays(I),o.createElement(i.dLy,{id:u.GW,translation:{y:.3}}),o.createElement(i.Ci8,{location:i.OiK.BottomCenter},!A&&o.createElement(i.dLy,{id:u.kx,translation:H})))))))}renderLegacyDashboardBarTrays(e,t){var r;const n=d.SW.isDarkMode?{r:.25,g:.25,b:.25}:void 0;return o.createElement(o.Fragment,null,o.createElement(Fe,{ref:this.m_refDesktopTray,curvatureOriginId:e,scale:t,position:0,visible:null!==(r=ot.Z.isLegacyDesktopTrayActive)&&void 0!==r&&r,tintColor:n,onToggleWindowList:()=>ot.Z.showPopoverMenu(4),onClearPopoverMenuTimeout:()=>ot.Z.clearPopoverMenuTimeout(),onStartPopoverMenuTimeout:e=>ot.Z.startPopoverMenuTimeout(e),sort_depth_bias:.2,onFrameButtonClicked:this.switchToFrameInternal}),o.createElement(Le,{curvatureOriginId:e,scale:t,position:.337,visible:ot.Z.isLegacyVolumeTrayActive,tintColor:n,onFinalChangeMouseOutside:()=>{ot.Z.startPopoverMenuTimeout(800)},onMouseMove:ot.Z.
+
+=== ControlBarButton :before / gradient definitions ===
+PAT [^{}]*ControlBarButton[^{}:]*::?before[^{}]*\{[^{}]*\}
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+PAT [^{}]*\.ControlBarButton[^{}]*\{[^{}]*(?:gradient|before|after)[^{}]*\}
+.DashboardMain .ControlBar .ControlBarButton.Toggled:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Toggled:not(:active){background:linear-gradient(to bottom, var(--dashboard-minitoggle-color-a) 0%, var(--dashboard-minitoggle-color-b) 100%)}
+---
+PAT [^{}]*BlackToWhite[^{}]*\{[^{}]*\}
+.DashboardMain .StatusBar .Title .Icon.BlackToWhite{filter:invert(100%) sepia(40%) saturate(2%) hue-rotate(196deg) brightness(105%) contrast(101%) var(--filter-drop-shadow)}
+---
+img.BlackToWhite{filter:invert(100%) sepia(40%) saturate(2%) hue-rotate(196deg) brightness(105%) contrast(101%)}
+---
+PAT [^{}]*CenterImage[^{}]*\{[^{}]*\}
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>img{margin-top:19px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>.Icon{--size: var(--control-bar-icon-size)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImageLarge>.Icon{--size: var(--control-bar-icon-size-large)}
+---
+
+=== DashboardMain theme block with settings-border-radius near control bar ===
+from 93a: .DashboardMain{--dashboard-home-fade-in-duration: 0.2s;--dashboard-control-bar-width: 1800px;--dashboard-control-bar-height: 180px}
+---
+
+=== selectors setting --settings-border-radius ===
+:root{--gamepadui-lightest-grey: #dcdedf;--gamepadui-lighter-grey: #b8bcbf;--gamepadui-light-grey: #8b929a;--gamepadui-grey: #67707b;--gamepadui-dark-grey: #3D4450;--gamepadui-darker-grey: #23262E;--gamepadui-darkish-grey: #171d25;--gamepadui-darkest-grey: #0e141b;--gamepadui-soft-black: #060a0e;--gamepadui-lightest-grey-rgb: 220, 222, 223;--gamepadui-lighter-grey-rgb: 184, 188, 191;--gamepadui-light-grey-rgb: 139, 146, 154;--gamepadui-grey-rgb: 103, 112, 123;--gamepadui-dark-grey-rgb: 61, 68, 8
+---
+html.VROverlay{--scrollbar-width: 1.5rem;--scrollbar-border-width: 0.55rem;--settings-content-padding: 100px;--settings-sidebar-button-spacing: 30px;--settings-border-radius: 30px;--settings-button-border-radius: calc(1.2 * var(--settings-border-radius));--settings-sidebar-side-margin: 40px;--settings-right-column-width: 500px;--settings-control-default-height: 2rem;--settings-font-size: 1rem;--settings-font-size-title: 1.2rem;--settings-control-box-hover-shadow: 0px 10px 25px #00000024;--settin
+---
+body.SGApp{--settings-border-radius: 10px;--settings-font-size: 0.8rem;--settings-font-size-title: 0.96rem;background:#00000000}
+---
+
+=== icon enum map (case N: url) ===
+
+=== legacyImageUrl unique set ===
+/dashboard/images/icons/svr_desktop_alt.svg
+/dashboard/images/icons/svr_eye.svg
+/dashboard/images/icons/svr_items.svg
+/dashboard/images/icons/svr_menu_c.svg
+/dashboard/images/icons/svr_more.svg
+/dashboard/images/icons/svr_room_setup.svg
+dyn O
+dyn ve.Instance.muted
+
+=== iconUrl unique ===
+/dashboard/images/icons/icon_add.png
+
+=== Power / Settings / Volume button bits ===
+ui"==r)switch(null==t?void 0:t.enum){case 16:return n.createElement(l,{url:"/dashboard/images/icons/svr_settings.svg",invert:!0});case 19:return n.createElement(l,{url:"/dashboard/images/icons/svr_items.svg",inve
+---
+.createElement("img",{className:"BlackToWhite",src:ve.Instance.mirrorMuted?"/dashboard/images/icons/svr_volume_mirror_mute.svg":"/dashboard/images/icons/svr_volume_mirror.svg"})),o.createElement(Ie,{title:(0,c.
+---

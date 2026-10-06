@@ -1,0 +1,131 @@
+﻿=== VAR ASSIGNMENTS ACROSS webinterface ===
+--gamepadui-darkest-grey: #0e141b  [chunk~66c0d1388.css]
+--gamepadui-darker-grey: #23262E  [chunk~66c0d1388.css]
+--gamepadui-dark-grey: #3D4450  [chunk~66c0d1388.css]
+--gamepadui-darkish-grey: #171d25  [chunk~66c0d1388.css]
+--gamepadui-soft-black: #060a0e  [chunk~66c0d1388.css]
+--gamepadui-lightest-grey: #dcdedf  [chunk~66c0d1388.css]
+--dashboard-control-bar-width: calc(2000px - ((var(--dashboard-control-bar-side-padding) + var(--dashboard-control-bar-component-padding)) * 2))  [chunk~66c0d1388.css]
+--dashboard-control-bar-width: 1800px  [chunk~93a8598f9.css]
+--dashboard-control-bar-height: 180px}.DashboardMain img{pointer-events:none}.DashboardMain .DashboardPanel{width:var(--dashboard-primary-width)  [chunk~93a8598f9.css]
+--dashboard-control-bar-side-padding: 1rem  [chunk~66c0d1388.css]
+--dashboard-control-bar-component-padding: 21px  [chunk~66c0d1388.css]
+--dashboard-control-bar-component-padding: 0  [chunk~93a8598f9.css]
+--dashboard-control-bar-control-spacing: 1rem  [chunk~66c0d1388.css]
+--dashboard-control-bar-volume-slider-width: 430px  [chunk~66c0d1388.css]
+--dashboard-control-bar-now-playing-height: 150px  [chunk~66c0d1388.css]
+--dashboard-control-bar-button-color-a: #3d4450  [chunk~66c0d1388.css]
+--dashboard-control-bar-button-color-b: #54575f  [chunk~66c0d1388.css]
+--dashboard-control-bar-group-color-a: #24272c  [chunk~66c0d1388.css]
+--dashboard-control-bar-group-color-b: #30343b  [chunk~66c0d1388.css]
+--control-bar-button-size: 96px  [chunk~66c0d1388.css]
+--control-bar-button-size: 85px}.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>img{margin-top:19px}.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>.Icon{--size: var(--control-bar-icon-size)}.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImageLarge>.Icon{--size: var(--control-bar-icon-size-large)}.DashboardMain .ControlBar .ControlBarGroup.Large{border-radius:21px}.DashboardMain .ControlBar .ControlBarGroup.Large .ControlBarButton{border-radius:16px}.DashboardMain .ControlBar .ControlBarGroup.App{background:none  [chunk~93a8598f9.css]
+--control-bar-icon-size: 45px  [chunk~66c0d1388.css]
+--control-bar-icon-size-large: 55px  [chunk~66c0d1388.css]
+--control-bar-button-gradient-start-color: rgba(35,35,36,1)  [chunk~66c0d1388.css]
+--control-bar-button-gradient-end-color: rgba(10,10,10,1)  [chunk~66c0d1388.css]
+--control-bar-button-transition-time: 0.1s  [chunk~66c0d1388.css]
+--control-bar-button-transition-ease: ease-out  [chunk~66c0d1388.css]
+--control-bar-tray-control-height: 78px  [chunk~66c0d1388.css]
+--control-bar-tray-control-margin: 0.8rem  [chunk~66c0d1388.css]
+--control-bar-tray-section-spacing: 2rem  [chunk~66c0d1388.css]
+--control-bar-tray-section-spacing: 75px !important}.DashboardMain .ControlBarTray .SliderControl{--slider-thickness: var(--control-bar-tray-control-height)}.DashboardMain .ControlBarTray .ButtonControl{min-height:var(--control-bar-tray-control-height)}.DashboardMain .ControlBarTray .ButtonControl.Keyboard .Icon{--size: 1.4em  [chunk~93a8598f9.css]
+--settings-border-radius: 0px  [chunk~66c0d1388.css]
+--settings-border-radius: 30px  [chunk~66c0d1388.css]
+--settings-border-radius: 10px  [chunk~66c0d1388.css]
+--settings-control-inner-border-radius: 0.3rem  [chunk~66c0d1388.css]
+--settings-control-inner-border-radius: 0.7rem  [chunk~93a8598f9.css]
+--settings-control-outer-border-radius: 0.4rem  [chunk~66c0d1388.css]
+--settings-control-default-height: 2rem  [chunk~66c0d1388.css]
+--settings-control-hover-background: var(--buttonhover)  [chunk~66c0d1388.css]
+--settings-control-hover-background: var(--settings-advanced-control-hover-background-color)  [chunk~b48d3fba7.css]
+--settings-control-box-hover-shadow: 0px 6px 9px #00000021  [chunk~66c0d1388.css]
+--settings-control-box-hover-shadow: 0px 10px 25px #00000024  [chunk~66c0d1388.css]
+--dashboard-status-bar-control-spacing: 1rem  [chunk~66c0d1388.css]
+--dashboard-minitoggle-color-a: #585f6d  [chunk~66c0d1388.css]
+--dashboard-minitoggle-color-b: #323439  [chunk~66c0d1388.css]
+
+=== RGB companion vars ===
+--gamepadui-darkest-grey-rgb: 14, 20, 27  [chunk~66c0d1388.css]
+--gamepadui-darker-grey-rgb: 35, 38, 46  [chunk~66c0d1388.css]
+--gamepadui-dark-grey-rgb: 61, 68, 80  [chunk~66c0d1388.css]
+--gamepadui-darkish-grey-rgb: 23, 29, 37  [chunk~66c0d1388.css]
+
+=== ICON wiring snippets (images/icons near ControlBarButton) ===
+MainControlBar context:
+{curvature_origin_id:I,meters_per_pixel:u.iZ,interactive:!0,make_overlays_interactive_if_visible:!0,debug_name:"LegacyDashboardBar",id:"LegacyDashboardBar"},o.createElement(l.W,{className:"ControlBar MainControlBar"},o.createElement("div",{className:"Section Left"},C&&o.createElement(Pe,{legacyImageUrl:"/dashboard/images/icons/svr_menu_c.svg",label:(0,c.we)("#Menu"),style:we.Small,onClick:()=>ot.Z.showPopoverMenu(1),onMouseEnter:ot.Z.clearPopoverMenuTimeout,onMouseLeave:()=>ot.Z.startPopoverMenuTimeout(500)}),o.createElement(Ee,{style:we.Small},T&&o.createElement(De,{label:(0,c.we)("#Library"),legacyImageUrl:"/dashboard/images/icons/svr_items.svg",active:(null===(p=null===(m=d.SW.activeFrame)||void 0===m?void 0:m.activePage)||void 0===p?void 0:p.summonOverlayKey)==u.Sx,onClick:this.onLegacyQuickLaunchButtonClick}),B&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_desktop_alt.svg",label:ne.Q.desktopFrames.length>1?(0,c.we)("#Desktops"):(0,c.we)("#Desktop"),active:ot.Z.isLegacyDesktopTrayActive,enabled:ne.Q.desktopFrames.length>0,onClick:()=>this.switchToLegacyDashboardDesktopFrame()})),o.createElement(Ee,{style:we.Small},o.createElement(o.Fragment,null,e.map(this.renderExternalOverlayDashboardBarButton),t.length>0&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_more.svg",label:(0,c.we)("#X_More_Overlays",t.length),active:2==ot.Z.activeLegacyDashboardPopover,onClick:()=>ot.Z.showPopoverMenu(2),onMouseEnter:ot.Z.clearPopoverMenuTimeout,onMouseLeave:()=>ot.Z.startPopoverMenuTimeout(500)})))),o.createElement("div",{className:"Section Center"},P!=i.HWH.None&&o.createElement("div",{className:"NowPlayingSpacer"},o.createElement(g.l,{allowableParentSelectors:[".DashboardMain"]},o.createElement(i.eyj,{color:d.SW.DashboardBarTint},o.createElement(i.dLy,{translation:{z:.02}},o.createElement(i.Zkm,{debug_name:"NowPlayingButton",interactive:!0,curvature_origin_id:I,meters_per_pixel:u.iZ},o.createElement("div",{className:"ControlBar"},o.createElement(Ve,{label:V?(0,c.we)("#SteamVR_Home"):(0,c.we)("#Now_Playing"),active:(null===(b=null===(h=d.SW.activeFrame)||void 0===h?void 0:h.activePage)||void 0===b?void 0:b.summonOverlayKey)==u.dw,legacyImageUrl:O,onClick:()=>this.switchToOverlayInternal(u.dw)})))))))),o.createElement("div",{className:"Section Right"},o.createElement(Ee,{style:we.Small},(null===(S=K.DZ[8])||void 0===S?void 0:S.isValid)&&o.createElement(De,{icon:{enum:3},additionalClassNames:"CenterImageLarge",label:(0,c.we)("#Button_Recenter"),onClick:()=>{var e;null===(e=K.DZ[8])||void 0===e||e.Invoke()}}),(null===(y=K.DZ[10])||void 0===y?void 0:y.isValid)&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_room_setu
+
+====
+
+ent("img",{className:"BlackToWhite",src:ve.Instance.microphoneMuted?"/dashboard/images/icons/svr_mic_mute.svg":"/dashboard/images/icons/svr_mic_active.svg"})),o.createElement(Ie,{title:(0,c
+---
+Element("img",{className:"BlackToWhite",src:ve.Instance.mirrorMuted?"/dashboard/images/icons/svr_volume_mirror_mute.svg":"/dashboard/images/icons/svr_volume_mirror.svg"})),o.createElement(Ie,{title:(
+---
+createElement("img",{className:"BlackToWhite",src:ve.Instance.muted?"/dashboard/images/icons/svr_volume_mute.svg":"/dashboard/images/icons/svr_volume.svg"})),o.createElement(Ie,{title:(0,c.we)
+---
+ender(){return o.createElement(De,{legacyImageUrl:ve.Instance.muted?"/dashboard/images/icons/svr_volume_mute.svg":"/dashboard/images/icons/svr_volume.svg",active:this.props.active,label:this.p
+---
+ssName:"Section",style:{marginRight:0}},o.createElement(Be,{iconUrl:"/dashboard/images/icons/icon_add.png",additionalClassNames:"AddWindow",title:(0,c.we)("#AddView"),tooltipTranslation
+---
+me:"PlayIconFade"}),o.createElement("img",{className:"PlayIcon",src:"/dashboard/images/icons/svr_play.svg"}))}}))}render(){let e,t=this.makeAppButtonList();const r=0==t.length||_.HR.set
+---
+erMenuQuitSceneApp",l):(0,c.we)("#PowerMenuQuitSceneApp_NoApp"),h=m?"/dashboard/images/icons/svr_svrhome_quit_alt.svg":"/dashboard/images/icons/svr_app_quit.svg",this.renderPopoverMenu(o.createElem
+---
+v",{className:"Section Left"},C&&o.createElement(Pe,{legacyImageUrl:"/dashboard/images/icons/svr_menu_c.svg",label:(0,c.we)("#Menu"),style:we.Small,onClick:()=>ot.Z.showPopoverMenu(1),onM
+---
+l},T&&o.createElement(De,{label:(0,c.we)("#Library"),legacyImageUrl:"/dashboard/images/icons/svr_items.svg",active:(null===(p=null===(m=d.SW.activeFrame)||void 0===m?void 0:m.activePage)
+---
+egacyQuickLaunchButtonClick}),B&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_desktop_alt.svg",label:ne.Q.desktopFrames.length>1?(0,c.we)("#Desktops"):(0,c.we)("#Desktop"),a
+---
+yDashboardBarButton),t.length>0&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_more.svg",label:(0,c.we)("#X_More_Overlays",t.length),active:2==ot.Z.activeLegacyDashboa
+---
+)||void 0===y?void 0:y.isValid)&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_room_setup.svg",additionalClassNames:"CenterImageLarge",label:(0,c.we)("#RoomSetup"),onClick:(
+---
+)||void 0===f?void 0:f.isValid)&&o.createElement(De,{legacyImageUrl:"/dashboard/images/icons/svr_eye.svg",label:(0,c.we)("#Toggle_Room_View"),onClick:()=>{(0,D.s)(!D.c.roomViewShowing)
+---
+switch(null==t?void 0:t.enum){case 16:return n.createElement(l,{url:"/dashboard/images/icons/svr_settings.svg",invert:!0});case 19:return n.createElement(l,{url:"/dashboard/images/icons/svr
+---
+tems.svg",invert:!0});case 15:case 18:return n.createElement(l,{url:"/dashboard/images/icons/svr_desktop_alt.svg",invert:!0});case 31:return n.createElement(l,{url:"/dashboard/images/icons/ico
+---
+ent(i.Ki,Object.assign({},o));case 25:return n.createElement(l,{url:"/dashboard/images/icons/icon_multitasking_view.png",invert:!0});case 26:return n.createElement(i.YN,Object.assign({},o));case 27:r
+---
+
+=== allowLegacyControlBar / settings path ===
+e="/settings/dashboard/expectSteam",Ke="/settings/dashboard/allowLegacyControlBar",$e="/settings/openxr/metaUnityPluginCompatibility",Je="/se
+
+=== Pseudo-element bloom (:before) rule for ControlBarButton ===
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+
+=== FONTS used by systemui ===
+<!doctype html><html style="width: 100%; height: 100%"><head><title>systemui</title><meta charset="utf-8"><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-regular.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-light.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-thin.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-medium.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-bold.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-regular-italic.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-light-italic.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-bold-italic.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-black.ttf"/><link crossorigin="anonymous" rel="preload" as="font" href="/fonts/get_font?font=motiva-sans-extrabold.ttf"/><script defer="defer" src="libraries/libraries~989880c99.js?contenthash=a0ffc8eb9573d49aa44c"></script><script defer="defer" src="libraries/libraries~8012d0c89.js?contenthash=7d2d7f66e559bf5e11d4"></script><script defer="defer" src="libraries/libraries~837d8d061.js?contenthash=830ce6bbcd966dccc555"></script><script defer="defer" src="chunk~8012d0c89.js?contenthash=8ee76a59580ead476561"></script><script defer="defer" src="chunk~bd288592d.js?contenthash=926857adfb4b1f5e53f1"></script><script defer="defer" src="chunk~56fe39318.js?contenthash=a93aa976d1a7aed55e0d"></script><script defer="defer" src="chunk~1a88854fa.js?contenthash=ef97bbce66c795fda356"></script><script defer="defer" src="chunk~336cd93ad.js?contenthash=39bcbf8e74fdb7086eaf"></script><script defer="defer" src="systemui.js?contenthash=899036a1e2217599b66d"></script><link href="css/chunk~66c0d1388.css?contenthash=396dbba60202c4e15181" rel="stylesheet"><link href="css/chunk~93a8598f9.css?contenthash=e54a8a9c7363d116d1a4" rel="stylesheet"><link href="css/chunk~b48d3fba7.css?contenthash=365f5133c041bd415af0" rel="stylesheet"><link href="css/systemui.css?contenthash=b5d6d372eda2a8a23108" rel="stylesheet"></head><body style="width: 100%; height: 100%; margin: 0; overflow: hidden;"><div id="root" style="height:100%; width: 100%"></div><div style="display:none"></div></body></html>
+font files:
+empty.dir 0
+motiva-sans-black-italic.ttf 287388
+motiva-sans-black.ttf 267340
+motiva-sans-bold-italic.ttf 290420
+motiva-sans-bold.ttf 268012
+motiva-sans-extrabold-italic.ttf 291900
+motiva-sans-extrabold.ttf 269132
+motiva-sans-light-italic.ttf 235828
+motiva-sans-light.ttf 220148
+motiva-sans-medium-italic.ttf 267460
+motiva-sans-medium.ttf 249548
+motiva-sans-regular-italic.ttf 239700
+motiva-sans-regular.ttf 224364
+motiva-sans-thin-italic.ttf 234468
+motiva-sans-thin.ttf 212524
+motiva-sans.ttf 119684
+
+=== shared/ webinterface ===
+/opt/steamvr/resources/webinterface/shared/css/steamvr.css 7020
+/opt/steamvr/resources/webinterface/shared/images/steam_logo.svg 877
+/opt/steamvr/resources/webinterface/shared/images/steamvr.png 4116
+/opt/steamvr/resources/webinterface/shared/images/triangle_down.png 1038
+/opt/steamvr/resources/webinterface/shared/js/jquery-3.1.1.min.js 86713

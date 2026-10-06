@@ -38,10 +38,40 @@ systemd-run --user --collect --quiet --unit frametop-desktop \
 
 sleep 12
 echo "plasmashell processes: $(pgrep -c plasmashell 2>/dev/null || echo 0)"
-if pgrep -f '[v]r-overlay-key frametop ' >/dev/null || pgrep -x ft-screens >/dev/null; then
+if ! pgrep -f '[v]r-overlay-key frametop ' >/dev/null && ! pgrep -x ft-screens >/dev/null; then
+  echo failed:
+  tail -20 "$log"
+  exit 1
+fi
+
+# Rock-solid spatial taskbar: ft-screens must accept toolbar commands, ft-taskbar must run,
+# and the layout toolbar must be enabled (session apply may race; force-enable if needed).
+ask_toolbar() {
+  python3 - <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.bind(b"\0ft_desk_tb")
+s.settimeout(3)
+try:
+    s.sendto(b"toolbar state", b"\0ft_screens")
+    print(s.recv(8192).decode(errors="replace"))
+except Exception as e:
+    print("fail", e)
+    sys.exit(1)
+PY
+}
+reply=$(ask_toolbar 2>/dev/null || true)
+if ! printf '%s' "$reply" | grep -q '^ok '; then
+  echo "warning: toolbar commands missing in live ft-screens ($reply); desktop is up but taskbar will not show" >&2
   echo started
   exit 0
 fi
-echo failed:
-tail -20 "$log"
-exit 1
+if ! pgrep -f '^ft-taskbar ' >/dev/null; then
+  echo "warning: ft-taskbar not running; starting it" >&2
+  bash -c "exec -a ft-taskbar python3 \"$session/ft-taskbar.py\"" >> /tmp/frametop-taskbar.log 2>&1 &
+  sleep 1
+fi
+# Enable if layout has it off / never applied.
+python3 "$repo/layout/ft_layout.py" toolbar enable >/tmp/frametop-toolbar-enable.log 2>&1 || true
+echo started
+exit 0

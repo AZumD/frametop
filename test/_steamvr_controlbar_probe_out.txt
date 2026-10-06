@@ -1,0 +1,448 @@
+﻿=== CSS VARS mentioning control-bar / gamepadui / dashboard-control ===
+--control-bar-button-gradient-end-color
+--control-bar-button-gradient-start-color
+--control-bar-button-size
+--control-bar-button-transition-ease
+--control-bar-button-transition-time
+--control-bar-icon-size
+--control-bar-icon-size-large
+--control-bar-tray-control-height
+--control-bar-tray-control-margin
+--control-bar-tray-section-spacing
+--dashboard-control-bar-button-color-a
+--dashboard-control-bar-button-color-b
+--dashboard-control-bar-component-padding
+--dashboard-control-bar-control-spacing
+--dashboard-control-bar-group-color-a
+--dashboard-control-bar-group-color-b
+--dashboard-control-bar-height
+--dashboard-control-bar-now-playing-height
+--dashboard-control-bar-side-padding
+--dashboard-control-bar-volume-slider-width
+--dashboard-control-bar-width
+--dashboard-status-bar-control-spacing
+--gamepadui-dark-grey
+--gamepadui-dark-grey-rgb
+--gamepadui-darker-grey
+--gamepadui-darker-grey-rgb
+--gamepadui-darkest-grey
+--gamepadui-darkest-grey-rgb
+--gamepadui-darkish-grey
+--gamepadui-darkish-grey-rgb
+--gamepadui-grey
+--gamepadui-grey-rgb
+--gamepadui-light-grey
+--gamepadui-light-grey-rgb
+--gamepadui-lighter-grey
+--gamepadui-lighter-grey-rgb
+--gamepadui-lightest-grey
+--gamepadui-lightest-grey-rgb
+--gamepadui-soft-black
+--settings-border-radius
+--settings-control-activated-background
+--settings-control-active-background
+--settings-control-background
+--settings-control-background-hover-background
+--settings-control-background-new
+--settings-control-background-new-a
+--settings-control-background-new-hover
+--settings-control-background-new-hover-a
+--settings-control-background-new-hover-rgb
+--settings-control-background-new-rgb
+--settings-control-box-active-shadow
+--settings-control-box-hover-shadow
+--settings-control-button-min-padding-h
+--settings-control-button-min-padding-v
+--settings-control-default-height
+--settings-control-hover-background
+--settings-control-hover-fade-duration
+--settings-control-hover-fade-ease
+--settings-control-image-padding
+--settings-control-inner-border-radius
+--settings-control-margin
+--settings-control-outer-border-radius
+--settings-control-spacing
+--settings-control-track-background-a
+--settings-control-track-background-rgb
+--settings-control-track-hover-background-a
+
+=== BLOCKS THAT DEFINE control-bar / gamepadui vars ===
+
+.grabhandle_GrabHandleBar_2EnMy{--grab-handle-grow-scale-x: 1.1;height:12px;background-color:var(--dashboard-control-bar-button-color-a);border-radius:20px;transition:transform .08s ease-out,background-color .08s ease-out;transform-origin:center;transform:scaleX(calc(1 / var(--grab-handle-grow-scale-x)))}
+---
+.ControlBarSlider{--slider-handle-width: 0px;--value: 0.5;--dashboard-control-bar-component-padding: 0;width:var(--dashboard-control-bar-volume-slider-width);height:100%;display:flex}
+---
+.ControlBar .MutedLabel{--left-padding: 20px;--dashboard-control-bar-component-padding: 0;color:#fff;font-family:var(--text-font);font-size:1.7em;font-weight:400;text-transform:uppercase;width:var(--dashboard-control-bar-volume-slider-width);opacity:.8}
+---
+.DashboardMain{--dashboard-home-fade-in-duration: 0.2s;--dashboard-control-bar-width: 1800px;--dashboard-control-bar-height: 180px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton{--control-bar-button-size: 85px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>.Icon{--size: var(--control-bar-icon-size)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImageLarge>.Icon{--size: var(--control-bar-icon-size-large)}
+---
+.DashboardMain .ControlBar .NowPlayingSpacer{--height: var(--dashboard-control-bar-now-playing-height);--width: calc( 1.1 * var(--dashboard-control-bar-now-playing-height) * 460 / 215 );height:var(--height);width:var(--width);box-sizing:border-box;position:relative}
+---
+.DashboardMain .ControlBarTray.VolumeTray{--control-bar-tray-section-spacing: 75px !important}
+---
+.DashboardMain .ControlBarTray .SliderControl{--slider-thickness: var(--control-bar-tray-control-height)}
+---
+
+=== CORE ControlBar RULES ===
+.ControlBarSlider{--slider-handle-width: 0px;--value: 0.5;--dashboard-control-bar-component-padding: 0;width:var(--dashboard-control-bar-volume-slider-width);height:100%;display:flex}
+---
+.ControlBarSlider .SliderBody{margin:auto;height:55px;width:100%;overflow:hidden;background:#2f3540;border-radius:9001px}
+---
+.ControlBarSlider .SliderFill{width:calc(100% - var(--slider-handle-width));height:100%;background:linear-gradient(to right, var(--settings-side-nav-gradient-b) 0%, var(--settings-side-nav-gradient-a) 100%);border-right:solid var(--slider-handle-width) #fff;width:calc(100%*var(--value));background-size:calc(100%/var(--value))}
+---
+.ControlBar .MutedLabel{--left-padding: 20px;--dashboard-control-bar-component-padding: 0;color:#fff;font-family:var(--text-font);font-size:1.7em;font-weight:400;text-transform:uppercase;width:var(--dashboard-control-bar-volume-slider-width);opacity:.8}
+---
+.DashboardMain .ControlBarSpacing{flex-grow:1}
+---
+.DashboardMain .ControlBar{box-sizing:border-box;height:var(--dashboard-control-bar-height);position:relative;display:flex;flex-direction:row}
+---
+.DashboardMain .ControlBar.MainControlBar{width:var(--dashboard-control-bar-width);padding:0 calc(var(--dashboard-control-bar-side-padding) + var(--dashboard-control-bar-component-padding));background-color:var(--gamepadui-darkest-grey);border-radius:var(--settings-border-radius)}
+---
+.DashboardMain .ControlBar>div{margin-top:auto;margin-bottom:auto;padding-left:var(--dashboard-control-bar-component-padding);padding-right:var(--dashboard-control-bar-component-padding);padding:0 var(--dashboard-control-bar-control-spacing)}
+---
+.DashboardMain .ControlBar .Section{display:flex;flex-direction:row;flex:1;justify-content:center;margin:auto}
+---
+.DashboardMain .ControlBar .Section.Left{justify-content:flex-start;margin-right:auto}
+---
+.DashboardMain .ControlBar .Section.Left,.DashboardMain .ControlBar .Section.Right{width:0}
+---
+.DashboardMain .ControlBar .Section.Right{justify-content:flex-end;margin-left:auto}
+---
+.DashboardMain .ControlBar .Section>*{margin:auto 0;padding:0}
+---
+.DashboardMain .ControlBar .Section.Left>*{margin-right:var(--dashboard-control-bar-control-spacing)}
+---
+.DashboardMain .ControlBar .Section.Center>*:not(:last-child){margin-right:var(--dashboard-control-bar-control-spacing)}
+---
+.DashboardMain .ControlBar .Section.Right>*{margin-left:var(--dashboard-control-bar-control-spacing)}
+---
+.DashboardMain .ControlBar .ControlBarGroup{display:flex;flex-direction:row;padding:7px;border-radius:9001px;background-color:var(--gamepadui-darker-grey)}
+---
+.DashboardMain .ControlBar .ControlBarGroup:empty{display:none}
+---
+.DashboardMain .ControlBar .ControlBarGroup>*:not(:last-child){margin-right:calc(.4*var(--dashboard-control-bar-control-spacing))}
+---
+.DashboardMain .ControlBar .ControlBarButton,.DashboardMain .ControlBarTray .ButtonControl,.DashboardMain .ControlBarTray .SliderControl .Handle{--base-shadow: inset 0px 1px 1px 0px rgba(149, 149, 149, 0.5), 0px 2px 13px rgba(0, 0, 0, 0.4);--state-shadow: 0 0 0 0 transparent;--outline-shadow: 0 0 0 0 transparent;background:var(--gamepadui-dark-grey);box-shadow:var(--base-shadow),var(--outline-shadow),var(--state-shadow);transition:all .1s}
+---
+.DashboardMain .ControlBar .ControlBarButton{display:flex;flex-direction:row;height:var(--control-bar-button-size);min-width:var(--control-bar-button-size);position:relative;border-radius:50%;will-change:transform;transition-property:background,box-shadow,opacity}
+---
+.DashboardMain .ControlBar .ControlBarButton:active,.DashboardMain .ControlBarTray .ButtonControl:not(.Disabled):active{transform:scale(0.965);--base-shadow: inset 0px 3px 2px rgba(0, 0, 0, 0.6);--state-shadow: 0 0 0 0 transparent}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:not(:active),.DashboardMain .ControlBarTray .ButtonControl:not(.Disabled):hover:not(:active),.DashboardMain .ControlBarTray .SliderControl:hover:not(:active) .Handle{--state-shadow: 0px 0px 0px 1px #ffffff, 0px 0px 3px 3px #88ccf1, inset 0px 0px 11px 4px #88ccf147}
+---
+.DashboardMain .ControlBar .ControlBarButton.Active:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Active:not(:active){--outline-shadow: 0px 0px 0px 2px #88ccf1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton.Toggled:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Toggled:not(:active){background:linear-gradient(to bottom, var(--dashboard-minitoggle-color-a) 0%, var(--dashboard-minitoggle-color-b) 100%)}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton>.Icon{--size: 55px;width:var(--size);height:var(--size);z-index:1;pointer-events:none;margin:auto}
+---
+.ControlBarButton .Icon>img,.ControlBarButton .Icon>svg,.ControlBarButton img.Icon,.ControlBarButton svg.Icon{opacity:.6}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton{--control-bar-button-size: 85px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>img{margin-top:19px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImage>.Icon{--size: var(--control-bar-icon-size)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Small .ControlBarButton.CenterImageLarge>.Icon{--size: var(--control-bar-icon-size-large)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Large{border-radius:21px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.Large .ControlBarButton{border-radius:16px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App{background:none;padding:0;perspective:320px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton{height:var(--dashboard-control-bar-now-playing-height);width:calc(var(--dashboard-control-bar-now-playing-height)*460/215);border-radius:16px;background-image:var(--image-url);background-color:var(--dashboard-control-bar-group-color-b);background-size:contain;background-position:center;background-repeat:no-repeat;box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 7px 12px 0px rgba(0,0,0,.5);margin:0 16px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:hover{transform:translateZ(9px) rotateX(1.5deg);filter:brightness(105%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 7px 16px 0px rgba(0,0,0,.7)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:active{transform:translateZ(-10px) rotateX(0deg);filter:brightness(95%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 5px 3px 0px rgba(0,0,0,.7)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton img{display:none}
+---
+.DashboardMain .ControlBar .NowPlayingSpacer{--height: var(--dashboard-control-bar-now-playing-height);--width: calc( 1.1 * var(--dashboard-control-bar-now-playing-height) * 460 / 215 );height:var(--height);width:var(--width);box-sizing:border-box;position:relative}
+---
+.DashboardMain .ControlBar .NowPlayingSpacer [vsg-type=panel-anchor]{position:absolute;top:calc(var(--height)/2);left:calc(var(--width)/2)}
+---
+.DashboardMain .ControlBar .ControlBarButton.Disabled{opacity:.5;pointer-events:none}
+---
+.DashboardMain .ControlBarTray{padding-top:calc(var(--control-bar-tray-control-margin)*1);min-height:3rem;min-width:3rem;max-width:var(--dashboard-control-bar-width);border-bottom-left-radius:var(--settings-control-inner-border-radius);border-bottom-right-radius:var(--settings-control-inner-border-radius);display:flex;flex-direction:row;box-sizing:border-box;overflow:hidden}
+---
+.DashboardMain .ControlBarTray.FixedWidth{width:1600px}
+---
+.DashboardMain .ControlBarTray::after{content:"";position:absolute;top:0%;left:0;width:100%;height:100%;box-shadow:inset 0px 56px 13px -25px #000000a6;z-index:1;pointer-events:none}
+---
+.DashboardMain .ControlBarTrayBackground{--scale: 0.5;border-bottom-left-radius:calc(var(--scale)*var(--settings-control-inner-border-radius));border-bottom-right-radius:calc(var(--scale)*var(--settings-control-inner-border-radius));background:var(--gamepadui-darkish-grey)}
+---
+.DashboardMain .ControlBarTray .Section{display:flex;flex-direction:row}
+---
+.DashboardMain .ControlBarTray>*:not(:last-child){margin-right:var(--control-bar-tray-section-spacing)}
+---
+.DashboardMain .ControlBarTray .Section>*{margin:var(--control-bar-tray-control-margin)}
+---
+.DashboardMain .ControlBarTray .Section>*:not(:last-child){margin-right:0}
+---
+.DashboardMain .ControlBarTray .Section.Grow{flex-grow:1}
+---
+.DashboardMain .ControlBarTray .DesktopAndWindowList{--mask-size-left: 20px;--mask-size-right: 80px;padding-left:10px;padding-right:50px;scroll-padding:250px;position:relative;mask-image:linear-gradient(to right, transparent 0%, black var(--mask-size-left) calc(100% - var(--mask-size-right)), transparent 100%)}
+---
+.DashboardMain .ControlBarTray .Section .Label{font-size:1rem;margin-top:auto;margin-bottom:auto}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl{--side-padding: 2em;width:fit-content;white-space:nowrap}
+---
+.DashboardMain .ControlBarTray .DesktopAndWindowList .ButtonControl{max-width:450px;overflow:hidden}
+---
+.DashboardMain .ControlBarTray .DesktopAndWindowList .ButtonControl>span{display:block;overflow:hidden;text-overflow:ellipsis}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton:not(.Fixed){display:flex;align-items:center}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton.Fixed{width:82px;display:flex}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton:last-of-type{margin-right:9px}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton.Fixed>span{margin:auto}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.Round{border-radius:9001px;display:flex;padding:0;height:calc(1.2*var(--settings-control-default-height));width:calc(1.2*var(--settings-control-default-height))}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.Round>img{width:var(--control-bar-icon-size);margin:auto}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl,.DashboardMain .ControlBarTray .SliderControl .Handle{background:var(--gamepadui-darker-grey)}
+---
+.DashboardMain .ControlBarTray .SliderControl .Track{background:var(--gamepadui-dark-grey)}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.Disabled{background:var(--dashboard-desktop-bar-button-color-a);box-shadow:none}
+---
+.DashboardMain .ControlBarTray .Section .ButtonControl.Disabled>.Icon{opacity:.5}
+---
+.DashboardMain .ControlBarTray .SliderControl .Handle{border-width:0}
+---
+.DashboardMain .ControlBarTray .Section .SliderControl{min-width:10em;width:15em;max-width:20em}
+---
+.DashboardMain .ControlBarTray .SliderControl.Sliding .Handle>.RangeLabel{transform:scale(1)}
+---
+.DashboardMain .ControlBarTray .ScrollPanel::-webkit-scrollbar{display:none}
+---
+.ControlBarButtonTooltip{display:inline-block;width:fit-content;background:rgba(0,0,0,.85);color:#fff;border-radius:9001px;padding:.3em 1em;font-size:1rem}
+---
+.DashboardMain .ControlBarTray .SliderContainer{width:fit-content;height:fit-content;position:relative}
+---
+.DashboardMain .ControlBarTray.VolumeTray .SliderControl{width:350px}
+---
+.DashboardMain .ControlBarTray.VolumeTray .SliderControl.Muted:not(:hover){opacity:.5}
+---
+.DashboardMain .ControlBarTray.VolumeTray{--control-bar-tray-section-spacing: 75px !important}
+---
+.DashboardMain .ControlBarTray .SliderControl{--slider-thickness: var(--control-bar-tray-control-height)}
+---
+.DashboardMain .ControlBarTray .ButtonControl{min-height:var(--control-bar-tray-control-height)}
+---
+.DashboardMain .ControlBarTray .ButtonControl.Keyboard .Icon{--size: 1.4em;width:var(--size);height:var(--size)}
+---
+.DashboardMain .ControlBarTray .ButtonControl.AddWindow{width:fit-content}
+---
+.DashboardMain .ControlBarTray .ButtonControl.CloseWindow.Disabled{visibility:hidden}
+---
+.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation .ControlBarTray,.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation .ControlBarTrayBackground,.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation .ControlBarTray::after{animation-duration:var(--show-hide-duration);animation-fill-mode:both;animation-timing-function:ease-out}
+---
+.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Showing .ControlBarTray,.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Showing .ControlBarTrayBackground{animation-name:ControlBarTrayAnimationShowing}
+---
+.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Hiding .ControlBarTray,.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Hiding .ControlBarTrayBackground{animation-name:ControlBarTrayAnimationHiding}
+---
+.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Showing .ControlBarTray::after{animation-name:ControlBarTrayShadowAnimationShowing}
+---
+.DashboardMain .ShowHideAnimation.ControlBarTrayAnimation.Hiding .ControlBarTray::after{animation-name:ControlBarTrayShadowAnimationHiding}
+---
+
+=== HOVER / BLOOM RELATED (ControlBarButton before/after/filter/box-shadow) ===
+.DashboardMain .ControlBar .ControlBarButton,.DashboardMain .ControlBarTray .ButtonControl,.DashboardMain .ControlBarTray .SliderControl .Handle{--base-shadow: inset 0px 1px 1px 0px rgba(149, 149, 149, 0.5), 0px 2px 13px rgba(0, 0, 0, 0.4);--state-shadow: 0 0 0 0 transparent;--outline-shadow: 0 0 0 0 transparent;background:var(--gamepadui-dark-grey);box-shadow:var(--base-shadow),var(--outline-shadow),var(--state-shadow);transition:all .1s}
+---
+.DashboardMain .ControlBar .ControlBarButton{display:flex;flex-direction:row;height:var(--control-bar-button-size);min-width:var(--control-bar-button-size);position:relative;border-radius:50%;will-change:transform;transition-property:background,box-shadow,opacity}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:not(:active),.DashboardMain .ControlBarTray .ButtonControl:not(.Disabled):hover:not(:active),.DashboardMain .ControlBarTray .SliderControl:hover:not(:active) .Handle{--state-shadow: 0px 0px 0px 1px #ffffff, 0px 0px 3px 3px #88ccf1, inset 0px 0px 11px 4px #88ccf147}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton.Toggled:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Toggled:not(:active){background:linear-gradient(to bottom, var(--dashboard-minitoggle-color-a) 0%, var(--dashboard-minitoggle-color-b) 100%)}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton{height:var(--dashboard-control-bar-now-playing-height);width:calc(var(--dashboard-control-bar-now-playing-height)*460/215);border-radius:16px;background-image:var(--image-url);background-color:var(--dashboard-control-bar-group-color-b);background-size:contain;background-position:center;background-repeat:no-repeat;box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 7px 12px 0px rgba(0,0,0,.5);margin:0 16px}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:hover{transform:translateZ(9px) rotateX(1.5deg);filter:brightness(105%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 7px 16px 0px rgba(0,0,0,.7)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:active{transform:translateZ(-10px) rotateX(0deg);filter:brightness(95%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 5px 3px 0px rgba(0,0,0,.7)}
+---
+
+=== COMPONENT NAME TOKENS IN JS ===
+ControlBar[A-Za-z0-9_]* => ['ControlBar', 'ControlBarButton', 'ControlBarButtonClick', 'ControlBarButtonTooltip', 'ControlBarGroup', 'ControlBarTray', 'ControlBarTrayAnimation', 'ControlBarTrayBackground']
+MainControlBar => ['MainControlBar']
+allowLegacyControlBar => ['allowLegacyControlBar']
+StatusBar => ['StatusBar']
+PowerMenu[A-Za-z0-9_]* => ['PowerMenu', 'PowerMenuButton', 'PowerMenuContainer', 'PowerMenuExitVR', 'PowerMenuPanel', 'PowerMenuQuitSceneApp', 'PowerMenuQuitSceneApp_NoApp', 'PowerMenuShutdown', 'PowerMenuTurnOffController', 'PowerMenu_Request', 'PowerMenu_Response']
+NowPlaying => ['NowPlaying']
+DashboardMain => ['DashboardMain']
+
+=== className string literals containing ControlBar ===
+ControlBar
+ControlBar MainControlBar
+ControlBarButtonTooltip
+ControlBarTrayBackground
+str ControlBar
+str ControlBarButton
+str ControlBarButtonClick
+str ControlBarButtonTooltip
+str ControlBarGroup
+str ControlBarTray
+str ControlBarTrayAnimation
+str ControlBarTrayBackground
+
+=== IMAGE PATH LITERALS ===
+/dashboard/images/background_dark_thumbnail.png
+/dashboard/images/background_light_thumbnail.png
+/dashboard/images/base.png
+/dashboard/images/icons/icon_add.png
+/dashboard/images/icons/icon_close_black.png
+/dashboard/images/icons/icon_multitasking_view.png
+/dashboard/images/icons/mirror_left.png
+/dashboard/images/icons/mirror_right.png
+/dashboard/images/icons/svr_app_quit.svg
+/dashboard/images/icons/svr_desktop_alt.svg
+/dashboard/images/icons/svr_eye.svg
+/dashboard/images/icons/svr_items.svg
+/dashboard/images/icons/svr_menu_c.svg
+/dashboard/images/icons/svr_mic_active.svg
+/dashboard/images/icons/svr_mic_mute.svg
+/dashboard/images/icons/svr_more.svg
+/dashboard/images/icons/svr_play.svg
+/dashboard/images/icons/svr_room_setup.svg
+/dashboard/images/icons/svr_settings.svg
+/dashboard/images/icons/svr_svrhome_quit_alt.svg
+/dashboard/images/icons/svr_volume.svg
+/dashboard/images/icons/svr_volume_mirror.svg
+/dashboard/images/icons/svr_volume_mirror_mute.svg
+/dashboard/images/icons/svr_volume_mute.svg
+/dashboard/images/rainbow.png
+
+=== ICON FILENAME LITERALS (svr_/icon_) ===
+/dashboard/images/icons/icon_add.png
+/dashboard/images/icons/icon_close_black.png
+/dashboard/images/icons/icon_multitasking_view.png
+/dashboard/images/icons/svr_app_quit.svg
+/dashboard/images/icons/svr_desktop_alt.svg
+/dashboard/images/icons/svr_eye.svg
+/dashboard/images/icons/svr_items.svg
+/dashboard/images/icons/svr_menu_c.svg
+/dashboard/images/icons/svr_mic_active.svg
+/dashboard/images/icons/svr_mic_mute.svg
+/dashboard/images/icons/svr_more.svg
+/dashboard/images/icons/svr_play.svg
+/dashboard/images/icons/svr_room_setup.svg
+/dashboard/images/icons/svr_settings.svg
+/dashboard/images/icons/svr_svrhome_quit_alt.svg
+/dashboard/images/icons/svr_volume.svg
+/dashboard/images/icons/svr_volume_mirror.svg
+/dashboard/images/icons/svr_volume_mirror_mute.svg
+/dashboard/images/icons/svr_volume_mute.svg
+images/bindingui/icon_information.svg
+
+=== EXISTENCE CHECKS for dashbar-relevant icons ===
+ICON_DIR_COUNT 103
+OK 83611 /opt/steamvr/resources/config/steamvr_dashboard_capsule.png
+OK 5855 /opt/steamvr/resources/reflections/dashboard_lights.png
+OK 4031 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_camera.png
+OK 4693 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_close.png
+OK 3387 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_close_black.png
+OK 4292 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_close_inverse.png
+OK 1477 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_controls.png
+OK 1703 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_controls.svg
+OK 3415 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_globe.png
+OK 1530 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_home.png
+OK 2410 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_move.png
+OK 724 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_multitasking_view.png
+OK 619 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_multitasking_view.svg
+OK 4138 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_power.png
+OK 1663 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_quit.png
+OK 17898 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_settings.png
+OK 4743 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_showdesktop.png
+OK 4305 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_theater_large.png
+OK 4536 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_theater_white.png
+OK 2346 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_volume.png
+OK 2053 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_volume_mute.png
+OK 1503 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_app_quit.svg
+OK 1342 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_chat.svg
+OK 1513 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_controller_power.svg
+OK 1965 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_controller_quit.svg
+OK 726 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_desktop.svg
+OK 838 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_desktop_alt.svg
+OK 796 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_desktop_white.svg
+OK 770 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_eye.svg
+OK 708 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_eye_alt.svg
+OK 847 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_items.svg
+OK 1321 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_keyboard.svg
+OK 1301 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_keyboard_alt.svg
+OK 1545 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_legacy.svg
+OK 1146 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library.svg
+OK 1410 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library_a.svg
+OK 1910 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library_b.svg
+OK 911 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library_c.svg
+OK 799 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library_d.svg
+OK 2506 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_lightmode.svg
+OK 2412 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_lightmode_alt.svg
+OK 1229 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_lights_off.svg
+OK 2306 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_lights_on.svg
+OK 795 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu.svg
+OK 822 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu_a.svg
+OK 779 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu_b.svg
+OK 779 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu_c.svg
+OK 779 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu_d.svg
+OK 1572 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_mic_active.svg
+OK 1184 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_mic_mute.svg
+OK 1110 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_more.svg
+OK 1320 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_more_alt.svg
+OK 614 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_nightmode.svg
+OK 4511 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_people_a.svg
+OK 2945 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_people_b.svg
+OK 859 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_play.svg
+OK 949 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_power.svg
+OK 677 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_power_alt.svg
+OK 3327 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_recenter.svg
+OK 1868 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_reset_tracking.svg
+OK 2594 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_room_setup.svg
+OK 909 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_screen_curvature_off.svg
+OK 720 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_screen_curvature_on.svg
+OK 485 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_screen_share_local.svg
+OK 677 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_screen_share_local_off.svg
+OK 1552 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_settings.svg
+OK 954 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_store.svg
+OK 2338 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_svr_quit.svg
+OK 1924 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_svr_quit_alt.svg
+OK 2031 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_svrhome_quit.svg
+OK 1373 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_svrhome_quit_alt.svg
+OK 1322 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_theater.svg
+OK 1778 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_theater_off.svg
+OK 1161 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume.svg
+OK 1376 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mirror.svg
+OK 999 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mirror_mute.svg
+OK 789 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mute.svg
+OK 1606930 /opt/steamvr/resources/webinterface/dashboard/images/steam_spinner.png
+OK 69880 /opt/steamvr/resources/webinterface/dashboard/sounds/deck_ui_misc_10.wav
+OK DIR /opt/steamvr/resources/webinterface/fonts
+
+=== SOUND refs near ControlBar ===
+/dashboard/sounds/deck_ui_misc_10.wav
+/dashboard/sounds/deck_ui_navigation.wav
+/dashboard/sounds/volume_change.wav
+
+=== Section / Group style enum near ControlBarGroup ===
+e=0]="Large",e[e.Small=1]="Small",e[e.App=2]="App"}(we||(we={}));const Ee=e=>o.createElement("div",{className:(0,R.FH)("ControlBarGroup",we[e.style])},e.children);let De=class extends o.Component{constructor(e){super(e),this.m_refTooltip=o.createRef()}onMouseEnter(){var e,t,r;null===(e=this.m_refTooltip.current)||void 0===e||e.show(),null
+---

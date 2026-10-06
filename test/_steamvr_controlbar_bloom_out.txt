@@ -1,0 +1,57 @@
+﻿=== All rules with ControlBarButton AND (before OR gradient OR filter OR opacity) ===
+.DashboardMain .ControlBar .ControlBarButton{display:flex;flex-direction:row;height:var(--control-bar-button-size);min-width:var(--control-bar-button-size);position:relative;border-radius:50%;will-change:transform;transition-property:background,box-shadow,opacity}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton.Toggled:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Toggled:not(:active){background:linear-gradient(to bottom, var(--dashboard-minitoggle-color-a) 0%, var(--dashboard-minitoggle-color-b) 100%)}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+.ControlBarButton .Icon>img,.ControlBarButton .Icon>svg,.ControlBarButton img.Icon,.ControlBarButton svg.Icon{opacity:.6}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:hover{transform:translateZ(9px) rotateX(1.5deg);filter:brightness(105%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 7px 16px 0px rgba(0,0,0,.7)}
+---
+.DashboardMain .ControlBar .ControlBarGroup.App .ControlBarButton:active{transform:translateZ(-10px) rotateX(0deg);filter:brightness(95%);box-shadow:inset 0px 1px 1px 0px rgba(255,255,255,.8),0 5px 3px 0px rgba(0,0,0,.7)}
+---
+.DashboardMain .ControlBar .ControlBarButton.Disabled{opacity:.5;pointer-events:none}
+---
+
+=== Rules defining :before for buttons generally near control bar ===
+.gamepaduibutton_GamepadUIButton_3cM9m::before{content:" ";position:absolute;inset:0;box-shadow:0 8px 16px 0 rgba(0,0,0,.3);opacity:0;pointer-events:none;user-select:none;transition:opacity 200ms ease-in-out}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m:hover::before{opacity:1}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m:active::before{opacity:0}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m.Disabled::before{opacity:0}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Active:before{opacity:1}
+---
+.DashboardMain .ControlBar .ControlBarButton:hover:before,.DashboardMain .ControlBar .ControlBarButton.Toggled:before{opacity:1}
+---
+.ButtonControl.Colorful::before{content:"";position:absolute;left:0;right:0;top:0;bottom:0;z-index:-2;background:linear-gradient(to right, var(--colorfulbutton-gradient-a) 0%, var(--colorfulbutton-gradient-b) 100%)}
+---
+
+=== html.VROverlay dashboard-control-bar var subset ===
+--settings-border-radius: 30px;
+--settings-border-radius));--settings-sidebar-side-margin: 40px;
+
+=== Full html.VROverlay length and control-bar lines ===
+--settings-border-radius: 30px;
+--settings-button-border-radius: calc(1.2 * var(--settings-border-radius));
+
+=== Search raw for ControlBarButton:before content ===
+
+=== control-bar-button-gradient usage ===
+ide-nav-gradient-a);--control-bar-button-size: 96px;--control-bar-icon-size: 45px;--control-bar-icon-size-large: 55px;--control-bar-button-gradient-start-color: rgba(35,35,36,1);--control-bar-button-gradient-end-color: rgba(10,10,10,1);--control-bar-button-transition-time: 0.1s;--control-bar-button-transition-ease: ease-out;--control-bar-tray-co
+---
+
+=== GamepadUIButton:before (related hover bloom pattern) ===
+.gamepaduibutton_GamepadUIButton_3cM9m::before{content:" ";position:absolute;inset:0;box-shadow:0 8px 16px 0 rgba(0,0,0,.3);opacity:0;pointer-events:none;user-select:none;transition:opacity 200ms ease-in-out}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m:hover::before{opacity:1}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m:active::before{opacity:0}
+---
+.gamepaduibutton_GamepadUIButton_3cM9m.Disabled::before{opacity:0}
+---

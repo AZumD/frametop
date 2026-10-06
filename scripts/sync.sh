@@ -12,7 +12,14 @@ if [ "$FRAME_LOCAL" = 1 ]; then
   exit 0
 fi
 
-exec rsync -az --delete --info=stats1 \
+rsync -az --delete --info=stats1 \
   --filter=':- .gitignore' \
   --exclude='.git' --exclude='target/' --exclude='build/' --exclude='.env' --exclude='.env.*' \
   "$@" "$root/" "$FRAME_HOST:${FRAME_REPO#/home/steamos/}/"
+# Windows checkouts may ship CRLF; bash on the Frame rejects `set -o pipefail\r`
+# and shebang wrappers like layout/ft-layout become "No such file or directory".
+ssh -o BatchMode=yes "$FRAME_HOST" \
+  "find $(printf %q "$FRAME_REPO") -type f \\( -name '*.sh' -o -name 'frametop-session.sh' \
+      -o -name 'run.sh' -o -name 'ft-layout' -o -name 'ft-handsctl' \
+      -o -name 'ft-display-settings' -o -name 'ft-input-settings' \\) -print0 \
+   | xargs -0 -r sed -i 's/\r\$//'"

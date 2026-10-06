@@ -1,0 +1,360 @@
+﻿===== GrabHandle REGION =====
+ity},o.createElement(i.eyj,{color:this.props.tint},o.createElement(x,{onMouseDown:this.startMove,onMouseUp:this.endMove,onMouseEnter:this.onMouseEnter,onMouseLeave:this.onMouseLeave,active:this.state.bActive,uniformScale:this.props.scale,curvature_origin_id:this.props.curvature_origin_id,width:this.props.width,panelRef:this.m_panelRef,focus_target_sgid:this.props.focus_target_sgid}))),this.state.bActive&&o.createElement(i.mHe,{action_name:"/actions/scroll_smooth/in/scroll",throbbing:!0,throbMinBlend:.05,throbMaxBlend:.25,throbContrast:1.5}))}};function x(e){var t,r;const n=null!==(t=e.uniformScale)&&void 0!==t?t:1,a=null!==(r=e.width)&&void 0!==r?r:700;return o.createElement(i.Zkm,{width:.66675*n*(a/700),interactive:!0,inputFocusParams:{bCanTakeKeyboardFocus:!1},only_visible_with_laser:!0,debug_name:"GrabHandle",origin:i.OiK.BottomCenter,curvature_origin_id:e.curvature_origin_id,hide_lasermouse_when_clicking:!0,lasermouse_filtering:i.o3u.Default,is_grab_handle:!0,ref:e.panelRef,scrollable:!0,explicitSGID:e.explicitSGID,focus_target_sgid:e.focus_target_sgid},o.createElement(l.$,{className:z().GrabHandleButton,onMouseDown:e.onMouseDown,onMouseUp:e.onMouseUp,onMouseEnter:e.onMouseEnter,onMouseLeave:e.onMouseLeave},o.createElement("div",{className:(0,R.FH)(z().GrabHandleBar,e.active&&z().ForceActive),style:{width:`${a}px`}})))}N.contextType=H,(0,n.Cg)([a.o],N.prototype,"onMouseEnter",null),(0,n.Cg)([a.o],N.prototype,"onMouseLeave",null),(0,n.Cg)([a.o],N.prototype,"startMove",null),(0,n.Cg)([a.o],N.prototype,"endMove",null),N=(0,n.Cg)([b.PA],N);var G=r(3696),U=r(6013),q=r(8803),j=r(1909),K=r(3689),$=r(296);const J=(0,$.PA)((function(e){const{debugHostLocation:t,onGrabStart:r,onGrabEnd:n}=e,a=d.SW.isVRGamepadUI,s=!!d.SW.m_sKeyboardOverlayKey,l=!!(d.SW.m_nKeyboardFlags&i.QRg.Minimal),c=a?2:1.5,m=a?{y:-.33,z:.15}:{y:-.25,z:.15},p=a?l?{y:-.66,z:.01}:{y:-.76,z:.01}:l?{y:-.77,z:.05}:{y:-.91,z:.05};return o.createElement(i.dLy,{translation:m},o.createElement(i.dLy,{scale:{y:c,x
+
+===== CSS Grab/StatusBar/Tray =====
+chunk~93a8598f9.css has GrabHandle
+chunk~93a8598f9.css has grabhandle
+chunk~93a8598f9.css has StatusBar
+chunk~93a8598f9.css has ControlBarTray
+chunk~93a8598f9.css :: 
+.grabhandle_GrabHandleBar_2EnMy{--grab-handle-grow-scale-x: 1.1;height:12px;background-color:var(--dashboard-control-bar-button-color-a);border-radius:20px;transition:transform .08s ease-out,background-color .08s ease-out;transform-origin:center;transform:scaleX(calc(1 / var(--grab-handle-grow-scale-x)))}
+---
+chunk~93a8598f9.css :: .grabhandle_GrabHandleButton_1kjlA:hover .grabhandle_GrabHandleBar_2EnMy{background-color:#fff;transform:scaleX(1)}
+---
+chunk~93a8598f9.css :: .grabhandle_GrabHandleBar_2EnMy.grabhandle_ForceActive_12Cc_{background-color:#fff;transform:scaleX(1)}
+---
+chunk~93a8598f9.css :: .grabhandle_GrabHandleButton_1kjlA{pointer-events:all;padding:60px}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBar .ControlBarButton,.DashboardMain .ControlBarTray .ButtonControl,.DashboardMain .ControlBarTray .SliderControl .Handle{--base-shadow: inset 0px 1px 1px 0px rgba(149, 149, 149, 0.5), 0px 2px 13px rgba(0, 0, 0, 0.4);--state-shadow: 0 0 0 0 transparent;--outline-shadow: 0 0 0 0 transparent;background:var(--gamepadui-dark-grey
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBar .ControlBarButton:active,.DashboardMain .ControlBarTray .ButtonControl:not(.Disabled):active{transform:scale(0.965);--base-shadow: inset 0px 3px 2px rgba(0, 0, 0, 0.6);--state-shadow: 0 0 0 0 transparent}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBar .ControlBarButton:hover:not(:active),.DashboardMain .ControlBarTray .ButtonControl:not(.Disabled):hover:not(:active),.DashboardMain .ControlBarTray .SliderControl:hover:not(:active) .Handle{--state-shadow: 0px 0px 0px 1px #ffffff, 0px 0px 3px 3px #88ccf1, inset 0px 0px 11px 4px #88ccf147}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBar .ControlBarButton.Active:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Active:not(:active){--outline-shadow: 0px 0px 0px 2px #88ccf1}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBar .ControlBarButton.Toggled:not(:active),.DashboardMain .ControlBarTray .ButtonControl.Toggled:not(:active){background:linear-gradient(to bottom, var(--dashboard-minitoggle-color-a) 0%, var(--dashboard-minitoggle-color-b) 100%)}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray{padding-top:calc(var(--control-bar-tray-control-margin)*1);min-height:3rem;min-width:3rem;max-width:var(--dashboard-control-bar-width);border-bottom-left-radius:var(--settings-control-inner-border-radius);border-bottom-right-radius:var(--settings-control-inner-border-radius);display:flex;flex-direction:row;box-sizing:
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray.FixedWidth{width:1600px}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray::after{content:"";position:absolute;top:0%;left:0;width:100%;height:100%;box-shadow:inset 0px 56px 13px -25px #000000a6;z-index:1;pointer-events:none}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTrayBackground{--scale: 0.5;border-bottom-left-radius:calc(var(--scale)*var(--settings-control-inner-border-radius));border-bottom-right-radius:calc(var(--scale)*var(--settings-control-inner-border-radius));background:var(--gamepadui-darkish-grey)}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section{display:flex;flex-direction:row}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray>*:not(:last-child){margin-right:var(--control-bar-tray-section-spacing)}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section>*{margin:var(--control-bar-tray-control-margin)}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section>*:not(:last-child){margin-right:0}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section.Grow{flex-grow:1}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .DesktopAndWindowList{--mask-size-left: 20px;--mask-size-right: 80px;padding-left:10px;padding-right:50px;scroll-padding:250px;position:relative;mask-image:linear-gradient(to right, transparent 0%, black var(--mask-size-left) calc(100% - var(--mask-size-right)), transparent 100%)}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .Label{font-size:1rem;margin-top:auto;margin-bottom:auto}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl{--side-padding: 2em;width:fit-content;white-space:nowrap}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .DesktopAndWindowList .ButtonControl{max-width:450px;overflow:hidden}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .DesktopAndWindowList .ButtonControl>span{display:block;overflow:hidden;text-overflow:ellipsis}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton:not(.Fixed){display:flex;align-items:center}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton.Fixed{width:82px;display:flex}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton:last-of-type{margin-right:9px}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.ViewButton.Fixed>span{margin:auto}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.Round{border-radius:9001px;display:flex;padding:0;height:calc(1.2*var(--settings-control-default-height));width:calc(1.2*var(--settings-control-default-height))}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl.Round>img{width:var(--control-bar-icon-size);margin:auto}
+---
+chunk~93a8598f9.css :: .DashboardMain .ControlBarTray .Section .ButtonControl,.DashboardMain .ControlBarTray .SliderControl .Handle{background:var(--gamepadui-darker-grey)}
+---
+controllerbindingui.css has GrabHandle
+controllerbindingui.css has grabhandle
+controllerbindingui.css :: 
+.grabhandle_GrabHandleBar_2EnMy{--grab-handle-grow-scale-x: 1.1;height:12px;background-color:var(--dashboard-control-bar-button-color-a);border-radius:20px;transition:transform .08s ease-out,background-color .08s ease-out;transform-origin:center;transform:scaleX(calc(1 / var(--grab-handle-grow-scale-x)))}
+---
+controllerbindingui.css :: .grabhandle_GrabHandleButton_1kjlA:hover .grabhandle_GrabHandleBar_2EnMy{background-color:#fff;transform:scaleX(1)}
+---
+controllerbindingui.css :: .grabhandle_GrabHandleBar_2EnMy.grabhandle_ForceActive_12Cc_{background-color:#fff;transform:scaleX(1)}
+---
+controllerbindingui.css :: .grabhandle_GrabHandleButton_1kjlA{pointer-events:all;padding:60px}
+---
+debugcommands.css has GrabHandle
+debugcommands.css has grabhandle
+debugcommands.css :: 
+.grabhandle_GrabHandleBar_2EnMy{--grab-handle-grow-scale-x: 1.1;height:12px;background-color:var(--dashboard-control-bar-button-color-a);border-radius:20px;transition:transform .08s ease-out,background-color .08s ease-out;transform-origin:center;transform:scaleX(calc(1 / var(--grab-handle-grow-scale-x)))}
+---
+debugcommands.css :: .grabhandle_GrabHandleButton_1kjlA:hover .grabhandle_GrabHandleBar_2EnMy{background-color:#fff;transform:scaleX(1)}
+---
+debugcommands.css :: .grabhandle_GrabHandleBar_2EnMy.grabhandle_ForceActive_12Cc_{background-color:#fff;transform:scaleX(1)}
+---
+debugcommands.css :: .grabhandle_GrabHandleButton_1kjlA{pointer-events:all;padding:60px}
+---
+settings_desktop.css has GrabHandle
+settings_desktop.css has grabhandle
+settings_desktop.css :: 
+.grabhandle_GrabHandleBar_2EnMy{--grab-handle-grow-scale-x: 1.1;height:12px;background-color:var(--dashboard-control-bar-button-color-a);border-radius:20px;transition:transform .08s ease-out,background-color .08s ease-out;transform-origin:center;transform:scaleX(calc(1 / var(--grab-handle-grow-scale-x)))}
+---
+settings_desktop.css :: .grabhandle_GrabHandleButton_1kjlA:hover .grabhandle_GrabHandleBar_2EnMy{background-color:#fff;transform:scaleX(1)}
+---
+settings_desktop.css :: .grabhandle_GrabHandleBar_2EnMy.grabhandle_ForceActive_12Cc_{background-color:#fff;transform:scaleX(1)}
+---
+settings_desktop.css :: .grabhandle_GrabHandleButton_1kjlA{pointer-events:all;padding:60px}
+---
+
+===== COLOR / SIZE TOKENS =====
+FILE chunk~93a8598f9.css 15
+  --control-bar-button-size: 85px
+  --control-bar-tray-section-spacing: 75px !important
+  --dashboard-app-carousel-button-height: 210px
+  --dashboard-app-carousel-button-height: 420px
+  --dashboard-app-carousel-button-width: calc( var(--dashboard-app-carousel-button-height) / var(--dashboard-app-carousel-button-aspect-ratio) )
+  --dashboard-app-carousel-spacing: 100px
+  --dashboard-app-carousel-spacing: 50px
+  --dashboard-control-bar-component-padding: 0
+  --dashboard-control-bar-height: 180px
+  --dashboard-control-bar-width: 1800px
+  --dashboard-home-fade-in-duration: 0.2s
+  --resize-corner-offset: 12px
+  --resize-corner-size: 128px
+  --resize-corner-thickness: 10px
+  --settings-control-inner-border-radius: 0.7rem
+FILE chunk~b48d3fba7.css 6
+  --settings-control-activated-background: var(--settings-advanced-control-background-color)
+  --settings-control-active-background: var(--settings-advanced-control-active-background-color)
+  --settings-control-background: #22252a
+  --settings-control-hover-background: var(--settings-advanced-control-hover-background-color)
+  --settings-right-column-width-adjustment: 300px
+  --settings-subsection-padding-v: 0.5em
+FILE chunk~66c0d1388.css 133
+  --control-bar-button-gradient-end-color: rgba(10,10,10,1)
+  --control-bar-button-gradient-start-color: rgba(35,35,36,1)
+  --control-bar-button-size: 96px
+  --control-bar-button-transition-ease: ease-out
+  --control-bar-button-transition-time: 0.1s
+  --control-bar-icon-size-large: 55px
+  --control-bar-icon-size: 45px
+  --control-bar-tray-control-height: 78px
+  --control-bar-tray-control-margin: 0.8rem
+  --control-bar-tray-section-spacing: 2rem
+  --dashboard-app-carousel-button-aspect-ratio: calc( 900.0 / 600.0 )
+  --dashboard-app-carousel-button-height: 400px
+  --dashboard-app-carousel-button-width: calc( var(--dashboard-app-carousel-button-height) / var(--dashboard-app-carousel-button-aspect-ratio) )
+  --dashboard-app-carousel-spacing: 60px
+  --dashboard-background-fade-color: rgba(29, 29, 29, 0.9)
+  --dashboard-button-animation-ease: ease
+  --dashboard-button-animation-time: 0.25s
+  --dashboard-button-grey-min-opacity: 0.2
+  --dashboard-control-bar-button-color-a: #3d4450
+  --dashboard-control-bar-button-color-b: #54575f
+  --dashboard-control-bar-component-padding: 21px
+  --dashboard-control-bar-control-spacing: 1rem
+  --dashboard-control-bar-group-color-a: #24272c
+  --dashboard-control-bar-group-color-b: #30343b
+  --dashboard-control-bar-now-playing-height: 150px
+  --dashboard-control-bar-side-padding: 1rem
+  --dashboard-control-bar-volume-slider-width: 430px
+  --dashboard-control-bar-width: calc(2000px - ((var(--dashboard-control-bar-side-padding) + var(--dashboard-control-bar-component-padding)) * 2))
+  --dashboard-control-margin: 0.5em
+  --dashboard-control-padding: .5rem 1rem .5rem 1rem
+  --dashboard-desktop-bar-button-color-a: #1f2228
+  --dashboard-desktop-bar-button-color-b: #323439
+  --dashboard-glow-color: var(--settings-side-nav-gradient-a)
+  --dashboard-minitoggle-color-a: #585f6d
+  --dashboard-minitoggle-color-b: #323439
+  --dashboard-panel-padding: 2rem
+  --dashboard-primary-aspect-ratio: (1920.0/1080.0)
+  --dashboard-primary-width: 1860px
+  --dashboard-status-bar-control-spacing: 1rem
+  --gamepadui-dark-grey-rgb: 61, 68, 80
+  --gamepadui-dark-grey: #3D4450
+  --gamepadui-darker-grey-rgb: 35, 38, 46
+  --gamepadui-darker-grey: #23262E
+  --gamepadui-darkest-grey-rgb: 14, 20, 27
+  --gamepadui-darkest-grey: #0e141b
+  --gamepadui-darkish-grey-rgb: 23, 29, 37
+  --gamepadui-darkish-grey: #171d25
+  --gamepadui-grey-rgb: 103, 112, 123
+  --gamepadui-grey: #67707b
+  --gamepadui-light-grey-rgb: 139, 146, 154
+  --gamepadui-light-grey: #8b929a
+  --gamepadui-lighter-grey-rgb: 184, 188, 191
+  --gamepadui-lighter-grey: #b8bcbf
+  --gamepadui-lightest-grey-rgb: 220, 222, 223
+  --gamepadui-lightest-grey: #dcdedf
+  --gamepadui-soft-black: #060a0e
+  --settings-advanced-control-active-background-color: #2d242e
+  --settings-advanced-control-background-color: #493b4b
+  --settings-advanced-control-hover-background-color: #725b75
+  --settings-advanced-sidenav-control-background-color: #69466d
+  --settings-advanced-sidenav-text-color: #6b6b6b
+  --settings-background-gradient-alpha: 1
+  --settings-border-radius: 0px
+  --settings-border-radius: 10px
+  --settings-border-radius: 30px
+  --settings-button-border-radius: 5px
+  --settings-button-border-radius: calc(1.2 * var(--settings-border-radius))
+  --settings-button-image-border-radius: calc( var(--settings-control-inner-border-radius) * 0.5 )
+  --settings-content-padding: 100px
+  --settings-content-padding: 40px
+  --settings-control-activated-background: var(--buttondefault)
+  --settings-control-active-background: var(--settings-control-background-hover-background)
+  --settings-control-background-hover-background: #1E2126
+  --settings-control-background-new-a: 0.5
+  --settings-control-background-new-hover-a: 1.0
+  --settings-control-background-new-hover-rgb: var(--gamepadui-darkish-grey-rgb)
+  --settings-control-background-new-hover: rgba( var(--settings-control-background-new-hover-rgb), var(--settings-control-background-new-hover-a) )
+  --settings-control-background-new-rgb: var(--gamepadui-darker-grey-rgb)
+  --settings-control-background-new: rgba( var(--settings-control-background-new-rgb), var(--settings-control-background-new-a) )
+  --settings-control-background: #25282E
+  --settings-control-box-active-shadow: 0px 3px 9px #00000021
+  --settings-control-box-active-shadow: 0px 5px 10px #00000024
+  --settings-control-box-hover-shadow: 0px 10px 25px #00000024
+  --settings-control-box-hover-shadow: 0px 6px 9px #00000021
+  --settings-control-button-min-padding-h: 0.8em
+  --settings-control-button-min-padding-v: 0.5em
+  --settings-control-default-height: 2rem
+  --settings-control-hover-background: var(--buttonhover)
+  --settings-control-hover-fade-duration: 0.13s
+  --settings-control-hover-fade-ease: ease-in-out
+  --settings-control-image-padding: calc( var(--settings-control-default-height) * 0.15 )
+  --settings-control-inner-border-radius: 0.3rem
+  --settings-control-margin: 0.5em
+  --settings-control-outer-border-radius: 0.4rem
+  --settings-control-spacing: 1rem
+  --settings-control-track-background-a: var(--settings-control-background-new-a)
+  --settings-control-track-background-rgb: var(--settings-control-background-new-rgb)
+  --settings-control-track-hover-background-a: var(--settings-control-background-new-hover-a)
+  --settings-font-size-title: 0.96rem
+  --settings-font-size-title: 1.2rem
+  --settings-font-size-title: 16px
+  --settings-font-size: 0.8rem
+  --settings-font-size: 14px
+  --settings-font-size: 1rem
+  --settings-font-weight-title: 600
+  --settings-font-weight: 400
+  --settings-left-outer-margin: 0px
+  --settings-modal-animation-duration: 0.2s
+  --settings-right-column-computed-width: calc(var(--settings-right-column-width) - var(--settings-right-column-width-adjustment))
+  --settings-right-column-left-margin: 1.6rem
+  --settings-right-column-width-adjustment: 0px
+  --settings-right-column-width: 220px
+  --settings-right-column-width: 500px
+  --settings-side-nav-gradient-a: #3A9AED
+  --settings-side-nav-gradient-b: #245FCF
+  --settings-sidebar-button-max-height: 2.3rem
+  --settings-sidebar-button-spacing: 30px
+  --settings-sidebar-button-spacing: 5px
+  --settings-sidebar-max-width: 15rem
+  --settings-sidebar-min-width: 13rem
+FILE systemui.css 0
+
+===== steamvr.css full vars =====
+  --color_background: #262626
+  --color_text_primary: #CCCCCC
+  --color_text_secondary: #888888
+  --color_text_active: #9DC112
+  --color_text_inactive: #777777
+  --color_text_warning: #D94453
+  --color_text_attention: #E6BE42
+  --color_header_link: #CCCCCC
+  --color_header_link_hover: #FFFFFF
+  --color_header_link_active: #888888
+  --color_seperator: #636363
+  --color_command_link: #6ea9d7
+  --color_command_link_hover: #8ad4ff
+  --color_overlay: rgba( 38, 38, 38, 0.9 )
+  --color_flyout_cursor: #4C4C4C
+  --gradient_dialog: linear-gradient( to bottom, rgb( 28, 36, 41 ), rgb( 25, 25, 25 ) )
+  --color_messagebox_title: var( --color_text_primary )
+  --color_messagebox_text: var( --color_text_primary )
+  --color_button_background: rgb( 60, 60, 60 )
+
+===== showResizeHandle in systemui.js =====
+nPanelHeightOverride(){return this.frame.docking.visualDockLocation==l.yWq.Theater?2:null!=this.componentProps.forcedUniformDashboardHeight?this.componentProps.forcedUniformDashboardHeight:void 0}get showResizeHandle(){var e,t,o;if(null!==(o=s.Q.GetOverlayFlag(null===(t=null===(e=null==this?void 0:this.frame)||void 0===e?void 0:e.activePage)||void 0===t?void 0:t.summonOverlayKey,67108864))&&void 0!==o&&o)return!1;switch(this.componentProps.allowResizing){case 0:return!1;case 1:return this.frame.docking.visualDockLocation!=l.yWq.Dashboard;case 2:return!0}}}(0,n.Cg)([i.computed],u.prototype,"scaleForBottomControls",null),(0,n.Cg)([i.computed],u.prototype,"scaleForActivePage",null),(0,n.Cg)([i.
+
+===== showResizeHandle in chunk~2e670652e.js =====
+nPanelHeightOverride(){return this.frame.docking.visualDockLocation==l.yWq.Theater?2:null!=this.componentProps.forcedUniformDashboardHeight?this.componentProps.forcedUniformDashboardHeight:void 0}get showResizeHandle(){var e,t,o;if(null!==(o=s.Q.GetOverlayFlag(null===(t=null===(e=null==this?void 0:this.frame)||void 0===e?void 0:e.activePage)||void 0===t?void 0:t.summonOverlayKey,67108864))&&void 0!==o&&o)return!1;switch(this.componentProps.allowResizing){case 0:return!1;case 1:return this.frame.docking.visualDockLocation!=l.yWq.Dashboard;case 2:return!0}}}(0,r.Cg)([i.computed],d.prototype,"scaleForBottomControls",null),(0,r.Cg)([i.computed],d.prototype,"scaleForActivePage",null),(0,r.Cg)([i.
+has opacity
+has tint
+has scale
+has width:.66675
+has BottomCenter
+has BottomRight
+
+===== GrabHandle AFTER =====
+GrabHandleBar:"grabhandle_GrabHandleBar_2EnMy",GrabHandleButton:"grabhandle_GrabHandleButton_1kjlA",ForceActive:"grabhandle_ForceActive_12Cc_"}},3545:e=>{e.exports={TourTooltipContainer:"guidedtour_steamframe_TourTooltipContainer_mmSdZ",RightFlow:"guidedtour_steamframe_RightFlow_3iFxa",TourTooltipContents:"guidedtour_steamframe_TourTooltipContents_4roS8",TopPanelContainer:"guidedtour_steamframe_TopPanelContainer_3PL05",LearningTopicParagraph:"guidedtour_steamframe_LearningTopicParagraph_1JF_h",BodyText:"guidedtour_steamframe_BodyText_1R8oK",BottomPanelContainer:"guidedtour_steamframe_BottomPanelContainer_30X51",GuideLineContainer:"guidedtour_steamframe_GuideLineContainer_3BD0W",GuideLine:"guidedtour_steamframe_GuideLine_20idd",GuideDot:"guidedtour_steamframe_GuideDot_1TnBD",TourConnector:"guidedtour_steamframe_TourConnector_2pGBc",LearningTopicBody:"guidedtour_steamframe_LearningTopicBody_2Gqdi",CenteredContent:"guidedtour_steamframe_CenteredContent_39wh9",ButtonContainer:"guidedtour_steamframe_ButtonContainer_2bj_L",LearnMoreButton:"guidedtour_steamframe_LearnMoreButton_2KROR",DismissAllButton:"guidedtour_steamframe_DismissAllButton_F0oBm",BlueButton:"guidedtour_steamframe_BlueButton_2-ssY",Primary:"guidedtour_steamframe_Primary_1MsHt"}},7663:e=>{e.exports={FrameControlsContainer:"legacydashboardframecontrols_FrameControlsContainer_27B1e",HasGamepadFocus:"legacydashboardframecontrols_HasGamepadFocus_2rN3T",Section:"legacydashboardframecontrols_Section_1KwWq",WideGapBefore:"l
+EXPORT exports={GrabHandleBar:"grabhandle_GrabHandleBar_2EnMy",GrabHandleButton:"grabhandle_GrabHandleButton_1kjlA",ForceActive:"grabhandle_ForceActive_12Cc_"}
+
+===== compositor scenegraph strings =====
+resize-handle
+frame-resize-scale-factor
+frame-resize-displacement
+frame-resize-scale-min
+frame-resize-scale-max
+is-grab-handle
+
+===== settingsschema related =====
+DASHBOARD CAPTURE STRINGS:
+/Screenshot_
+IVRScreenshots_001
+OnScreenshotSubmitted
+OnScreenshotTaken
+OnScreenshotTriggered
+STEAMSCREENSHOTS_INTERFACE_VERSION003
+SubmitScreenShotToSteam
+gpu_profiler_capture
+screenshotType
+screenshots
+
+===== SVGs =====
+FILE /opt/steamvr/content/vrmonitor/icons/icon_vrwindow_pin.svg
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M13.5895 2.27615L12.6467 1.33334L8.59272 5.38734L6.85953 3.65415L7.80234 2.71134L6.54526 1.45426L1.51694 6.48258L2.77402 7.73965L3.71683 6.79685L5.45002 8.53004L1.33301 12.6471L2.27582 13.5899L13.5895 2.27615Z" fill="white"/>
+<path d="M14.0877 14.025L11.3724 9.82641L13.7735 7.42538C13.2218 6.87484 12.535 6.47905 11.7821 6.27771C11.6993 6.25558 11.6161 6.23589 11.5325 6.21863L6.28131 11.4698C6.29857 11.5534 6.31826 11.6367 6.34039 11.7194C6.54173 12.4723 6.93752 13.1591 7.48807 13.7108L9.88909 11.3098L14.0877 14.025Z" fill="white"/>
+</svg>
+
+FILE /opt/steamvr/resources/icon_steamvr_desktopgame.svg
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M56.8887 142.222C205.639 180.021 358.522 199.132 512 199.111C665.479 199.15 818.363 180.039 967.111 142.222V796.444C818.36 834.244 665.478 853.354 512 853.333C358.52 853.372 205.636 834.261 56.8887 796.444V142.222Z" fill="black"/>
+</svg>
+
+icon_vrwindow_close.png (12, 12) bytes 1891
+icon_vrwindow_close16.png (16, 16) bytes 1690
+icon_vrwindow_close_hover.png (12, 12) bytes 1909
+icon_vrwindow_close_hover16.png (16, 16) bytes 1912
+icon_vrwindow_minimize.png (12, 12) bytes 1856
+icon_vrwindow_minimize16.png (16, 16) bytes 1876
+icon_vrwindow_minimize_hover.png (12, 12) bytes 1870
+icon_vrwindow_minimize_hover16.png (16, 16) bytes 1874
+icon_vrwindow_pin.png (12, 12) bytes 3151
+icon_vrwindow_pin16.png (16, 16) bytes 3373
+icon_vrwindow_pin_hover.png (12, 12) bytes 3088
+icon_vrwindow_pin_hover16.png (16, 16) bytes 3239
+icon_vrwindow_pinned.png (12, 12) bytes 3024
+icon_vrwindow_pinned16.png (16, 16) bytes 3165
+icon_vrwindow_pinned_hover.png (12, 12) bytes 3002
+icon_vrwindow_pinned_hover16.png (16, 16) bytes 3131
+icon_headsetview_window_dock.png (12, 12) bytes 191
+icon_headsetview_window_dock16.png (16, 16) bytes 202
+icon_headsetview_window_dock16_hover.png (16, 16) bytes 201
+icon_headsetview_window_dock_hover.png (12, 12) bytes 191
+icon_headsetview_window_fullscreen.png (12, 12) bytes 2890
+icon_headsetview_window_fullscreen16.png (16, 16) bytes 238
+icon_headsetview_window_fullscreen16_hover.png (16, 16) bytes 254
+icon_headsetview_window_fullscreen_hover.png (12, 12) bytes 2886
+icon_headsetview_widget_close.png (12, 12) bytes 2826
+icon_headsetview_widget_close16.png (16, 16) bytes 2830
+icon_headsetview_widget_close16_hover.png (16, 16) bytes 2829
+icon_headsetview_widget_close_hover.png (12, 12) bytes 2826
+dashboard icon_close.png (88, 88)
+dashboard icon_close_black.png (88, 88)
+dashboard icon_close_inverse.png (88, 88)
+
+===== search JS for dashboard-control-bar / gamepadui color assignments =====
+ssh : bash: line 149: $'\r': command not found
+At C:\Users\Antho\AppData\Local\Temp\ps-script-bf088287-5f6b-4eb1-a764-bde40fb3ab68.ps1:103 char:53
++ ... chrome_probe4.sh" | ssh -o BatchMode=yes frame "bash -s" 2>&1 | Out-F ...
++                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (bash: line 149: $'\r': command not found:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

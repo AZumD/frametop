@@ -1,0 +1,100 @@
+﻿=== Dashboard bar debug_name / id strings ===
+LegacyDashboardBar 11
+DashboardBar 47
+MainControlBar 1
+allowLegacyControlBar 1
+StatusBar 2
+ControlBarTray 3
+
+=== Context around non-legacy ControlBar renders ===
+.props.sort_depth_bias,debug_name:"control-bar-tray-bg"},o.createElement("div",{className:"ControlBarTrayBackground",ref:this.m_refBackgroundElem}))))))))}}function Be(e){var t;const r=o.useRef(void 0),n=o.useRef(void 0),i=e.active;retu
+---
+0,debug_name:"LegacyDashboardBar",id:"LegacyDashboardBar"},o.createElement(l.W,{className:"ControlBar MainControlBar"},o.createElement("div",{className:"Section Left"},C&&o.createElement(Pe,{legacyImageUrl:"/dashboard/images/icons/svr_me
+---
+eractive:!0,curvature_origin_id:I,meters_per_pixel:u.iZ},o.createElement("div",{className:"ControlBar"},o.createElement(Ve,{label:V?(0,c.we)("#SteamVR_Home"):(0,c.we)("#Now_Playing"),active:(null===(b=null===(h=d.SW.active
+---
+d:S,sort_depth_bias:-1,debug_name:`legacy-tooltip-${p}`},s.createElement("div",{className:"ControlBarButtonTooltip"},e.text)))))}))},5308:(e,t,r)=>{"use strict";r.d(t,{D:()=>o});var n=r(6540),i=r(5751),a=r(8770),s=r(9283);function o(e)
+---
+
+=== :root / html.VROverlay assignments for control-bar* ===
+SELECTOR :root\{[^}]+\} hits 20
+  --dashboard-control-bar-volume-slider-width: 430px;
+  --dashboard-control-bar-side-padding: 1rem;
+  --dashboard-control-bar-component-padding: 21px;
+  --dashboard-control-bar-width: calc(2000px - ((var(--dashboard-control-bar-side-padding) + var(--dashboard-control-bar-component-padding)) * 2));
+  --dashboard-control-bar-control-spacing: 1rem;
+  --dashboard-control-bar-group-color-a: #24272c;
+  --dashboard-control-bar-group-color-b: #30343b;
+  --dashboard-control-bar-button-color-a: #3d4450;
+  --dashboard-control-bar-button-color-b: #54575f;
+  --dashboard-control-bar-now-playing-height: 150px;
+  --control-bar-button-size: 96px;
+  --control-bar-icon-size: 45px;
+  --control-bar-icon-size-large: 55px;
+  --control-bar-button-gradient-start-color: rgba(35,35,36,1);
+  --control-bar-button-gradient-end-color: rgba(10,10,10,1);
+  --control-bar-button-transition-time: 0.1s;
+  --control-bar-button-transition-ease: ease-out;
+  --control-bar-tray-control-margin: 0.8rem;
+  --control-bar-tray-section-spacing: 2rem;
+  --control-bar-tray-control-height: 78px;
+
+=== Any selector defining --control-bar-button-size: 96px ===
+SEL: :root
+  --dashboard-control-bar-volume-slider-width: 430px;
+  --dashboard-control-bar-side-padding: 1rem;
+  --dashboard-control-bar-component-padding: 21px;
+  --dashboard-control-bar-width: calc(2000px - ((var(--dashboard-control-bar-side-padding) + var(--dashboard-control-bar-component-padding)) * 2));
+  --dashboard-control-bar-control-spacing: 1rem;
+  --dashboard-control-bar-group-color-a: #24272c;
+  --dashboard-control-bar-group-color-b: #30343b;
+  --dashboard-control-bar-button-color-a: #3d4450;
+  --dashboard-control-bar-button-color-b: #54575f;
+  --dashboard-control-bar-now-playing-height: 150px;
+  --dashboard-status-bar-control-spacing: 1rem;
+  --dashboard-minitoggle-color-a: #585f6d;
+  --dashboard-minitoggle-color-b: #323439;
+  --control-bar-button-size: 96px;
+  --control-bar-icon-size: 45px;
+  --control-bar-icon-size-large: 55px;
+  --control-bar-button-gradient-start-color: rgba(35,35,36,1);
+  --control-bar-button-gradient-end-color: rgba(10,10,10,1);
+  --control-bar-button-transition-time: 0.1s;
+  --control-bar-button-transition-ease: ease-out;
+  --control-bar-tray-control-margin: 0.8rem;
+  --control-bar-tray-section-spacing: 2rem;
+  --control-bar-tray-control-height: 78px;
+  --settings-control-inner-border-radius: 0.3rem;
+---
+
+=== Existence of bar-wired icons ===
+OK 779 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_menu_c.svg
+OK 847 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_items.svg
+OK 838 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_desktop_alt.svg
+OK 1110 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_more.svg
+OK 2594 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_room_setup.svg
+OK 770 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_eye.svg
+OK 1161 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume.svg
+OK 789 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mute.svg
+OK 1376 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mirror.svg
+OK 999 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_volume_mirror_mute.svg
+OK 1572 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_mic_active.svg
+OK 1184 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_mic_mute.svg
+OK 1552 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_settings.svg
+OK 1503 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_app_quit.svg
+OK 1373 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_svrhome_quit_alt.svg
+OK 859 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_play.svg
+OK 4212 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_add.png
+OK 724 /opt/steamvr/resources/webinterface/dashboard/images/icons/icon_multitasking_view.png
+OK 3327 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_recenter.svg
+OK 949 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_power.svg
+OK 1321 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_keyboard.svg
+OK 1146 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_library.svg
+OK 1322 /opt/steamvr/resources/webinterface/dashboard/images/icons/svr_theater.svg
+
+=== Absolute runtime URL equivalents ===
+Web UI resolves /dashboard/... under SteamVR overlay HTTP root.
+On-disk equivalents:
+  /opt/steamvr/resources/webinterface/dashboard/images/icons/<file>
+  /opt/steamvr/resources/webinterface/dashboard/sounds/<file>
+  /opt/steamvr/resources/webinterface/fonts/<file>

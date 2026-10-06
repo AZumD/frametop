@@ -273,6 +273,23 @@ Treat this as the Stage 3 make-or-break milestone. Next work (chooser UI, VR
 classification, SteamVR flat-panel behavior, main-display policy polish) can wait
 until you want more complexity.
 
+### Chooser follow-up (2026-10-05)
+
+`steam-ui-patches/game-route` (CDP-armed) cancels `LaunchApp`, shows SteamVR vs
+Tovakai, then relaunches. Proven path (**patch v5**):
+
+1. `SetAppLaunchOptions` → `ft-game-run %command%` (verify via app details).
+2. Relaunch with `SteamClient.URL.ExecuteSteamURL('steam://run/<appId>')`
+   (call on the URL object — extracting the function loses `this`).
+   `Apps.RunGame` does **not** apply wraps.
+3. **Do not restore options for ~18s** — Steam reads them at `CreatingProcess`,
+   often several seconds after `LaunchApp`. Restoring at 2.5s launched stock
+   (`DISPLAY=:1`, no wrap log).
+
+Arm: `test/_arm_game_route_chooser.sh`. Auto retest:
+`test/_retest_tovakai_wrap_v2.sh`. Invisible popup →
+`test/_wait_pick_game_route.sh tovakai`.
+
 ---
 
 ## Phase checklist (status)
