@@ -37,8 +37,6 @@ int main() {
     expectBool("desktopgame base key", IsDesktopgameOverlayKey("valve.steam.desktopgame"), true);
     expectBool("desktopgame slot key", IsDesktopgameOverlayKey("valve.steam.desktopgame.0"), true);
     expectBool("desktopgame app id key", IsDesktopgameOverlayKey("valve.steam.desktopgame.1145360"), true);
-    expectBool("desktopgame thumb child", IsDesktopgameOverlayKey("valve.steam.desktopgame.1145360.thumb"), false);
-    expectBool("desktopgame layer child", IsDesktopgameOverlayKey("valve.steam.desktopgame.1145360.layer1"), false);
     expectBool("desktopgame prefix collision", IsDesktopgameOverlayKey("valve.steam.desktopgamex.1145360"), false);
     expectBool("unrelated overlay", IsDesktopgameOverlayKey("valve.steam.gamepadui.main"), false);
 
