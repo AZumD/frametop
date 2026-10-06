@@ -29,8 +29,9 @@ $cxx -c -o build/vr.o vr.cpp
 $cxx -c -o build/keyboard.o keyboard.cpp
 $cxx -c -o build/handcut.o handcut.cpp
 $cxx -c -o build/handtest.o handtest.cpp
+$cxx -c -o build/steamvr_assets.o steamvr_assets.cpp
 vrlibs="$(pkg-config --libs egl glesv2 gbm) -L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64"
-g++ -o build/ft-screens build/compositor.o build/vr.o build/keyboard.o build/handcut.o \
+g++ -o build/ft-screens build/compositor.o build/vr.o build/keyboard.o build/handcut.o build/steamvr_assets.o \
   $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) $vrlibs
 g++ -o build/ft-handtest build/handtest.o build/handcut.o $vrlibs
 cp -f actions.json build/actions.json

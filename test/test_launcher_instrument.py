@@ -35,14 +35,19 @@ class DesktopDiscovery(unittest.TestCase):
             f.write(body)
         return path
 
-    def test_parses_name_and_filters_nodisplay(self):
+    def test_parses_name_and_includes_nodisplay(self):
+        # NoDisplay apps still appear in Start (SteamOS marks many this way).
         self._write(
             "ok.desktop",
             "[Desktop Entry]\nType=Application\nName=Ok App\nExec=okapp\nIcon=ok\n",
         )
         self._write(
-            "hidden.desktop",
-            "[Desktop Entry]\nType=Application\nName=Hidden\nExec=x\nNoDisplay=true\n",
+            "quiet.desktop",
+            "[Desktop Entry]\nType=Application\nName=Quiet\nExec=x\nNoDisplay=true\n",
+        )
+        self._write(
+            "gone.desktop",
+            "[Desktop Entry]\nType=Application\nName=Gone\nExec=x\nHidden=true\n",
         )
         self._write(
             "notapp.desktop",
@@ -52,9 +57,53 @@ class DesktopDiscovery(unittest.TestCase):
             apps = ft_desktop.list_applications()
         ids = {a["id"] for a in apps}
         self.assertIn("ok.desktop", ids)
-        self.assertNotIn("hidden.desktop", ids)
+        self.assertIn("quiet.desktop", ids)
+        self.assertNotIn("gone.desktop", ids)
         self.assertNotIn("notapp.desktop", ids)
         self.assertEqual(apps[0]["name"], "Ok App")
+
+    def test_user_hidden_stub_falls_through_to_system(self):
+        # SteamOS leaves Hidden+NoDisplay stubs in ~/.local; Start must still show
+        # the system twin (vim.desktop, Discover, …). NotShowIn=KDE stays filtered.
+        user = os.path.join(self.tmp.name, "user")
+        os.makedirs(user)
+        with open(os.path.join(user, "vim.desktop"), "w", encoding="utf-8") as f:
+            f.write("[Desktop Entry]\nType=Application\nName=Vim\nExec=vim\n"
+                    "Hidden=true\nNoDisplay=true\n")
+        self._write("vim.desktop", "[Desktop Entry]\nType=Application\nName=Vim\nExec=vim\nIcon=vim\n")
+        self._write("gnomeonly.desktop", "[Desktop Entry]\nType=Application\nName=G\nExec=g\nOnlyShowIn=GNOME;\n")
+        self._write("notkde.desktop", "[Desktop Entry]\nType=Application\nName=N\nExec=n\nNotShowIn=KDE;\n")
+        self._write("ok.desktop", "[Desktop Entry]\nType=Application\nName=Ok\nExec=ok\nOnlyShowIn=KDE;\n")
+        with mock.patch.object(ft_desktop, "applications_dirs", return_value=[user, self.apps]), \
+                mock.patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "KDE"}):
+            ids = [a["id"] for a in ft_desktop.list_applications()]
+            found = ft_desktop.find_desktop_by_id("vim.desktop")
+        self.assertEqual(ids, ["ok.desktop", "vim.desktop"])
+        self.assertEqual(os.path.abspath(found), os.path.abspath(os.path.join(self.apps, "vim.desktop")))
+
+    def test_user_nonhidden_override_wins(self):
+        user = os.path.join(self.tmp.name, "user")
+        os.makedirs(user)
+        with open(os.path.join(user, "ok.desktop"), "w", encoding="utf-8") as f:
+            f.write("[Desktop Entry]\nType=Application\nName=User Ok\nExec=user-ok\nIcon=user\n")
+        self._write("ok.desktop", "[Desktop Entry]\nType=Application\nName=System Ok\nExec=sys-ok\nIcon=sys\n")
+        with mock.patch.object(ft_desktop, "applications_dirs", return_value=[user, self.apps]):
+            apps = ft_desktop.list_applications()
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["name"], "User Ok")
+        self.assertIn(os.path.abspath(user), apps[0]["path"])
+
+    def test_gamescope_host_still_shows_kde_only_apps(self):
+        # Host XDG_CURRENT_DESKTOP=gamescope; System Settings and friends use OnlyShowIn=KDE
+        # and must still appear in Start.
+        self._write("systemsettings.desktop",
+                    "[Desktop Entry]\nType=Application\nName=System Settings\nExec=systemsettings\nOnlyShowIn=KDE;\n")
+        self._write("normal.desktop", "[Desktop Entry]\nType=Application\nName=Normal\nExec=n\n")
+        with mock.patch.object(ft_desktop, "applications_dirs", return_value=[self.apps]), \
+                mock.patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "gamescope"}, clear=False):
+            self.assertIn("KDE", ft_desktop.current_desktops())
+            ids = {a["id"] for a in ft_desktop.list_applications()}
+        self.assertEqual(ids, {"systemsettings.desktop", "normal.desktop"})
 
     def test_subdir_desktop_id_roundtrip(self):
         sub = os.path.join(self.apps, "kde")

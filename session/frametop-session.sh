@@ -215,9 +215,12 @@ fi
 # environ (wayland-0 under …/frametop) for respawns — never the pre-Plasma outer display.
 # ft-mpris bridges session MPRIS players to @frametop_mpris for the Media instrument.
 # ft-launch bridges Launcher instrument activations to nested Plasma (@frametop_launch).
+# ft-taskbar feeds the spatial toolbar (tasks from nested KWin, Start, profiles, tray).
 # Drop any leftover bridge from a prior session (abstract socket is exclusive).
 pkill -f '[p]ython3 .*/ft-mpris.py' 2>/dev/null || true
 pkill -f '[p]ython3 .*/ft-launch.py' 2>/dev/null || true
+# argv0 match: a looser pattern also hits this script's own dbus-run-session command line.
+pkill -f '^ft-taskbar ' 2>/dev/null || true
 dbus-run-session -- bash -c '
   set -eu
   here=$1
@@ -226,6 +229,8 @@ dbus-run-session -- bash -c '
   # argv0 ft-launch (≤15 chars) so keep-apps / pgrep -x can find it.
   bash -c "exec -a ft-launch python3 \"$here/ft-launch.py\"" > /tmp/frametop-launch.log 2>&1 &
   launch=$!
+  bash -c "exec -a ft-taskbar python3 \"$here/ft-taskbar.py\"" > /tmp/frametop-taskbar.log 2>&1 &
+  taskbar=$!
   bash "$here/ft-shell-watch.sh" &
   watch=$!
   set +e
@@ -234,9 +239,11 @@ dbus-run-session -- bash -c '
   set -e
   kill "$mpris" 2>/dev/null || true
   kill "$launch" 2>/dev/null || true
+  kill "$taskbar" 2>/dev/null || true
   kill "$watch" 2>/dev/null || true
   wait "$mpris" 2>/dev/null || true
   wait "$launch" 2>/dev/null || true
+  wait "$taskbar" 2>/dev/null || true
   wait "$watch" 2>/dev/null || true
   exit "$status"
 ' bash "$here"

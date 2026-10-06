@@ -31,6 +31,11 @@ run "$py" test/test_spatial_instruments.py
 run "$py" test/test_instrument_visibility.py
 run "$py" test/test_instrument_configure_page.py
 run "$py" test/test_chrome_layout.py
+run "$py" test/test_desktop_toolbar.py
+run "$py" test/test_toolbar_dock.py
+run "$py" test/test_toolbar_reface_on_show.py
+run "$py" test/test_taskbar_model.py
+run "$py" test/test_app_activity.py
 run "$py" test/test_pointer_ignore.py
 run "$py" test/test_screen_conceal.py
 run "$py" test/test_overlay_budget_and_games.py

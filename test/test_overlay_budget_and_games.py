@@ -24,9 +24,11 @@ class LazyFloatChrome(unittest.TestCase):
         make = vr[vr.index("bool MakePanel(") : vr.index("void ft_vr_screen_create(")]
         self.assertIn("Floating spares: only the main panel", make)
         self.assertIn("if (s.floating)", make)
-        # Dock/close textures must not be created inside MakePanel anymore.
-        self.assertNotIn("DockTexture", make)
+        # Float path returns before bar/dock/close; toolbar dock chrome is for real screens only.
+        float_branch = make[make.index("if (s.floating)") : make.index("static const auto corner")]
+        self.assertIn("return true;", float_branch)
         self.assertNotIn("CloseTexture", make)
+        self.assertIn("DockTexture", make)  # screen "dock to toolbar" button
         self.assertIn("EnsureFloatChrome", vr)
         self.assertIn("ReleaseFloatChrome", vr)
 
@@ -47,28 +49,26 @@ class LazyFloatChrome(unittest.TestCase):
 
 
 class SteamVrGameDetection(unittest.TestCase):
-    def test_flatscreen_visible_for_hide_scene_for_lasers(self):
+    def test_app_activity_owns_hide_and_lasers(self):
         vr = read("screens/vr.cpp")
-        self.assertIn("bool FlatscreenGameVisible()", vr)
+        self.assertIn("FlatscreenDesktopgame(", vr)
         self.assertIn("IsOverlayVisible(h)", vr)
         self.assertIn("valve.steam.desktopgame.%d", vr)
-        self.assertIn("bool g_sceneApp = false;", vr)
+        self.assertIn("DecideAppActivity(", vr)
         update = vr[vr.index("void UpdateGame()") : vr.index("bool ModeVisible()")]
         self.assertIn("GetCurrentSceneProcessId()", update)
-        self.assertIn("FlatscreenGameVisible()", update)
-        self.assertIn("a SteamVR game started", update)
+        self.assertIn("app_activity %s", update)
         lasers = vr[vr.index("void UpdateLasers()") : vr.index("void UpdateControls()")]
-        self.assertIn("!g_sceneApp", lasers)
-        self.assertNotIn("!g_gameRunning", lasers,
-                         "OutsideGames lasers must not follow flatscreen desktopgame leftovers")
+        self.assertIn("AppBlocksOutsideGamesLasers", lasers)
+        self.assertNotIn("g_sceneApp", lasers)
 
     def test_docs_mention_flatscreen(self):
         ref = read("docs/reference.md")
-        self.assertRegex(ref, re.compile(r"desktopgame|flatscreen", re.I))
+        self.assertRegex(ref, re.compile(r"desktopgame|flatscreen|AppActivity", re.I))
         floatd = read("docs/README/FT_FLOATD.md")
         self.assertIn("EnsureFloatChrome", floatd)
         screens = read("docs/README/SCREENS_VR.md")
-        self.assertIn("g_sceneApp", screens)
+        self.assertIn("app_activity.h", screens)
 
 
 if __name__ == "__main__":

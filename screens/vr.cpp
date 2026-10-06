@@ -30,13 +30,14 @@
 //     them).
 //   - controllers on the screens: while visible, the screens can keep SteamVR's laser mouse
 //     on (VROverlayFlags_MakeOverlaysInteractiveIfVisible), so controllers use them with
-//     the dashboard closed. That also takes the controllers away from a VR game, so by
-//     default it's off while a game (a scene app) runs: the screens stay up over the game,
-//     the controllers stay in it, and the 3D mouse (its own laser mode) or the dashboard
-//     works the screens. Modes: always, outside_games (default), dashboard (never on its
-//     own; also for flatscreen games, which aren't scene apps).
-//   - during a VR game the screens (and Spatial Instruments) hide unless the dashboard is
-//     open (g_inGames, default), or stay visible over it; the hotkey still shows them.
+//     the dashboard closed. That also takes the controllers away from a VR or flatscreen
+//     game, so by default it's off while AppActivity is not Desktop (outside_games): a
+//     scene app, a visible desktopgame theater panel, or Steam's gamepad/diminished
+//     presentation after "Enter gamepad mode". Modes: always, outside_games (default),
+//     dashboard (only with the dashboard open).
+//   - during a VR/flatscreen game the screens (and Spatial Instruments) hide unless the
+//     dashboard is open (g_inGames, default), or stay visible over it; the hotkey still
+//     shows them. See screens/app_activity.h.
 //   - hand cutouts (handcut.cpp): where ft-hands (hands/) tracks a hand between an eye and a
 //     screen, that eye sees through the screen (to Room View). Only then is the screen
 //     drawn by us into a side-by-side buffer; otherwise its client buffer is shown as is.
@@ -51,6 +52,7 @@
 // OpenVR has no overlay-relative transforms here (openvr v2.15.6), so the bar, button,
 // and handle are placed whenever their screen moves.
 #include "vr.h"
+#include "app_activity.h"
 #include "coords.h"
 #include "handcut.h"
 #include "keyboard.h"
@@ -462,7 +464,7 @@ enum class Lasers { Always, OutsideGames, Dashboard };
 enum class InGames { Visible, Hide };
 
 enum class GazeKind {
-    None, Screen, Bar, Curve, Roll, Resize, Anchor, Slot, Instrument
+    None, Screen, Bar, Curve, Roll, Resize, Anchor, Slot, Instrument, Dock, Toolbar
 };
 
 struct GazeTarget {
@@ -516,20 +518,36 @@ constexpr double kEyeSampleHoldSec = 0.45;  // keep last ray when OpenVR eye sam
 
 
 
+// Shared SteamVR-inspired chrome grammar (used by screen chrome + toolbar grab bar).
+namespace ChromeStyle {
+constexpr float kIdle = 0.60f;
+constexpr float kFloor = 0.4f;
+constexpr int kBarTexW = 256;
+constexpr int kBarTexH = 24;
+constexpr int kControlTexN = 64;
+constexpr double kGapFrac = 0.06;
+constexpr double kBarHalfHFrac = 12.0 / 256.0;
+constexpr double kBarVisualHFrac = 0.55;
+constexpr uint8_t kIdleR = 0x3d, kIdleG = 0x44, kIdleB = 0x50;
+constexpr uint8_t kActiveR = 255, kActiveG = 255, kActiveB = 255;
+constexpr uint8_t kBarIdleA = 200, kBarLitA = 245;
+}  // namespace ChromeStyle
+
+#include "spatial.inc"
+
 // A popup or dialog of a floating window: a small panel over it, cut from the same buffer.
 struct Sub {
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
     int x = 0, y = 0, w = 0, h = 0;  // in the output's buffer, pixels
 };
 
-struct Screen {
+struct Screen : FollowState, AttentionState, MoveDrag {
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid, bar = vr::k_ulOverlayHandleInvalid,
                           handle = vr::k_ulOverlayHandleInvalid, curveButton = vr::k_ulOverlayHandleInvalid,
                           rollButton = vr::k_ulOverlayHandleInvalid,
                           anchorButton = vr::k_ulOverlayHandleInvalid,
                           dockButton = vr::k_ulOverlayHandleInvalid,
-                          closeButton = vr::k_ulOverlayHandleInvalid;  // dock/close: floating windows
-    vr::VROverlayHandle_t slotButton[kSlotCount] = {};
+                          closeButton = vr::k_ulOverlayHandleInvalid;  // float dock/close; also toolbar dock
     int width = 0, height = 0;    // DMA-BUF / OpenVR mouse scale (buffer pixels)
     int surfaceWidth = 0, surfaceHeight = 0;  // Wayland surface-local logical size
     double outputScale = 1.0;     // KWin output scale (Display Settings); for pointer seat map
@@ -542,41 +560,24 @@ struct Screen {
     vr::SharedTextureHandle_t plain = 0;  // that buffer's SteamVR import
     bool cutting = false;         // showing a cutout buffer (side by side) instead
     bool alone = false;           // concealed: kept off the headset (windows stay on the screen)
-    // Attention-aware opacity: final = attentionResolved * visibilityFade.
-    // Legacy single "opacity" maps to active=idle=X with attention off.
-    float activeOpacity = 1.f;
-    float idleOpacity = 1.f;
-    float attentionResolved = 1.f;  // smoothed idle↔active
     float visibilityFade = 1.f;
-    bool attentionEnabled = false;
-    double attentionInMs = 150;     // fade toward active
-    double attentionOutMs = 250;    // fade toward idle
-    double attentionDwellMs = 80;   // gaze must stick before activating
-    double attentionHoldMs = 400;   // stay active briefly after gaze leaves / sample drop
-    double attentionFocusMs = 0;    // time currently focused / unfocused accumulator
-    bool attentionFocused = false;
-    AnchorMode anchor = AnchorMode::World;
-    vr::TrackedDeviceIndex_t pinned = kNone;  // rigid tracked-device pin only
-    Mat pinRel = Identity();                  // reference/device -> screen
-    Mat pose = Identity();                    // room pose (smoothed for soft follow)
-    // Soft-follow dead zone: small head motion keeps a locked reference so you can
-    // glance at a screen corner without the panel chasing. Past the threshold the
-    // lock is pushed (excess only), so intentional turns still follow.
-    bool followDeadzone = false;
-    double followDeadzoneDeg = 15;            // head / yaw-follow
-    double followDeadzoneM = 0.15;            // position-follow (+ head translation)
-    bool followLockValid = false;
-    Mat followLock = Identity();              // last soft-follow reference frame
-    Drag drag = Drag::None;
-    vr::TrackedDeviceIndex_t dragDevice = kNone;
-    Mat dragRel = Identity();                 // device -> screen, while moving
     double grabX = 0, grabY = 0;              // resize: the grab point relative to the corner
     Mat rollFrom = Identity();                // roll: the pose at the press (pinRel when pinned)
-    double rollAngle = 0;                     // roll: the laser's angle around the centre then
+    double rollAngle = 0;                     // the laser's angle around the centre then
     bool hover[4] = {};                       // bar, curve, roll, resize
     bool hoverAnchor = false;
     bool hoverDock = false, hoverClose = false;
-    bool hoverSlot[kSlotCount] = {};
+    // Docked to the spatial toolbar (toolbar → dock anchor → screen).
+    bool docked = false;
+    int dockSlot = 0;
+    FollowState preDock;
+    // Dock/undock fly: same cosine ease + ~450 ms as ft-layout profile apply.
+    bool dockTween = false;
+    bool dockTweenUndock = false;             // flying back to preDock (not riding the bar)
+    Clock::time_point dockTweenStart{};
+    Mat dockTweenFrom = Identity();
+    Mat dockTweenTo = Identity();             // undock end pose (world)
+    FollowState dockTweenRestore;             // FollowState applied when undock tween ends
     bool gazeHover = false;                   // any gaze hit on this screen or its chrome
     bool lasers = true;                       // MakeOverlaysInteractiveIfVisible is set
     float controls = 0;                       // the controls' fade, 0 (hidden) .. 1
@@ -584,7 +585,6 @@ struct Screen {
     long nearUntil = 0;                       // a laser was near the controls until this tick
     vr::TrackedDeviceIndex_t pinTarget = kNone;  // moving: rides on this device when let go
     vr::TrackedDeviceIndex_t onWrist = kNone;    // moving: the laser is in this controller's ring
-    AnchorMode dragRestore = AnchorMode::World;  // soft/yaw/pos follow reapplied after a move
     bool barLit = false;
     double chrome = 0.3;          // the bar's width; the other controls follow it (ChromeSize)
     double grip = 0.04;           // the corner tab's and the round buttons' size
@@ -613,12 +613,9 @@ struct Screen {
         return std::max(ComposedAlpha(), controls > 0.02f ? kChromeFloor : 0.f);
     }
     std::vector<vr::VROverlayHandle_t> Controls() const {
-        std::vector<vr::VROverlayHandle_t> out = {bar, curveButton, rollButton, handle, anchorButton};
-        for (int i = 0; i < kSlotCount; ++i) out.push_back(slotButton[i]);
-        if (floating) {
-            out.push_back(dockButton);
-            out.push_back(closeButton);
-        }
+        // Profiles live in the toolbar's Displays popup, not under every screen.
+        std::vector<vr::VROverlayHandle_t> out = {bar, curveButton, rollButton, handle, anchorButton, dockButton};
+        if (floating) out.push_back(closeButton);
         return out;
     }
     std::vector<vr::VROverlayHandle_t> All() const {
@@ -629,6 +626,15 @@ struct Screen {
 };
 std::map<int, Screen> g_screens;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
+
+bool ScreenDocked(const Screen &s) { return s.docked; }
+
+// desktop_toolbar.inc (included near the end of this namespace).
+bool ToolbarWanted();
+void EndToolbarDragsBy(vr::TrackedDeviceIndex_t dev);
+void ToggleScreenDock(int index);
+bool StartToolbarDrag(vr::TrackedDeviceIndex_t dev);
+void PickToolbarGaze(const Mat &ray, const double origin[3], GazeTarget *best);
 
 // Hand cutouts (optional; inert until ft-hands publishes /run/user/UID/frametop-hands/hands).
 bool g_cutouts = true;          // the cutouts command turns them off
@@ -645,36 +651,17 @@ struct ImageFrame {
     int delayMs = 100;
 };
 
-struct Instrument {
+struct Instrument : FollowState, AttentionState, MoveDrag {
+    Instrument() {
+        idleOpacity = 0.35f;
+        attentionEnabled = true;
+    }
     std::string id;
     InstrumentType type = InstrumentType::Clock;
     bool enabled = false;
     vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
     vr::VROverlayHandle_t bar = vr::k_ulOverlayHandleInvalid;
     double metres = 0.35;
-    float activeOpacity = 1.f;
-    float idleOpacity = 0.35f;
-    float attentionResolved = 1.f;
-    bool attentionEnabled = true;
-    double attentionInMs = 150;
-    double attentionOutMs = 250;
-    double attentionDwellMs = 80;
-    double attentionHoldMs = 400;
-    double attentionFocusMs = 0;
-    bool attentionFocused = false;
-    AnchorMode anchor = AnchorMode::World;
-    vr::TrackedDeviceIndex_t pinned = kNone;
-    Mat pinRel = Identity();
-    Mat pose = Identity();
-    bool followDeadzone = false;
-    double followDeadzoneDeg = 15;
-    double followDeadzoneM = 0.15;
-    bool followLockValid = false;
-    Mat followLock = Identity();
-    Drag drag = Drag::None;
-    vr::TrackedDeviceIndex_t dragDevice = kNone;
-    Mat dragRel = Identity();
-    AnchorMode dragRestore = AnchorMode::World;
     bool hoverBar = false;
     bool barLit = false;
     float controls = 0;
@@ -750,21 +737,25 @@ double g_wristAngle = 60;    // a pinned screen shows while you see its front wi
 double g_gestureAngle = 20;  // gesture: look within this of the controller
 std::string g_gestureHand = "left";
 Lasers g_lasers = Lasers::OutsideGames;  // when controllers' lasers work the screens (see the top)
-bool g_sceneApp = false;                 // SteamVR scene application (VR game) — gates OutsideGames lasers
-bool g_gameRunning = false;              // scene app or visible flatscreen desktopgame — hides displays
-InGames g_inGames = InGames::Hide;       // during a VR game, the always mode acts like the dashboard mode
+frametop::AppActivity g_appActivity = frametop::AppActivity::Desktop;
+frametop::AppActivityState g_appActivityState{};
+bool g_gameRunning = false;  // AppHidesDisplays(g_appActivity): hide displays / Always→Dashboard
+InGames g_inGames = InGames::Hide;  // during a game, the always mode acts like the dashboard mode
 
 // ---------------------------------------------------------------- chrome (bar, button, handle)
 
 // The controls look like SteamVR's own: a light translucent pill for the bar, dark
 // translucent discs with white glyphs for the buttons (the overlay alpha, kChromeIdle,
 // dims them further until a laser is on them).
-std::vector<uint8_t> PillTexture(int w, int h, uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha) {
+std::vector<uint8_t> PillTexture(int w, int h, uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha,
+                                 double visualHFrac = 1.0) {
     std::vector<uint8_t> px(size_t(w) * h * 4, 0);
-    const double r = h / 2.0 - 1;
+    const double visH = std::max(2.0, h * std::clamp(visualHFrac, 0.2, 1.0));
+    const double r = visH / 2.0 - 1;
+    const double cy = h / 2.0;
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
-            const double cx = std::clamp(double(x), r + 1, w - r - 1), cy = h / 2.0;
+            const double cx = std::clamp(double(x), r + 1, w - r - 1);
             const double d = std::hypot(x + 0.5 - cx, y + 0.5 - cy);
             uint8_t *p = &px[(size_t(y) * w + x) * 4];
             p[0] = red, p[1] = green, p[2] = blue;
@@ -820,14 +811,36 @@ std::vector<uint8_t> CloseTexture(int n) {
         DiscRim);
 }
 
-std::vector<uint8_t> DockTexture(int n) {
-    // An arrow down onto a line: "back to the desktop".
+// Dock / Undock glyphs (SteamVR Minimize / Popout outlines as polygons).
+struct SvgPt {
+    double x, y;
+};
+constexpr SvgPt kDockBar[] = {{4, 27}, {32, 27}, {32, 32}, {4, 32}};
+constexpr SvgPt kDockChevron[] = {{29, 10.77}, {25.48, 7.23}, {18, 14.72}, {10.5, 7.23}, {7, 10.77}, {18, 21.77}};
+constexpr SvgPt kUndockArrow[] = {{32, 4},     {32, 16},   {28, 16}, {28, 10.83}, {19, 19.83},
+                                  {16.19, 17}, {25.19, 8}, {20, 8},  {20, 4}};
+constexpr SvgPt kUndockBox[] = {{28, 28}, {8, 28}, {8, 8},   {13, 8},  {13, 4},
+                                {4, 4},   {4, 32}, {32, 32}, {32, 23}, {28, 23}};
+
+template <size_t N>
+bool InSvgPolygon(const SvgPt (&poly)[N], double x, double y) {
+    bool in = false;
+    for (size_t i = 0, j = N - 1; i < N; j = i++)
+        if ((poly[i].y > y) != (poly[j].y > y) &&
+            x < (poly[j].x - poly[i].x) * (y - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)
+            in = !in;
+    return in;
+}
+
+// docked: the Undock (float in world) glyph; otherwise Dock (return to the toolbar / desktop).
+std::vector<uint8_t> DockTexture(int n, bool docked = false) {
+    constexpr double kIconHalf = 0.62;
     return ControlTexture(
         n, InDisc,
-        [](double u, double v) {
-            if (std::fabs(u) < 0.5 && v > -0.52 && v < -0.38) return true;  // the line
-            if (std::fabs(u) < 0.08 && v > -0.1 && v < 0.5) return true;    // the shaft
-            return v >= -0.3 && v <= -0.05 && std::fabs(u) <= (v + 0.3) * 1.2;  // the head, point down
+        [docked](double u, double v) {
+            const double x = (u / kIconHalf + 1) * 18, y = (1 - v / kIconHalf) * 18;
+            if (docked) return InSvgPolygon(kUndockArrow, x, y) || InSvgPolygon(kUndockBox, x, y);
+            return InSvgPolygon(kDockBar, x, y) || InSvgPolygon(kDockChevron, x, y);
         },
         DiscRim);
 }
@@ -937,6 +950,11 @@ vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::v
     if (o == vr::k_ulOverlayHandleInvalid) return o;
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
+    // SteamVR hit-tests by the mouse-scale aspect, not the texture's: at the default 1x1
+    // a 10:1 bar catches the laser across a width x width square of invisible space.
+    // Re-uploads at another size must set it again (see UploadToolbarBacking).
+    const vr::HmdVector2_t scale = {{float(w), float(h)}};
+    vr::VROverlay()->SetOverlayMouseScale(o, &scale);
     // Keep chrome just above its panel (sort 1). Sort 10 sat above SteamVR's own UI
     // regardless of distance — Frametop must not win the foreground that way.
     vr::VROverlay()->SetOverlaySortOrder(o, 1);
@@ -1084,7 +1102,13 @@ Mat OnSurface(const Screen &s, double u, double v, double dz) {
 double BarY(const Screen &s) { return -(s.heightMetres() / 2 + s.chrome * 0.06 + s.chrome * 12 / 256); }
 Mat BarOffset(const Screen &s) { return OnSurface(s, 0, BarY(s), 0.003); }
 
-// Bottom strip: bar / curve / roll / resize / anchor / slots [/ dock / close for floats].
+// Dock / Undock: right of the roll button (same button grammar as curve/roll).
+double DockButtonX(const Screen &s) {
+    const double gap = s.chrome * 0.06;
+    return s.chrome / 2 + gap * 3 + s.grip * 2.5;
+}
+
+// Bottom strip: bar / curve / roll / resize / anchor / dock [/ close for floats].
 std::vector<Mat> ControlOffsets(const Screen &s) {
     const double h = s.heightMetres(), bar = s.chrome, button = s.grip, gap = bar * 0.06;
     std::vector<Mat> out;
@@ -1093,16 +1117,10 @@ std::vector<Mat> ControlOffsets(const Screen &s) {
     out.push_back(OnSurface(s, bar / 2 + gap * 2 + button * 1.5, BarY(s), 0.003));
     out.push_back(OnSurface(s, s.metres / 2 + s.grip / 2, -(h / 2 + s.grip / 2), 0.003));
     out.push_back(OnSurface(s, -(bar / 2 + gap + button / 2), BarY(s), 0.003));
-    for (int i = 0; i < kSlotCount; ++i) {
-        // Left → right: slots 1..6 (i=0 furthest left).
-        const double x = -(bar / 2 + gap * 2 + button * 1.5 + (kSlotCount - 1 - i) * (button + gap));
-        out.push_back(OnSurface(s, x, BarY(s), 0.003));
-    }
+    out.push_back(OnSurface(s, DockButtonX(s), BarY(s), 0.003));
     if (s.floating) {
-        // Dock / close further left of the slot strip (same side as upstream float chrome).
-        const double base = -(bar / 2 + gap * 2 + button * 1.5 + kSlotCount * (button + gap));
-        out.push_back(OnSurface(s, base - gap - button / 2, BarY(s), 0.003));
-        out.push_back(OnSurface(s, base - gap * 2 - button * 1.5, BarY(s), 0.003));
+        // Close further right of the dock button.
+        out.push_back(OnSurface(s, DockButtonX(s) + gap + button, BarY(s), 0.003));
     }
     return out;
 }
@@ -1140,11 +1158,9 @@ void PlaceChrome(Screen &s) {
     setW(s.rollButton, float(button));
     setW(s.handle, float(s.grip));
     setW(s.anchorButton, float(button));
-    for (int i = 0; i < kSlotCount; ++i) setW(s.slotButton[i], float(button));
-    if (s.floating) {
-        setW(s.dockButton, float(button));
-        setW(s.closeButton, float(button));
-    }
+    // Always size the dock (non-float used to skip this → default/huge overlay).
+    setW(s.dockButton, float(button));
+    if (s.floating) setW(s.closeButton, float(button));
     if (s.bar != vr::k_ulOverlayHandleInvalid)
         vr::VROverlay()->SetOverlayCurvature(s.bar, s.curve > 0 ? float(std::min(1.0, bar / (2 * M_PI * s.curve))) : 0.f);
     PlaceSubs(s);
@@ -1166,12 +1182,19 @@ void PlaceChrome(Screen &s) {
     }
 }
 
-void SetAbsolute(Screen &s, const Mat &pose) {
-    s.anchor = AnchorMode::World;
-    s.pinned = kNone;
-    s.pose = pose;
-    vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &pose);
+void ApplyScreenTransform(Screen &s) {
+    Mat p;
+    if (!ScreenPose(s, &p)) return;
+    if (s.pinned != kNone)
+        vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(s.overlay, s.pinned, &s.pinRel);
+    else
+        vr::VROverlay()->SetOverlayTransformAbsolute(s.overlay, vr::TrackingUniverseStanding, &p);
     PlaceChrome(s);
+}
+
+void SetAbsolute(Screen &s, const Mat &pose) {
+    SetWorldPose(s, pose);
+    ApplyScreenTransform(s);
 }
 
 void SetFollow(Screen &s, AnchorMode mode, const Mat &rel) {
@@ -1226,15 +1249,19 @@ void Pin(Screen &s, vr::TrackedDeviceIndex_t dev, const Mat &rel) {
 void EndDrag(Screen &s);  // defined with drag handling below
 
 void RefreshSlotTextures(Screen &s) {
-    for (int i = 0; i < kSlotCount; ++i) {
-        if (s.slotButton[i] == vr::k_ulOverlayHandleInvalid) continue;
-        const bool lit = (i + 1) == g_currentSlot;
-        auto px = DigitTexture(64, i + 1, lit);
-        vr::VROverlay()->SetOverlayRaw(s.slotButton[i], px.data(), 64, 64, 4);
+    // Name kept: toolbar Displays popup still tracks g_slotFilled; screen chrome no longer
+    // has digit slot overlays. Refresh dock/anchor glyphs only.
+    if (s.dockButton != vr::k_ulOverlayHandleInvalid) {
+        auto px = DockTexture(64, s.docked);
+        vr::VROverlay()->SetOverlayRaw(s.dockButton, px.data(), 64, 64, 4);
+        const vr::HmdVector2_t scale = {{64.f, 64.f}};
+        vr::VROverlay()->SetOverlayMouseScale(s.dockButton, &scale);
     }
     if (s.anchorButton != vr::k_ulOverlayHandleInvalid) {
         auto px = AnchorTexture(64, s.anchor);
         vr::VROverlay()->SetOverlayRaw(s.anchorButton, px.data(), 64, 64, 4);
+        const vr::HmdVector2_t scale = {{64.f, 64.f}};
+        vr::VROverlay()->SetOverlayMouseScale(s.anchorButton, &scale);
     }
 }
 
@@ -1354,40 +1381,48 @@ Mode EffectiveMode() {
     return g_gameRunning && g_inGames == InGames::Hide && g_mode == Mode::Always ? Mode::Dashboard : g_mode;
 }
 
-// Flatscreen / gamescope sessions SteamVR shows as overlays (not scene apps). Keys look like
-// valve.steam.desktopgame.0. Require visibility: Steam often leaves the key registered after
-// exit, and treating a hidden key as "game running" turned off OutsideGames lasers on Frametop.
-bool FlatscreenGameVisible() {
-    auto visible = [](const char *key) {
+// Flatscreen / gamescope theater panels (not scene apps). Keys: valve.steam.desktopgame[.N].
+// Steam often leaves the key registered after exit — registration alone must not own input.
+void FlatscreenDesktopgame(bool *registered, bool *visible) {
+    *registered = false;
+    *visible = false;
+    auto check = [&](const char *key) {
         vr::VROverlayHandle_t h = vr::k_ulOverlayHandleInvalid;
-        return vr::VROverlay()->FindOverlay(key, &h) == vr::VROverlayError_None &&
-               vr::VROverlay()->IsOverlayVisible(h);
+        if (vr::VROverlay()->FindOverlay(key, &h) != vr::VROverlayError_None) return;
+        *registered = true;
+        if (vr::VROverlay()->IsOverlayVisible(h)) *visible = true;
     };
     for (int i = 0; i < 16; ++i) {
         char key[64];
         std::snprintf(key, sizeof key, "valve.steam.desktopgame.%d", i);
-        if (visible(key)) return true;
+        check(key);
+        if (*visible) return;
     }
-    return visible("valve.steam.desktopgame");
+    check("valve.steam.desktopgame");
 }
 
-// A SteamVR game starting or stopping (checked twice a second) resets the hide/show switch,
-// whose meaning depends on the mode in effect. Display hide covers scene apps and visible
-// flatscreen panels; controller lasers (OutsideGames) still follow scene apps only — flatscreen
-// games are not scene apps (see controllers dashboard mode in the file header).
+// Scene apps, visible desktopgame theater, and Steam's gamepad presentation (dashboard
+// hidden while a latched desktopgame key remains) share one AppActivity. Checked ~2 Hz.
 void UpdateGame() {
     if (g_tick % 45) return;
     const bool scene = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
-    const bool flat = FlatscreenGameVisible();
-    const bool running = scene || flat;
-    if (scene == g_sceneApp && running == g_gameRunning) return;
-    const bool was = g_gameRunning;
-    g_sceneApp = scene;
+    bool flatReg = false, flatVis = false;
+    FlatscreenDesktopgame(&flatReg, &flatVis);
+    const bool dash = vr::VROverlay()->IsDashboardVisible();
+    const auto prev = g_appActivity;
+    const bool prevLatch = g_appActivityState.flatLatch;
+    g_appActivity = frametop::DecideAppActivity(scene, flatVis, flatReg, dash, &g_appActivityState);
+    const bool running = frametop::AppHidesDisplays(g_appActivity);
+    if (g_appActivity == prev && running == g_gameRunning &&
+        prevLatch == g_appActivityState.flatLatch)
+        return;
+    if (running != g_gameRunning) g_manual = false;
     g_gameRunning = running;
-    if (running != was) {
-        g_manual = false;
-        std::printf("%s\n", running ? "a SteamVR game started" : "the SteamVR game ended");
-    }
+    std::printf("app_activity %s scene=%d flat_vis=%d flat_reg=%d dash=%d latch=%d hide=%d lasers_block=%d\n",
+                frametop::AppActivityName(g_appActivity), scene ? 1 : 0, flatVis ? 1 : 0,
+                flatReg ? 1 : 0, dash ? 1 : 0, g_appActivityState.flatLatch ? 1 : 0,
+                g_gameRunning ? 1 : 0,
+                frametop::AppBlocksOutsideGamesLasers(g_appActivity, dash) ? 1 : 0);
 }
 
 bool ModeVisible() {
@@ -1436,16 +1471,8 @@ void ApplyAlpha(const Screen &s) {
         else if (k == 3) active = s.hover[3] || s.drag == Drag::Resize ||
                                   (g_gazeTarget.kind == GazeKind::Resize && s.gazeHover);
         else if (k == 4) active = s.hoverAnchor || (g_gazeTarget.kind == GazeKind::Anchor && s.gazeHover);
-        else if (k >= 5 && k < 5 + kSlotCount) {
-            active = s.hoverSlot[k - 5] ||
-                     (g_gazeTarget.kind == GazeKind::Slot && g_gazeTarget.slot == int(k - 5) && s.gazeHover);
-            fill = g_slotFilled[k - 5] ? 1.f : 0.35f;
-            if (g_currentSlot == int(k - 5) + 1) fill = std::max(fill, 1.f);
-        } else if (s.floating && k == size_t(5 + kSlotCount)) {
-            active = s.hoverDock;
-        } else if (s.floating && k == size_t(6 + kSlotCount)) {
-            active = s.hoverClose;
-        }
+        else if (k == 5) active = s.hoverDock || s.docked || (g_gazeTarget.kind == GazeKind::Dock && s.gazeHover);
+        else if (s.floating && k == 6) active = s.hoverClose;
         if (controls[k] == vr::k_ulOverlayHandleInvalid) continue;
         vr::VROverlay()->SetOverlayAlpha(controls[k], chromeA * s.controls * (active ? 1.f : kChromeIdle) * fill);
     }
@@ -1625,16 +1652,10 @@ GazeTarget PickGazeTarget(const double origin[3], const double dir[3]) {
             consider(GazeKind::Anchor, -1, dist);
             continue;
         }
-        bool slotHit = false;
-        for (int i = 0; i < kSlotCount; ++i) {
-            const double sx = -(bar / 2 + gap * 2 + button * 1.5 + (kSlotCount - 1 - i) * (button + gap));
-            if (RayHitsLocalBox(hx, hy, sx, by, button / 2, button / 2)) {
-                consider(GazeKind::Slot, i, dist);
-                slotHit = true;
-                break;
-            }
+        if (RayHitsLocalBox(hx, hy, DockButtonX(s), by, button / 2, button / 2)) {
+            consider(GazeKind::Dock, -1, dist);
+            continue;
         }
-        if (slotHit) continue;
         // Screen surface.
         if (std::fabs(hx) <= halfW && std::fabs(hy) <= halfH) consider(GazeKind::Screen, -1, dist);
     }
@@ -1669,6 +1690,7 @@ GazeTarget PickGazeTarget(const double origin[3], const double dir[3]) {
             best.distance = dist;
         }
     }
+    PickToolbarGaze(ray, origin, &best);
     return best;
 }
 
@@ -1719,6 +1741,8 @@ void UpdateGaze(double dt) {
             case GazeKind::Anchor: kind = "anchor"; break;
             case GazeKind::Slot: kind = "slot"; break;
             case GazeKind::Instrument: kind = "instrument"; break;
+            case GazeKind::Dock: kind = "dock"; break;
+            case GazeKind::Toolbar: kind = "toolbar"; break;
             default: break;
         }
         std::printf("gaze: eye=%s valid=%s held=%s target=%s screen=%d u=%.3f v=%.3f dist=%.3f\n",
@@ -1750,8 +1774,8 @@ void UpdateAttention(double dt) {
                 g_gazeTarget && g_gazeTarget.screen == index &&
                 (g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
                  g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
-                 g_gazeTarget.kind == GazeKind::Resize ||
-                 g_gazeTarget.kind == GazeKind::Anchor || g_gazeTarget.kind == GazeKind::Slot);
+                 g_gazeTarget.kind == GazeKind::Resize || g_gazeTarget.kind == GazeKind::Anchor ||
+                 g_gazeTarget.kind == GazeKind::Dock);
             // Fresh sample, sticky held ray, or explicit head fallback all count as valid.
             const bool valid = g_eyeValid || g_eyeHeld || (g_gazeFallbackHead && g_gazeTarget);
             if (!valid) {
@@ -1826,7 +1850,7 @@ bool GazeOnScreen(int index) {
     return g_gazeTarget.kind == GazeKind::Screen || g_gazeTarget.kind == GazeKind::Bar ||
            g_gazeTarget.kind == GazeKind::Curve || g_gazeTarget.kind == GazeKind::Roll ||
            g_gazeTarget.kind == GazeKind::Resize || g_gazeTarget.kind == GazeKind::Anchor ||
-           g_gazeTarget.kind == GazeKind::Slot;
+           g_gazeTarget.kind == GazeKind::Dock;
 }
 
 bool GazeOnInstrument(int ii) {
@@ -1839,9 +1863,7 @@ bool ScreenKeepsThroughDashboard(int index, const Screen &s) {
     if (s.nearUntil > g_tick) return true;
     for (bool h : s.hover)
         if (h) return true;
-    if (s.hoverAnchor) return true;
-    for (bool h : s.hoverSlot)
-        if (h) return true;
+    if (s.hoverAnchor || s.hoverDock || s.hoverClose) return true;
     return false;
 }
 
@@ -1876,6 +1898,8 @@ void UpdateVisibility() {
         // A floating window's panel: while a window floats on it, its output is on, and the
         // window isn't minimized (and once it has a crop). alone/conceal stays for real screens.
         if (s.floating) visible = visible && s.floatOn && s.outputOn && !s.minimized && s.cropW > 0;
+        // Docked screens are one group with the toolbar: they hide and return with it.
+        if (s.docked && !ToolbarWanted()) visible = false;
         float visFade = 1;
         Mat p;
         // Wrist fade is only for controller-pinned screens.
@@ -1888,9 +1912,9 @@ void UpdateVisibility() {
         // Keep chrome interactable when the surface is fully transparent, but never for
         // concealed screens, idle float slots, or while ModeVisible says hide (e.g. a game).
         if (!visible && shared && s.shown && !s.alone && s.controls > 0.02f &&
-            (!s.floating || s.floatOn))
+            (!s.floating || s.floatOn) && (!s.docked || ToolbarWanted()))
             visible = true, visFade = 0.f;
-        if (yield && visible && !ScreenKeepsThroughDashboard(i, s)) {
+        if (yield && visible && !s.docked && !ScreenKeepsThroughDashboard(i, s)) {
             visible = false;
             visFade = 0.f;
         }
@@ -1899,10 +1923,12 @@ void UpdateVisibility() {
 }
 
 
-// Controllers' lasers on the screens (see the top): the flag follows the mode and whether a
-// VR scene app runs (flatscreen desktopgame does not count — use controllers dashboard for that).
+// Controllers' lasers: OutsideGames yields for VR scenes, and for flat presentation while
+// the dashboard is closed (gamepad mode). Theater + open dashboard still allows lasers.
 void UpdateLasers() {
-    const bool want = g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_sceneApp);
+    const bool dash = vr::VROverlay()->IsDashboardVisible();
+    const bool blocked = frametop::AppBlocksOutsideGamesLasers(g_appActivity, dash);
+    const bool want = g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !blocked);
     for (auto &[i, s] : g_screens) {
         if (s.lasers == want) continue;
         s.lasers = want;
@@ -1961,8 +1987,8 @@ void UpdateControls() {
                 }
             }
         }
-        bool anyHover = s.hover[0] || s.hover[1] || s.hover[2] || s.hover[3] || s.hoverAnchor;
-        for (int i = 0; i < kSlotCount; ++i) anyHover = anyHover || s.hoverSlot[i];
+        const bool anyHover =
+            s.hover[0] || s.hover[1] || s.hover[2] || s.hover[3] || s.hoverAnchor || s.hoverDock || s.hoverClose;
         // Gaze drives attention fade only — chrome reveal stays laser / 3D-mouse.
         const bool inUse = s.drag != Drag::None || anyHover;
         const bool want = s.visible && (inUse || g_tick < s.nearUntil);
@@ -2069,6 +2095,11 @@ vr::TrackedDeviceIndex_t WristOnLaser(const Screen &s, const Mat &d, const Mat &
 }
 
 void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
+    if (s.docked && mode == Drag::Move) {
+        StartToolbarDrag(dev);
+        return;
+    }
+    if (s.docked && mode == Drag::Roll) return;
     Mat d, p;
     if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) return;
     s.pinTarget = kNone;
@@ -2181,6 +2212,7 @@ void EndDragsBy(vr::TrackedDeviceIndex_t dev) {
     for (auto &[index, s] : g_screens)
         if (s.drag != Drag::None && s.dragDevice == dev) FinishDrag(s, index);
     EndInstrumentDragsBy(dev);
+    EndToolbarDragsBy(dev);
 }
 
 // While moving: the laser entering a controller's ring flips whether the screen pins to
@@ -2335,6 +2367,7 @@ void EnsureFloatChrome(Screen &s) {
     s.handle = chrome("resize", "resize", corner, 64, 64);
     s.dockButton = chrome("dock", "back to the desktop", dock, 64, 64);
     s.closeButton = chrome("close", "close", close, 64, 64);
+    PlaceChrome(s);  // dock/close must get grip width immediately
     ApplyAlpha(s);
 }
 
@@ -4583,6 +4616,8 @@ void UpdateInstrumentVisibility() {
     }
 }
 
+#include "desktop_toolbar.inc"
+
 // Steam in front: the dashboard (the Steam menu) is open, or Steam's own keyboard is up
 // (valve.steam.gamepadui.keyboard, for text fields in Steam and the dashboard). Our
 // keyboard steps aside then, and comes back where it was when Steam is out of the way; one
@@ -4716,6 +4751,15 @@ bool MakePanel(Screen &s, const char *prefix, const char *label) {
         std::fprintf(stderr, "openvr: can't create overlay %s\n", key);
         return false;
     }
+    // Profile digits used to live under every screen; Displays owns them now. Purge any
+    // leftover keys from a hard-killed older binary so they cannot reappear mid-session.
+    for (int i = 1; i <= kSlotCount; ++i) {
+        char slotKey[80];
+        std::snprintf(slotKey, sizeof slotKey, "%s.slot%d", prefix, i);
+        vr::VROverlayHandle_t leftover = vr::k_ulOverlayHandleInvalid;
+        if (vr::VROverlay()->FindOverlay(slotKey, &leftover) == vr::VROverlayError_None)
+            vr::VROverlay()->DestroyOverlay(leftover);
+    }
     vr::VROverlay()->SetOverlayWidthInMeters(s.overlay, float(s.metres));
     vr::VROverlay()->SetOverlayInputMethod(s.overlay, vr::VROverlayInputMethod_Mouse);
     vr::VROverlay()->SetOverlaySortOrder(s.overlay, 0);
@@ -4743,14 +4787,9 @@ bool MakePanel(Screen &s, const char *prefix, const char *label) {
     vr::VROverlay()->SetOverlayFlag(s.rollButton, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     s.handle = chrome("resize", "resize", corner, 64, 64);
     s.anchorButton = chrome("anchor", "anchor", AnchorTexture(64, AnchorMode::World), 64, 64);
-    for (int i = 0; i < kSlotCount; ++i) {
-        char part[16];
-        std::snprintf(part, sizeof part, "slot%d", i + 1);
-        char what[32];
-        std::snprintf(what, sizeof what, "profile %d", i + 1);
-        s.slotButton[i] = chrome(part, what, DigitTexture(64, i + 1, false), 64, 64);
-    }
+    s.dockButton = chrome("dock", "dock to toolbar", DockTexture(64, false), 64, 64);
     s.attentionResolved = s.activeOpacity;
+    PlaceChrome(s);  // sizes dock to grip (OpenVR default width is huge without this)
     ApplyAlpha(s);
     return true;
 }
@@ -5061,18 +5100,14 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                     ReleaseAwayBy(ev.trackedDeviceIndex, ev.data.mouse.button, handle, data);
                 }
             }
-            for (int si = 0; si < kSlotCount; ++si) {
-                while (vr::VROverlay()->PollNextOverlayEvent(s.slotButton[si], &ev, sizeof ev)) {
-                    hoverExtra(&s.hoverSlot[si]);
-                    if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left) {
-                        if (!g_slotFilled[si]) continue;
-                        char slot[24];
-                        std::snprintf(slot, sizeof slot, "profile.slot.%d", si + 1);
-                        SpawnLayoutAsync({"action", slot});
-                    } else if (ev.eventType == vr::VREvent_MouseButtonUp) {
-                        EndDragsBy(ev.trackedDeviceIndex);
-                        ReleaseAwayBy(ev.trackedDeviceIndex, ev.data.mouse.button, handle, data);
-                    }
+            while (s.dockButton != vr::k_ulOverlayHandleInvalid &&
+                   vr::VROverlay()->PollNextOverlayEvent(s.dockButton, &ev, sizeof ev)) {
+                hoverExtra(&s.hoverDock);
+                if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left)
+                    ToggleScreenDock(index);
+                else if (ev.eventType == vr::VREvent_MouseButtonUp) {
+                    EndDragsBy(ev.trackedDeviceIndex);
+                    ReleaseAwayBy(ev.trackedDeviceIndex, ev.data.mouse.button, handle, data);
                 }
             }
         } else {
@@ -5151,6 +5186,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateGuides();
     UpdateInstrumentAttention(step);
     TickInstruments(step);
+    TickToolbar(step);
     UpdateCutouts();
     UpdateCatcher();
 }
@@ -5174,7 +5210,10 @@ bool ft_vr_keyboard_show(int index) {
     const double fx = -head.m[0][2], fz = -head.m[2][2], n = std::sqrt(fx * fx + fz * fz) + 1e-9;
     const double at[3] = {head.m[0][3] + fx / n * kKeyboardAhead, head.m[1][3] - kKeyboardBelow,
                           head.m[2][3] + fz / n * kKeyboardAhead};
-    keyboard::SetLasers(g_lasers == Lasers::Always || (g_lasers == Lasers::OutsideGames && !g_sceneApp));
+    keyboard::SetLasers(
+        g_lasers == Lasers::Always ||
+        (g_lasers == Lasers::OutsideGames &&
+         !frametop::AppBlocksOutsideGamesLasers(g_appActivity, vr::VROverlay()->IsDashboardVisible())));
     g_steamInFront = SteamInFront();
     if (g_steamInFront) {
         g_asidePose = FacingPose(at, head);
@@ -5225,7 +5264,7 @@ void ft_vr_keyboard_hide(void) {
 //   ingames hide|visible      during a VR game, "always" acts like "only with the dashboard"
 //                             (hide), or stays as it is (visible)
 //   state         -> "ok <mode> <manual 0|1> <wrist deg> <gesture hand> <gesture deg>
-//                     <controllers> <game running 0|1> <ingames>"
+//                     <controllers> <game running 0|1> <ingames> <app_activity>"
 // (size <screen> <w> <h> and key <code> <value> are handled in compositor.c.) Screens are
 // numbered from 1 here, like everywhere the user sees them. "screens" and "all" leave out
 // floating windows.
@@ -5379,6 +5418,8 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
                 case GazeKind::Anchor: kind = "anchor"; break;
                 case GazeKind::Slot: kind = "slot"; break;
                 case GazeKind::Instrument: kind = "instrument"; break;
+                case GazeKind::Dock: kind = "dock"; break;
+                case GazeKind::Toolbar: kind = "toolbar"; break;
                 default: break;
             }
             int px = 0, py = 0, bpx = 0, bpy = 0;
@@ -5593,9 +5634,10 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         std::snprintf(reply, size, "ok %s predict %s lead %.0f ms cutter %d", g_cutouts ? "on" : "off",
                       g_hands.predicting() ? "on" : "off", g_hands.leadMs(), g_cutterState);
     } else if (std::strncmp(cmd, "state", 5) == 0) {
-        std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
+        std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
                       g_gestureHand.c_str(), g_gestureAngle, LasersName(), g_gameRunning ? 1 : 0,
-                      g_inGames == InGames::Hide ? "hide" : "visible");
+                      g_inGames == InGames::Hide ? "hide" : "visible",
+                      frametop::AppActivityName(g_appActivity));
     } else if (std::strncmp(cmd, "instrument ", 11) == 0 || !std::strcmp(cmd, "instrument")) {
         const char *rest = cmd + (std::strncmp(cmd, "instrument ", 11) == 0 ? 11 : 10);
         char id[64] = {};
@@ -5781,6 +5823,10 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             std::snprintf(reply, size, "error instrument commands: list|get|enable|disable|place|width|pin|unpin|"
                                        "opacity|color|attention|recenter|file|launcher|clear");
         }
+    } else if (std::strncmp(cmd, "toolbar ", 8) == 0 || !std::strcmp(cmd, "toolbar")) {
+        ToolbarCommand(cmd + (std::strncmp(cmd, "toolbar ", 8) == 0 ? 8 : 7), reply, size);
+    } else if (std::strncmp(cmd, "dock ", 5) == 0) {
+        DockCommand(cmd + 5, reply, size);
     } else {
         std::snprintf(reply, size, "error unknown command");
     }

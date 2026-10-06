@@ -296,7 +296,8 @@ class SourceWiring(unittest.TestCase):
                        "keyboard::Destroy();", "keyboard::Poll(", "if (g_tick % 9 == 0) UpdateSteamInFront();",
                        "&& !ModeVisible()) {", "bool ft_vr_keyboard_show(int index)",
                        "void ft_vr_keyboard_hide(void)", "kKeyboardAhead = 0.7, kKeyboardBelow = 0.35",
-                       "keyboard::SetLasers(g_lasers == Lasers::Always"):
+                       "keyboard::SetLasers(",
+                       "AppBlocksOutsideGamesLasers"):
             self.assertIn(needle, src, needle)
         shown = src[src.index("bool ft_vr_keyboard_show(int index)"):]
         self.assertIn("!g_vr", shown[:200], "show is guarded with g_vr")

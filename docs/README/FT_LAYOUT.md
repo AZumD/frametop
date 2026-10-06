@@ -15,12 +15,18 @@ Arrange Frametop virtual screens, push visibility / follow / Spatial Instruments
 3. **Scales after apply** — KWin scales + `scale N` to ft-screens still run when arrange raises, so pointer seat mapping stays correct at fractional scales (e.g. 1.25).
 4. **Instruments** — pushed from layout even without head pose; overlay keys left after a hard kill are reclaimed in `screens/vr.cpp` (`CreateOrRecycleOverlay`).
 
+## Desktop toolbar
+
+`ft-layout apply` also restores the spatial toolbar (`ft_toolbar` / `toolbar …` on `@ft_screens`) and any docked screens. The toolbar is **enabled by default** (0.1.0). CLI: `ft-layout toolbar state|enable|disable|…` and `ft-layout dock N on|off|…` — see [DESKTOP_TOOLBAR.md](DESKTOP_TOOLBAR.md).
+
 ## Usage
 
 ```
 layout/ft-layout apply [--wait SEC] [--duration MS]
 layout/ft-layout scale
 layout/ft-layout instrument list|enable|…
+layout/ft-layout toolbar state|enable|disable|…
+layout/ft-layout dock N on|off|toggle|state
 ```
 
 ## Hiding one screen at a time
@@ -48,4 +54,6 @@ python3 test/test_apply_without_head.py
 python3 test/test_pointer_coords.py
 python3 test/test_instrument_visibility.py
 python3 test/test_spatial_instruments.py
+python3 test/test_desktop_toolbar.py
+python3 test/test_toolbar_dock.py
 ```

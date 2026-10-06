@@ -108,6 +108,11 @@ try:
 except ImportError:
     ft_desktop = None  # unit tests can inject; Frame always has layout/ft_desktop.py beside this file
 
+try:
+    import ft_toolbar
+except ImportError:
+    ft_toolbar = None
+
 LAYOUT_PATH = os.path.expanduser("~/.config/frametop-layout.json")
 PROFILES_PATH = os.path.expanduser("~/.config/frametop-layout-profiles.json")
 CONF_PATH = os.path.expanduser("~/.config/frametop.conf")
@@ -124,11 +129,13 @@ VISIBILITY = {"mode": "always", "wrist_angle": 60, "gesture_hand": "left", "gest
               "controllers": "outside_games", "in_games": "hide"}
 DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
-            "screens": [], "instruments": [], "panel_size": list(DEFAULT_PANEL)}
+            "screens": [], "instruments": [], "panel_size": list(DEFAULT_PANEL),
+            "toolbar": {"enabled": True}}
 # Spatial fields stored in a named profile (not resolution/scale/primary/visibility mode).
 # Per-screen "hidden" is spatial workspace state and travels with profiles.
 PROFILE_SCREEN_KEYS = ("pos", "face", "roll", "metres", "curve", "pin", "opacity",
-                       "active_opacity", "idle_opacity", "attention", "follow_deadzone", "hidden")
+                       "active_opacity", "idle_opacity", "attention", "follow_deadzone", "hidden",
+                       "dock")
 # Follow modes. Legacy pin anchor/hand "head" means soft head (HeadSoft).
 ANCHOR_MODES = ("world", "left", "right", "head", "head-rigid", "yaw-follow", "position-follow")
 INSTRUMENT_ANCHORS = ("world", "head", "head-rigid", "yaw-follow", "position-follow")
@@ -214,6 +221,17 @@ def load_layout():
         pass
     if backend() == "screens" and not layout.get("screens"):
         layout["screens"] = [{"size": [1920, 1080], "metres": 1920 / PIXELS_PER_METRE}]
+    if ft_toolbar is not None:
+        tb = ft_toolbar.sanitize_toolbar(layout.get("toolbar"))
+        if tb is None:
+            layout["toolbar"] = ft_toolbar.default_toolbar()
+        else:
+            # Rock-solid: once toolbar code is present, keep it enabled unless explicitly off.
+            if "enabled" not in (layout.get("toolbar") or {}):
+                tb["enabled"] = True
+            layout["toolbar"] = tb
+    elif "toolbar" not in layout:
+        layout["toolbar"] = {"enabled": True}
     return layout
 
 
@@ -335,7 +353,8 @@ def spatial_screen(entry):
     """Profile payload for one screen (spatial only)."""
     out = {}
     for k in PROFILE_SCREEN_KEYS:
-        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity", "follow_deadzone", "hidden"):
+        if k in ("pin", "attention", "opacity", "active_opacity", "idle_opacity", "follow_deadzone", "hidden",
+                 "dock"):
             continue
         if k in entry:
             out[k] = entry[k]
@@ -345,6 +364,9 @@ def spatial_screen(entry):
     out["idle_opacity"] = round(idle, 3)
     if entry.get("hidden"):
         out["hidden"] = True
+    dock = screen_dock(entry)
+    if dock:
+        out["dock"] = dock
     pin = entry.get("pin")
     anchor = pin_anchor(pin)
     if anchor and anchor != "world" and isinstance(pin, dict) and len(pin.get("rel", [])) == 12:
@@ -1041,6 +1063,18 @@ def upsert_instrument(layout, inst):
     return layout
 
 
+def screen_dock(entry):
+    """{"docked": True, "slot": k} when the screen is docked above the toolbar, else None."""
+    d = (entry or {}).get("dock")
+    if not isinstance(d, dict) or not d.get("docked"):
+        return None
+    try:
+        slot = max(0, int(d.get("slot", 0)))
+    except (TypeError, ValueError):
+        slot = 0
+    return {"docked": True, "slot": slot}
+
+
 def screen_entry(layout, i):
     screens = layout.get("screens", [])
     return screens[i] if i < len(screens) else {}
@@ -1635,6 +1669,7 @@ def apply_screens(wait=0, duration_ms=0):
     except RuntimeError:
         pass  # an older ft-screens
     push_slot_state(sock)
+    apply_toolbar(sock, layout)
     apply_instruments(sock, layout)
     log(f"arranged {count} screen(s)" + (f" over {duration_ms} ms" if duration_ms else ""))
     return results
@@ -1707,6 +1742,261 @@ def push_launcher_config(sock, inst):
     glyph = inst.get("glyph") or "star"
     sock.ask(f"instrument launcher {iid} appear {appear} {glyph}")
 
+
+def apply_toolbar(sock, layout=None):
+    """Push DesktopToolbar config to ft-screens (Stage 2)."""
+    if ft_toolbar is None:
+        return
+    layout = layout or load_layout()
+    if backend() != "screens":
+        return
+    try:
+        sock = sock or screens_socket()
+    except RuntimeError:
+        return
+    tb = ft_toolbar.sanitize_toolbar(layout.get("toolbar")) or {"enabled": False}
+    head = read_head_pose(sock, retries=2, delay=0.5)
+    eye, heading = head if head else ((0.0, 1.5, 0.0), 0.0)
+    try:
+        for c in ft_toolbar.toolbar_socket_commands(tb, eye, heading, turn_yaw):
+            reply = sock.ask(c)
+            if reply.startswith("error"):
+                log(f"warning: {c}: {reply}", file=sys.stderr)
+    except RuntimeError as e:
+        log(f"warning: toolbar: {e}", file=sys.stderr)
+        return
+    apply_docks(sock, layout, tb.get("enabled", False))
+
+def apply_docks(sock, layout, toolbar_on=True):
+    """Dock the layout's docked screens (after they were placed: the placed pose becomes
+    their pre-dock state) and undock the rest."""
+    for i in range(screen_count(layout)):
+        dock = screen_dock(screen_entry(layout, i))
+        try:
+            if dock and toolbar_on:
+                sock.ask(f"dock {i + 1} on {dock['slot']}")
+            else:
+                sock.ask(f"dock {i + 1} off")
+        except RuntimeError as e:
+            log(f"warning: dock {i + 1}: {e}", file=sys.stderr)
+
+def parse_dock_state(reply):
+    """`dock state` -> {screen_index_1based: slot}."""
+    f = reply.split()
+    if not f or f[0] != "ok":
+        raise RuntimeError(reply)
+    out = {}
+    for tok in f[2:]:
+        n, _, slot = tok.partition(":")
+        try:
+            out[int(n)] = int(slot or 0)
+        except ValueError:
+            continue
+    return out
+
+def dock_layout(layout, docked):
+    """Write live dock state ({index: slot}) into the layout's screen entries."""
+    layout = json.loads(json.dumps(layout))
+    screens = layout.setdefault("screens", [])
+    count = max(screen_count(layout), max(docked or {0: 0}))
+    while len(screens) < count:
+        screens.append({})
+    for i in range(count):
+        entry = dict(screens[i])
+        if (i + 1) in docked:
+            entry["dock"] = {"docked": True, "slot": int(docked[i + 1])}
+        else:
+            entry.pop("dock", None)
+        screens[i] = entry
+    layout["screens"] = screens
+    return layout
+
+def dock_sync():
+    """Save which screens are docked (ft-screens spawns this after Dock / Undock)."""
+    layout = load_layout()
+    docked = parse_dock_state(screens_socket().ask("dock state"))
+    save_layout(dock_layout(layout, docked))
+    log("docked: " + (" ".join(f"{n}:{s}" for n, s in sorted(docked.items())) or "none"))
+
+def capture_toolbar(sock, eye, heading, layout):
+    """Live toolbar pose / follow / look -> layout["toolbar"] (sanitized)."""
+    tb = dict(layout.get("toolbar") or {})
+    try:
+        g = parse_get(sock.ask("toolbar get"))
+    except (RuntimeError, ValueError, IndexError):
+        return tb
+    tb.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
+    tb.pop("roll", None)
+    tb["anchor"] = g.get("anchor") or "world"
+    tb.pop("pin", None)
+    if tb["anchor"] != "world" and "rel" in g:
+        tb["pin"] = make_pin(tb["anchor"], g["rel"])
+    tb["active_opacity"] = round(float(g.get("active_opacity", 1.0)), 3)
+    tb["idle_opacity"] = round(float(g.get("idle_opacity", tb["active_opacity"])), 3)
+    return ft_toolbar.sanitize_toolbar(tb) if ft_toolbar else tb
+
+def save_toolbar_capture():
+    sock = screens_socket()
+    f = sock.ask("head").split()
+    eye, heading = tuple(map(float, f[1:4])), float(f[4])
+    layout = load_layout()
+    layout["toolbar"] = capture_toolbar(sock, eye, heading, layout)
+    save_layout(layout)
+    return layout["toolbar"]
+
+def parse_toolbar_state(reply):
+    f = reply.split()
+    if not f or f[0] != "ok":
+        raise RuntimeError(reply)
+    out = {}
+    for tok in f[1:]:
+        k, _, v = tok.partition("=")
+        try:
+            out[k] = float(v) if "." in v else int(v)
+        except ValueError:
+            out[k] = v
+    return out
+
+
+def toolbar_cmd(argv):
+    """ft-layout toolbar ...: change a setting live and in the layout."""
+    if ft_toolbar is None:
+        log("ft_toolbar.py missing", file=sys.stderr)
+        return 1
+    sub = argv[2] if len(argv) > 2 else "state"
+    args = argv[3:]
+    layout = load_layout()
+    tb = ft_toolbar.sanitize_toolbar(layout.get("toolbar") or {"enabled": False}) or {}
+    live = backend() == "screens"
+    sock = None
+    if live:
+        try:
+            sock = screens_socket()
+        except RuntimeError:
+            sock = None
+
+    def push(*cmds):
+        if not sock:
+            return
+        for c in cmds:
+            reply = sock.ask(c)
+            if reply.startswith("error"):
+                raise RuntimeError(reply)
+
+    def save():
+        layout["toolbar"] = ft_toolbar.sanitize_toolbar(tb)
+        save_layout(layout)
+
+    if sub == "state":
+        info = {"saved": tb}
+        if sock:
+            try:
+                info["live"] = parse_toolbar_state(sock.ask("toolbar state"))
+                info["docked"] = parse_dock_state(sock.ask("dock state"))
+            except RuntimeError as e:
+                info["error"] = str(e)
+        if "--json" in argv:
+            print(json.dumps(info, separators=(",", ":")))
+        else:
+            for k, v in info.items():
+                print(f"{k}: {v}")
+        return 0
+    if sub in ("enable", "disable"):
+        tb["enabled"] = sub == "enable"
+        save()
+        if sock:
+            apply_toolbar(sock, layout)
+            if tb["enabled"] and layout["toolbar"].get("anchor") == "screen":
+                save_toolbar_capture()  # legacy one-shot placement -> a real world pose
+    elif sub == "capture":
+        if not sock:
+            return 1
+        tb = save_toolbar_capture()
+    elif sub == "recenter":
+        push("toolbar recenter")
+        if sock:
+            save_toolbar_capture()
+        return 0
+    elif sub == "follow" and args:
+        mode = args[0]
+        if mode not in ft_toolbar.TOOLBAR_ANCHORS or mode == "screen":
+            log(f"follow modes: {' '.join(a for a in ft_toolbar.TOOLBAR_ANCHORS if a != 'screen')}",
+                file=sys.stderr)
+            return 2
+        push(f"toolbar pin {mode}")
+        if sock:
+            save_toolbar_capture()
+        else:
+            tb["anchor"] = mode
+            tb.pop("pin", None)
+            save()
+        return 0
+    elif sub == "opacity" and args:
+        active = float(args[0])
+        idle = float(args[1]) if len(args) > 1 else tb.get("idle_opacity", active)
+        tb["active_opacity"], tb["idle_opacity"] = active, idle
+        save()
+        tb = layout["toolbar"]
+        push(f"toolbar opacity {tb['active_opacity']:.3f} {tb['idle_opacity']:.3f}")
+    elif sub == "scale" and args:
+        tb["scale"] = float(args[0])
+        save()
+        push(f"toolbar scale {layout['toolbar']['scale']:.3f}")
+    elif sub == "attention" and args and args[0] in ("on", "off"):
+        att = dict(tb.get("attention") or {})
+        att["enabled"] = args[0] == "on"
+        for key, v in zip(("in_ms", "out_ms", "dwell_ms", "hold_ms"), args[1:5]):
+            att[key] = float(v)
+        tb["attention"] = att
+        save()
+        a = layout["toolbar"]["attention"]
+        push(f"toolbar attention on {a['in_ms']:.0f} {a['out_ms']:.0f} {a['dwell_ms']:.0f} {a['hold_ms']:.0f}"
+             if a["enabled"] else "toolbar attention off")
+    elif sub == "deadzone" and args and args[0] in ("on", "off"):
+        dz = dict(tb.get("follow_deadzone") or {})
+        dz["enabled"] = args[0] == "on"
+        if len(args) > 1:
+            dz["degrees"] = float(args[1])
+        if len(args) > 2:
+            dz["metres"] = float(args[2])
+        tb["follow_deadzone"] = dz
+        save()
+        d = layout["toolbar"]["follow_deadzone"]
+        push(f"toolbar deadzone on {d['degrees']:.1f} {d['metres']:.3f}" if d["enabled"] else "toolbar deadzone off")
+    elif sub in ("pin-app", "unpin-app") and args:
+        apps = list(tb.get("pinned_apps") or [])
+        if sub == "pin-app" and args[0] not in apps:
+            apps.append(args[0])
+        if sub == "unpin-app":
+            apps = [a for a in apps if a != args[0]]
+        tb["pinned_apps"] = apps
+        save()
+    else:
+        print("usage: ft-layout toolbar state|enable|disable|recenter|capture|follow MODE|opacity A [I]|"
+              "scale S|attention on|off ...|deadzone on|off ...|pin-app|unpin-app ID", file=sys.stderr)
+        return 2
+    log(f"toolbar {sub}: ok")
+    return 0
+
+def dock_cmd(argv):
+    """ft-layout dock N on|off|toggle | dock sync | dock state"""
+    if len(argv) >= 3 and argv[2] == "sync":
+        dock_sync()
+        return 0
+    sock = screens_socket()
+    if len(argv) >= 3 and argv[2] == "state":
+        print(json.dumps(parse_dock_state(sock.ask("dock state"))))
+        return 0
+    if len(argv) < 4 or argv[3] not in ("on", "off", "toggle"):
+        print("usage: ft-layout dock N on|off|toggle | dock sync | dock state", file=sys.stderr)
+        return 2
+    reply = sock.ask(f"dock {int(argv[2])} {argv[3]}")
+    if reply.startswith("error"):
+        raise RuntimeError(reply)
+    if argv[3] != "toggle":  # toggle: ft-screens spawns the sync itself
+        dock_sync()
+    log(reply)
+    return 0
 
 def apply_instruments(sock, layout=None):
     """Push Spatial Instruments from layout to ft-screens (instant; no transition yet)."""
@@ -2518,7 +2808,7 @@ def normalized_slots(store):
 
 
 def profile_from_layout(layout):
-    """Spatial snapshot for the configured screen count (+ instruments)."""
+    """Spatial snapshot for the configured screen count (+ instruments, + the toolbar)."""
     count = screen_count(layout)
     screens = [spatial_screen(screen_entry(layout, i)) for i in range(count)]
     instruments = []
@@ -2526,7 +2816,12 @@ def profile_from_layout(layout):
         snap = spatial_instrument(entry)
         if snap:
             instruments.append(snap)
-    return {"screens": screens, "instruments": instruments}
+    out = {"screens": screens, "instruments": instruments}
+    if ft_toolbar is not None:
+        tb = ft_toolbar.sanitize_toolbar(layout.get("toolbar"))
+        if tb:
+            out["toolbar"] = tb
+    return out
 
 
 def merge_profile_into_layout(layout, profile):
@@ -2566,6 +2861,11 @@ def merge_profile_into_layout(layout, profile):
             entry["hidden"] = True
         else:
             entry.pop("hidden", None)
+        dock = screen_dock(spatial)
+        if dock:
+            entry["dock"] = dock
+        else:
+            entry.pop("dock", None)
         screens[i] = entry
     layout["screens"] = screens
     layout["mode"] = "custom"
@@ -2576,6 +2876,11 @@ def merge_profile_into_layout(layout, profile):
         layout["instruments"] = [
             x for x in (normalize_instrument(e) for e in (profile.get("instruments") or [])) if x
         ]
+    # Missing toolbar key (profiles saved before the toolbar) => keep the current toolbar.
+    if ft_toolbar is not None and "toolbar" in profile:
+        tb = ft_toolbar.sanitize_toolbar(profile.get("toolbar"))
+        if tb:
+            layout["toolbar"] = tb
     return layout
 
 
@@ -3070,6 +3375,10 @@ def main(argv):
         if cmd == "plan":
             layout = load_layout()
             print(json.dumps(plan(layout, screen_count(layout))))
+        elif cmd == "toolbar":
+            return toolbar_cmd(argv)
+        elif cmd == "dock":
+            return dock_cmd(argv)
         elif cmd == "screen-args":
             print(screen_args())
         elif cmd == "toggle":

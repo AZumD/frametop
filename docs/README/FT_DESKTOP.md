@@ -13,6 +13,7 @@ FreeDesktop helpers shared by `ft-layout` / Display Settings and `session/ft-lau
 - `launch_desktop_id` uses `Exec=` under that nested env (not Gio activation), so windows land on existing Frametop displays.
 - `find_desktop_by_id` round-trips FreeDesktop ids from vendor subdirs (`kde/foo.desktop` ↔ `kde-foo.desktop`).
 - Inside distrobox, `xdg_data_dirs()` also searches `/run/host/usr/share` so Display Settings lists host SteamOS apps.
+- Start / launcher listing (stage2): include `NoDisplay` apps; skip only `Hidden=true`. A user Hidden stub does not hide a later system twin. `current_desktops()` always adds `KDE` so `OnlyShowIn=KDE` apps appear even when the host desktop is `gamescope`.
 
 PC sync targets `~/dev/frametop`. The Steam “Desktop” launcher and `ft-screens` must use that tree (`desktops.sh install`); an old `~/frametop` checkout keeps running a stale binary (soft-follow / overlay fixes never load).
 

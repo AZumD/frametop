@@ -74,11 +74,15 @@ def applications_dirs():
     return [os.path.join(d, "applications") for d in xdg_data_dirs()]
 
 
-def parse_desktop_file(path):
-    """Parse a .desktop file into a dict for the [Desktop Entry] group.
+def _truthy(val):
+    return (val or "").strip().lower() in ("1", "true")
 
-    Returns None if missing, not an Application, Hidden/NoDisplay, or unreadable.
-    Keys are lowercased Desktop Entry keys.
+
+def read_desktop_entry(path):
+    """Parse a .desktop Application entry, including Hidden / NoDisplay ones.
+
+    Returns None if missing, not Type=Application, lacking Name/Exec, or unreadable.
+    Includes boolean ``hidden`` and ``nodisplay`` flags from the file.
     """
     path = str(path)
     try:
@@ -100,27 +104,89 @@ def parse_desktop_file(path):
         entry[key.strip().lower()] = val.strip()
     if entry.get("type", "Application") != "Application":
         return None
-    if entry.get("hidden", "").lower() in ("1", "true"):
-        return None
-    if entry.get("nodisplay", "").lower() in ("1", "true"):
-        return None
     name = entry.get("name") or ""
-    if not name:
-        return None
     exec_line = entry.get("exec") or ""
-    if not exec_line:
+    if not name or not exec_line:
         return None
-    desktop_id = desktop_id_for_path(path)
     return {
         "path": os.path.abspath(path),
-        "id": desktop_id,
+        "id": desktop_id_for_path(path),
         "name": name,
         "generic_name": entry.get("genericname") or "",
         "icon": entry.get("icon") or "",
         "exec": exec_line,
-        "terminal": entry.get("terminal", "").lower() in ("1", "true"),
+        "terminal": _truthy(entry.get("terminal")),
         "try_exec": entry.get("tryexec") or "",
+        "categories": [c for c in (entry.get("categories") or "").split(";") if c],
+        "wm_class": entry.get("startupwmclass") or "",
+        "only_show_in": [d for d in (entry.get("onlyshowin") or "").split(";") if d],
+        "not_show_in": [d for d in (entry.get("notshowin") or "").split(";") if d],
+        "hidden": _truthy(entry.get("hidden")),
+        "nodisplay": _truthy(entry.get("nodisplay")),
     }
+
+
+def parse_desktop_file(path):
+    """Launchable Application entry (not Hidden). NoDisplay apps are included.
+
+    Frametop Start lists every launchable app; SteamOS leaves many NoDisplay stubs
+    that still have a real Exec. Hidden=true means the entry is deleted.
+    """
+    info = read_desktop_entry(path)
+    if not info or info["hidden"]:
+        return None
+    return {k: v for k, v in info.items() if k not in ("hidden", "nodisplay")}
+
+
+def current_desktops(env=None):
+    """XDG_CURRENT_DESKTOP as a list.
+
+    Frametop's start menu runs inside nested Plasma, but the process often inherits the
+    host session's XDG_CURRENT_DESKTOP=gamescope. Apps with OnlyShowIn=KDE (System
+    Settings, Menu Editor, …) must still appear, so KDE is always included.
+    """
+    raw = (env or os.environ).get("XDG_CURRENT_DESKTOP") or "KDE"
+    desks = [d for d in raw.split(":") if d]
+    if "KDE" not in desks and "Plasma" not in desks:
+        desks.append("KDE")
+    return desks
+
+
+def shown_in(info, desktops):
+    """OnlyShowIn= / NotShowIn= against the current desktops."""
+    if info.get("only_show_in") and not set(info["only_show_in"]) & set(desktops):
+        return False
+    return not set(info.get("not_show_in") or []) & set(desktops)
+
+
+def desktop_actions(path):
+    """The application's own actions ([Desktop Action X] groups listed in Actions=), in
+    order: [{"id", "name", "exec"}]. Actions without a Name or Exec are skipped."""
+    try:
+        text = Path(str(path)).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    group, listed, found = None, [], {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            group = line[1:-1].strip()
+            continue
+        if "=" not in line:
+            continue
+        key, val = (s.strip() for s in line.split("=", 1))
+        if group == "Desktop Entry" and key == "Actions":
+            listed = [a for a in val.split(";") if a]
+        elif group and group.startswith("Desktop Action ") and key in ("Name", "Exec"):
+            found.setdefault(group[15:].strip(), {})[key.lower()] = val
+    out = []
+    for a in listed:
+        info = found.get(a) or {}
+        if info.get("name") and info.get("exec"):
+            out.append({"id": a, "name": info["name"], "exec": info["exec"]})
+    return out
 
 
 def desktop_id_for_path(path):
@@ -139,16 +205,27 @@ def desktop_id_for_path(path):
     return base
 
 
+def _usable_desktop_path(path):
+    """Absolute path if this file is a launchable (non-Hidden) Application, else None."""
+    info = read_desktop_entry(path)
+    if info and not info["hidden"]:
+        return info["path"]
+    return None
+
+
 def find_desktop_by_id(desktop_id):
-    """Resolve a desktop id (e.g. org.kde.konsole.desktop) to an absolute path."""
+    """Resolve a desktop id (e.g. org.kde.konsole.desktop) to an absolute path.
+
+    Skips Hidden=true stubs so a SteamOS user overlay does not block the system file.
+    """
     desktop_id = str(desktop_id or "").strip()
     if not desktop_id:
         return None
     if not desktop_id.endswith(".desktop"):
         desktop_id += ".desktop"
-    # Absolute path passed through.
+    # Absolute path passed through when launchable.
     if os.path.isabs(desktop_id) and os.path.isfile(desktop_id):
-        return desktop_id
+        return _usable_desktop_path(desktop_id) or desktop_id
 
     for apps in applications_dirs():
         if not os.path.isdir(apps):
@@ -156,13 +233,18 @@ def find_desktop_by_id(desktop_id):
         # Top-level basename (org.kde.konsole.desktop).
         p = os.path.join(apps, desktop_id)
         if os.path.isfile(p):
-            return os.path.abspath(p)
+            got = _usable_desktop_path(p)
+            if got:
+                return got
+            continue
         # FreeDesktop id with vendor dir: kde-foo.desktop → kde/foo.desktop (one segment).
         if "-" in desktop_id:
             vendor, rest = desktop_id.split("-", 1)
             p = os.path.join(apps, vendor, rest)
             if os.path.isfile(p):
-                return os.path.abspath(p)
+                got = _usable_desktop_path(p)
+                if got:
+                    return got
         # Match list_applications() ids (full / → - rewrite), not only basenames.
         for root, _dirs, files in os.walk(apps):
             for name in files:
@@ -170,7 +252,9 @@ def find_desktop_by_id(desktop_id):
                     continue
                 path = os.path.join(root, name)
                 if name == desktop_id or desktop_id_for_path(path) == desktop_id:
-                    return os.path.abspath(path)
+                    got = _usable_desktop_path(path)
+                    if got:
+                        return got
     return None
 
 
@@ -189,30 +273,43 @@ def application_available(desktop_id):
 
 
 def list_applications(search=None):
-    """Return sorted list of visible Application desktop entries.
+    """Return sorted list of launchable Application desktop entries for Start.
 
-    Each item: id, name, icon, path. Deduped by desktop id (user overrides system).
+    Each item: id, name, icon, path, categories, wm_class. Deduped by desktop id.
+
+    Earlier XDG dirs win for a *usable* entry (user customizations). A Hidden=true
+    stub in ~/.local does **not** remove a later system copy — SteamOS leaves those
+    stubs to declutter Gaming Mode menus, but Frametop Start shows every launchable
+    app. NoDisplay=true entries are included for the same reason.
     """
     search = (search or "").strip().lower()
+    desktops = current_desktops()
     seen = {}
-    # Later dirs are lower priority — walk reversed so user wins when we insert.
-    for apps in reversed(applications_dirs()):
+    claimed = set()
+    for apps in applications_dirs():
         if not os.path.isdir(apps):
             continue
         for root, _dirs, files in os.walk(apps):
             for name in files:
                 if not name.endswith(".desktop"):
                     continue
-                info = parse_desktop_file(os.path.join(root, name))
-                if not info:
+                path = os.path.join(root, name)
+                did = desktop_id_for_path(path)
+                if did in claimed:
                     continue
+                info = read_desktop_entry(path)
+                if not info or info["hidden"] or not shown_in(info, desktops):
+                    continue
+                claimed.add(did)
                 if search and search not in info["name"].lower() and search not in info["id"].lower():
                     continue
-                seen[info["id"]] = {
+                seen[did] = {
                     "id": info["id"],
                     "name": info["name"],
                     "icon": info["icon"],
                     "path": info["path"],
+                    "categories": info["categories"],
+                    "wm_class": info["wm_class"],
                 }
     return sorted(seen.values(), key=lambda a: (a["name"].lower(), a["id"].lower()))
 
