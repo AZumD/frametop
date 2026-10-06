@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start, stop, or inspect the multi-screen Plasma desktop in VR on the Frame.
-# Usage: desktops.sh start [screens] | stop | restart | shell-restart | status | log [lines]
+# Usage: desktops.sh start [screens] | stop | restart | revive | shell-restart | status | log [lines]
 #        desktops.sh install     # make the VR launcher's "Desktop" entry start Frametop
 #        desktops.sh uninstall   # give the launcher back the stock SteamOS desktop
 #        desktops.sh screens N   # set the default screen count in ~/.config/frametop.conf
@@ -111,6 +111,12 @@ $running && { echo 'still running'; exit 1; } || echo 'stopped (forced)'" ;;
     "$0" stop
     sleep 3
     exec "$0" start ${screens:+"$screens"} ;;
+  revive)
+    # After a game / SteamVR bounce: one path to a working nested desktop.
+    # Does not restart SteamVR. See scripts/revive-desktop.sh.
+    "$root/scripts/sync.sh" >/dev/null
+    shift
+    exec bash "$root/scripts/revive-desktop.sh" "$@" ;;
   shell-restart)
     # Restart ONLY plasmashell inside the nested session (taskbar/desktop recovery).
     # Does not touch KWin, ft-screens, SteamVR, or open app windows' compositor clients.
@@ -137,5 +143,5 @@ exec $session/ft-shell-restart.sh" ;;
   fi
 else echo 'not running'; fi" ;;
   log) "$frame" --host "grep -vE '^\s*$' $log | tail -n ${2:-40}" ;;
-  *) echo "usage: $0 start [screens] | stop | restart | shell-restart | status | log [lines] | install | uninstall | screens N | remote on|off|info | relay install|uninstall|status|log" >&2; exit 2 ;;
+  *) echo "usage: $0 start [screens] | stop | restart | revive [--check|--force] | shell-restart | status | log [lines] | install | uninstall | screens N | remote on|off|info | relay install|uninstall|status|log" >&2; exit 2 ;;
 esac

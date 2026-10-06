@@ -11,12 +11,15 @@ Start the Frametop desktop on the Steam Frame host with a SteamVR health gate. U
 1. Require `steamvr.service` active and both `vrserver` and `vrcompositor` running
 2. No-op if Frametop is already running
 3. `systemd-run --user --unit frametop-desktop` → `session/frametop-session.sh`
+4. After start: if `toolbar state` works, ensure `ft-taskbar` is running and run
+   `ft-layout toolbar enable` so the spatial taskbar is visible
 
 ## Usage
 
 ```
 scripts/start-desktop-on-frame.sh          # on the Frame
 desktops.sh start                          # from a PC (syncs, then runs this on the Frame)
+desktops.sh revive                         # after a game / SteamVR bounce (see REVIVE-DESKTOP.md)
 ```
 
 ## Tests

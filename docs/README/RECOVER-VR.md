@@ -38,6 +38,8 @@ to start or reboot into SteamVR yourself after recovery.
 
 `desktops.sh stop` must **SIGTERM `ft-screens` before** stopping `frametop-desktop.service`, so OpenVR can `VR_Shutdown()` cleanly. Killing the unit first (or SIGKILL) can leave dangling overlays; XRService has then crashed into `HmdNotFound`, after which health-check turns the panels off. `desktops.sh start` refuses to launch unless `steamvr.service` is active and `vrserver` + `vrcompositor` are running.
 
+When SteamVR is fine but the **nested desktop** will not come back after a game or a SteamVR bounce, use [REVIVE-DESKTOP.md](REVIVE-DESKTOP.md) (`desktops.sh revive`) — not this script.
+
 ## After recovery
 
 ```
