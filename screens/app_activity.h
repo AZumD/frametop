@@ -8,7 +8,9 @@
 // keys after a real exit do not latch (latch only arms when the overlay was visible).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace frametop {
 
@@ -22,6 +24,15 @@ struct AppActivityState {
     bool flatLatch = false;
     int dashClearTicks = 0;  // consecutive samples: dashboard open, theater not visible
 };
+
+inline bool IsDesktopgameOverlayKey(const char *key) {
+    if (!key) return false;
+    constexpr char prefix[] = "valve.steam.desktopgame";
+    constexpr std::size_t prefixLen = sizeof(prefix) - 1;
+    const std::size_t len = std::strlen(key);
+    if (len < prefixLen || std::strncmp(key, prefix, prefixLen) != 0) return false;
+    return len == prefixLen || key[prefixLen] == '.';
+}
 
 inline const char *AppActivityName(AppActivity a) {
     switch (a) {

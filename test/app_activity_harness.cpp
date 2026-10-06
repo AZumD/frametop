@@ -8,6 +8,7 @@
 using frametop::AppActivity;
 using frametop::AppActivityState;
 using frametop::DecideAppActivity;
+using frametop::IsDesktopgameOverlayKey;
 using frametop::kFlatLatchClearSamples;
 
 static int fails = 0;
@@ -32,6 +33,12 @@ int main() {
 
     expect("desktop idle", DecideAppActivity(false, false, false, false, &st), AppActivity::Desktop);
     expectBool("no latch idle", st.flatLatch, false);
+
+    expectBool("desktopgame base key", IsDesktopgameOverlayKey("valve.steam.desktopgame"), true);
+    expectBool("desktopgame slot key", IsDesktopgameOverlayKey("valve.steam.desktopgame.0"), true);
+    expectBool("desktopgame app id key", IsDesktopgameOverlayKey("valve.steam.desktopgame.1145360"), true);
+    expectBool("desktopgame prefix collision", IsDesktopgameOverlayKey("valve.steam.desktopgamex.1145360"), false);
+    expectBool("unrelated overlay", IsDesktopgameOverlayKey("valve.steam.gamepadui.main"), false);
 
     expect("vr scene", DecideAppActivity(true, false, false, false, &st), AppActivity::VrScene);
 

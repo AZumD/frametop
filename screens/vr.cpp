@@ -739,6 +739,7 @@ std::string g_gestureHand = "left";
 Lasers g_lasers = Lasers::OutsideGames;  // when controllers' lasers work the screens (see the top)
 frametop::AppActivity g_appActivity = frametop::AppActivity::Desktop;
 frametop::AppActivityState g_appActivityState{};
+std::map<vr::VROverlayHandle_t, std::string> g_desktopgameOverlays;
 bool g_gameRunning = false;  // AppHidesDisplays(g_appActivity): hide displays / Always→Dashboard
 InGames g_inGames = InGames::Hide;  // during a game, the always mode acts like the dashboard mode
 
@@ -1381,24 +1382,76 @@ Mode EffectiveMode() {
     return g_gameRunning && g_inGames == InGames::Hide && g_mode == Mode::Always ? Mode::Dashboard : g_mode;
 }
 
-// Flatscreen / gamescope theater panels (not scene apps). Keys: valve.steam.desktopgame[.N].
-// Steam often leaves the key registered after exit — registration alone must not own input.
-void FlatscreenDesktopgame(bool *registered, bool *visible) {
-    *registered = false;
-    *visible = false;
-    auto check = [&](const char *key) {
-        vr::VROverlayHandle_t h = vr::k_ulOverlayHandleInvalid;
-        if (vr::VROverlay()->FindOverlay(key, &h) != vr::VROverlayError_None) return;
-        *registered = true;
-        if (vr::VROverlay()->IsOverlayVisible(h)) *visible = true;
+// Flatscreen / gamescope theater panels (not scene apps). Steam uses both legacy
+// slot-like keys and app-id keys such as valve.steam.desktopgame.1145360. OpenVR cannot
+// enumerate another app's overlays, so keep handles learned from OverlayCreated events
+// and seed them once at startup with vrcmd for the "Frametop restarted mid-game" case.
+void RememberDesktopgameOverlay(vr::VROverlayHandle_t handle) {
+    if (handle == vr::k_ulOverlayHandleInvalid) return;
+    char key[vr::k_unVROverlayMaxKeyLength] = {};
+    vr::EVROverlayError err = vr::VROverlayError_None;
+    vr::VROverlay()->GetOverlayKey(handle, key, sizeof key, &err);
+    if (err != vr::VROverlayError_None || !frametop::IsDesktopgameOverlayKey(key)) return;
+    if (g_desktopgameOverlays.emplace(handle, key).second) {
+        std::printf("desktopgame discovered %s\n", key);
+        std::fflush(stdout);
+    }
+}
+
+void ForgetDesktopgameOverlay(vr::VROverlayHandle_t handle) {
+    g_desktopgameOverlays.erase(handle);
+}
+
+void SeedDesktopgameOverlays() {
+    // Cheap compatibility fallback for the historical keys.
+    auto find = [](const char *key) {
+        vr::VROverlayHandle_t handle = vr::k_ulOverlayHandleInvalid;
+        if (vr::VROverlay()->FindOverlay(key, &handle) == vr::VROverlayError_None)
+            RememberDesktopgameOverlay(handle);
     };
+    find("valve.steam.desktopgame");
     for (int i = 0; i < 16; ++i) {
         char key[64];
         std::snprintf(key, sizeof key, "valve.steam.desktopgame.%d", i);
-        check(key);
-        if (*visible) return;
+        find(key);
     }
-    check("valve.steam.desktopgame");
+
+    FILE *p = popen(
+        "LD_LIBRARY_PATH=/opt/steamvr/bin/linuxarm64 "
+        "/opt/steamvr/bin/linuxarm64/vrcmd --overlays 2>/dev/null",
+        "r");
+    if (!p) return;
+    char line[1024];
+    while (std::fgets(line, sizeof line, p)) {
+        if (line[0] != '\'') continue;
+        const char *end = std::strchr(line + 1, '\'');
+        if (!end) continue;
+        const std::string key(line + 1, size_t(end - (line + 1)));
+        if (!frametop::IsDesktopgameOverlayKey(key.c_str())) continue;
+        find(key.c_str());
+    }
+    pclose(p);
+}
+
+void FlatscreenDesktopgame(bool *registered, bool *visible) {
+    *registered = false;
+    *visible = false;
+    for (auto it = g_desktopgameOverlays.begin(); it != g_desktopgameOverlays.end();) {
+        char key[vr::k_unVROverlayMaxKeyLength] = {};
+        vr::EVROverlayError err = vr::VROverlayError_None;
+        vr::VROverlay()->GetOverlayKey(it->first, key, sizeof key, &err);
+        if (err != vr::VROverlayError_None || !frametop::IsDesktopgameOverlayKey(key)) {
+            it = g_desktopgameOverlays.erase(it);
+            continue;
+        }
+        it->second = key;
+        *registered = true;
+        if (vr::VROverlay()->IsOverlayVisible(it->first)) {
+            *visible = true;
+            return;
+        }
+        ++it;
+    }
 }
 
 // Scene apps, visible desktopgame theater, and Steam's gamepad presentation (dashboard
@@ -1423,6 +1476,7 @@ void UpdateGame() {
                 flatReg ? 1 : 0, dash ? 1 : 0, g_appActivityState.flatLatch ? 1 : 0,
                 g_gameRunning ? 1 : 0,
                 frametop::AppBlocksOutsideGamesLasers(g_appActivity, dash) ? 1 : 0);
+    std::fflush(stdout);
 }
 
 bool ModeVisible() {
@@ -4675,6 +4729,7 @@ bool ft_vr_init(void) {
     InitEyeTracking();
     RefreshPoses();
     g_vr = true;
+    SeedDesktopgameOverlays();
     // The catcher: clear and invisible, but the laser lands on it for off-panel releases.
     if (vr::VROverlay()->CreateOverlay("frametop.catcher", "Frametop: release catcher", &g_catcher) ==
         vr::VROverlayError_None) {
@@ -5151,6 +5206,10 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             handle(&e, data);
         } else if (ev.eventType == vr::VREvent_TrackedDeviceDeactivated) {
             EndDragsBy(ev.trackedDeviceIndex);
+        } else if (ev.eventType == vr::VREvent_OverlayCreated) {
+            RememberDesktopgameOverlay(ev.data.overlay.overlayHandle);
+        } else if (ev.eventType == vr::VREvent_OverlayDestroyed) {
+            ForgetDesktopgameOverlay(ev.data.overlay.overlayHandle);
         }
     }
     // Our keyboard: its keys, and its Close key. It goes when the screens do.

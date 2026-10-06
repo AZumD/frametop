@@ -86,6 +86,8 @@ class AppActivityLogic(unittest.TestCase):
         self.assertIn("FlatGamePresentation", h)
         self.assertIn("AppBlocksOutsideGamesLasers", h)
         self.assertIn("dashboardVisible", h)
+        self.assertIn("IsDesktopgameOverlayKey", h)
+        self.assertIn("valve.steam.desktopgame", h)
 
     def test_harness_when_gxx_available(self):
         if not shutil.which("g++"):
@@ -110,6 +112,10 @@ class AppActivityLogic(unittest.TestCase):
         self.assertIn("AppBlocksOutsideGamesLasers(", vr)
         self.assertIn("AppHidesDisplays(", vr)
         self.assertIn("app_activity %s", vr)
+        self.assertIn("VREvent_OverlayCreated", vr)
+        self.assertIn("VREvent_OverlayDestroyed", vr)
+        self.assertIn("GetOverlayKey(", vr)
+        self.assertIn("SeedDesktopgameOverlays()", vr)
         update = vr[vr.index("void UpdateGame()") : vr.index("bool ModeVisible()")]
         self.assertIn("FlatscreenDesktopgame(", update)
         self.assertIn("IsDashboardVisible()", update)
