@@ -31,8 +31,10 @@ Game-route permanent chooser; float Meta+D / FLOAT_SLOTS UI; hands gestures; flo
 
 ## Tag
 
+Product version is `0.1.0` (`VERSION`). Upstream history already claimed git tag `v0.1.0`, so this cut is tagged:
+
 ```
-git tag -a v0.1.0 -m "Frametop 0.1.0"
+git tag -a v0.1.0-fork -m "Frametop fork 0.1.0"
 ```
 
 `VERSION` must read `0.1.0` and match the CHANGELOG section.

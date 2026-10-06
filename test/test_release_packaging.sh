@@ -10,6 +10,19 @@ ver=$(tr -d '[:space:]' < "$root/VERSION")
 [ "$ver" = "0.1.0" ] && ok "VERSION is 0.1.0" || bad "VERSION is '$ver' (want 0.1.0)"
 
 grep -qE '^## \[0\.1\.0\]' "$root/CHANGELOG.md" && ok "CHANGELOG has 0.1.0 section" || bad "CHANGELOG missing 0.1.0"
+grep -q 'v0\.1\.0-fork' "$root/CHANGELOG.md" && ok "CHANGELOG notes v0.1.0-fork tag" || bad "CHANGELOG fork tag"
+if git -C "$root" rev-parse -q --verify refs/tags/v0.1.0-fork >/dev/null; then
+  tip=$(git -C "$root" rev-list -n1 v0.1.0-fork)
+  head=$(git -C "$root" rev-parse HEAD)
+  # Allow the tag to sit on the packaging commit or a later tip that contains it.
+  if git -C "$root" merge-base --is-ancestor "$tip" "$head" 2>/dev/null || [ "$tip" = "$head" ]; then
+    ok "tag v0.1.0-fork present"
+  else
+    bad "tag v0.1.0-fork does not point at an ancestor of HEAD"
+  fi
+else
+  bad "tag v0.1.0-fork missing"
+fi
 grep -q 'desktops.sh revive' "$root/CHANGELOG.md" && ok "CHANGELOG mentions revive" || bad "CHANGELOG revive"
 grep -q 'desktop toolbar' "$root/CHANGELOG.md" && ok "CHANGELOG mentions toolbar" || bad "CHANGELOG toolbar"
 

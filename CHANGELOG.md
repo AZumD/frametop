@@ -30,4 +30,6 @@ First named cut of this fork: a coherent nested-desktop **shell**, not a kit of 
 
 - One Steam Frame (SteamOS 0.3.0 build 20260922, SteamVR 2.17.10) — update this note when re-verified
 
-[0.1.0]: https://github.com/AZumD/frametop/releases/tag/v0.1.0
+[0.1.0]: https://github.com/AZumD/frametop/releases/tag/v0.1.0-fork
+
+Note: git tag `v0.1.0` already exists in history from upstream; this fork cut is tagged `v0.1.0-fork` while `VERSION` / product version remain `0.1.0`.
