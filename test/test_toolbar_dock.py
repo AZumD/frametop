@@ -253,7 +253,21 @@ class CppGuards(unittest.TestCase):
         self.assertIn("g_toolbar.interactUntil = g_tick + 45", read("screens/toolbar_taskbar.inc"))
         self.assertIn("ToolbarOnArch(arch, bx, TS(ToolbarStyle::kBtnDz), /*roll=*/true)", self.tb)
         self.assertIn("ToolbarCurvature(g_toolbar.metres)", self.tb)
-        self.assertIn("RefaceToolbarBtn(b);", self.tb.split("void RebuildToolbarForTasks()")[1].split("void TickTaskbar")[0])
+        rebuild = self.tb.split("void RebuildToolbarForTasks()", 1)[1].split("void TickTaskbar", 1)[0]
+        self.assertNotIn("RefaceToolbarBtn(b);", rebuild)
+        self.assertIn("if (want) ShowToolbar(true);", rebuild)
+
+    def test_toolbar_raw_uploads_are_content_only(self):
+        # SteamVR can start rejecting repeated SetOverlayRaw calls. Hover and visibility
+        # transitions must not use raw texture upload as an animation/repair mechanism.
+        light = self.tb.split("void LightToolbarBtn(", 1)[1].split("\n}", 1)[0]
+        show = self.tb.split("void ShowToolbar(bool on)", 1)[1].split("\n}", 1)[0]
+        pool = self.tb.split("vr::VROverlayHandle_t ToolbarCellOverlay(", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn("SetOverlayRaw", light)
+        self.assertNotIn("RefaceToolbarBtn", show)
+        self.assertIn("ApplyToolbarAlpha(true)", light)
+        self.assertIn("keeping old texture", pool)
+        self.assertNotIn("KillOverlay(o)", pool)
 
     def test_docked_screens_keep_head_distance_arc(self):
         # The arch is the bar's outline only; the horizontal arc stays the head distance.

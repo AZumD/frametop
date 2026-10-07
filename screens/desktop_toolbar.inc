@@ -452,13 +452,11 @@ vr::VROverlayHandle_t ToolbarCellOverlay(const char *key, const char *name,
     const auto err =
         vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     if (err != vr::VROverlayError_None) {
-        std::fprintf(stderr, "toolbar: SetOverlayRaw failed for %s: %s\n", key,
+        // SetOverlayRaw can transiently return RequestFailed after repeated uploads. Keep
+        // the last good texture and handle: destroying it here turns one refused refresh
+        // into a visible, clickable overlay with no texture at all.
+        std::fprintf(stderr, "toolbar: SetOverlayRaw refused for %s (keeping old texture): %s\n", key,
                      vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
-        // Handle really became unusable: only then fall back to recreation. Normal task
-        // rebuilds never take this path, so same-frame key churn is avoided.
-        KillOverlay(o);
-        o = MakeChrome(key, name, px, w, h);
-        return o;
     }
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
     const vr::HmdVector2_t scale = {{float(w), float(h)}};
@@ -846,9 +844,11 @@ void ApplyToolbarAlpha(bool force = false) {
     auto set = [](vr::VROverlayHandle_t o, float v) {
         if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->SetOverlayAlpha(o, v);
     };
-    set(g_toolbar.backing, a);  // same alpha as the cells, so bar-coloured cells stay invisible
+    set(g_toolbar.backing, a);
+    // Hover is alpha-only. Repainting textures for pointer enter/leave burns through
+    // SteamVR's fragile SetOverlayRaw path and can eventually invalidate every cell.
     for (auto &m : g_toolbar.modules)
-        for (auto &b : m.buttons) set(b.o, a);
+        for (auto &b : m.buttons) set(b.o, a * (b.lit ? 1.f : 0.86f));
     set(g_toolbar.grab, a * g_toolbar.controls * (grabActive ? 1.f : kChromeIdle));
 }
 
@@ -867,10 +867,8 @@ void ShowToolbar(bool on) {
         for (auto &b : m.buttons) show(b.o);
     g_toolbar.visible = on;
     if (on) {
-        // Hide/show (dashboard yield) and cell rebuild can leave a recycled overlay with a
-        // blank face until SetOverlayRaw runs again — always reface when becoming visible.
-        for (auto &m : g_toolbar.modules)
-            for (auto &b : m.buttons) RefaceToolbarBtn(b);
+        // Hide/show must not repaint cells. Their textures survive HideOverlay, and using
+        // SetOverlayRaw as a visibility repair eventually exhausts/fails SteamVR's raw path.
         ApplyToolbarAlpha(true);
     }
 }
@@ -1003,28 +1001,34 @@ void PickToolbarGaze(const Mat &ray, const double origin[3], GazeTarget *best) {
 void LightToolbarBtn(ToolbarBtn &b, bool lit) {
     if (b.o == vr::k_ulOverlayHandleInvalid || b.lit == lit) return;
     b.lit = lit;
-    auto face = FaceFor(b, lit);
+    // Hover is presentation state, not new content. Keep the existing texture and vary
+    // alpha through ApplyToolbarAlpha instead of streaming another RGBA image to SteamVR.
+    ApplyToolbarAlpha(true);
+}
+
+// Redraw only when the button's semantic content changed (popup state, tray level,
+// running/focused task). Hover is deliberately excluded so raw uploads stay rare.
+void RefaceToolbarBtn(ToolbarBtn &b) {
+    if (b.o == vr::k_ulOverlayHandleInvalid) return;
+    auto face = FaceFor(b, false);
     int tw = ToolbarStyle::kTexBtn, th = ToolbarStyle::kTexBtn;
     if (b.shape == CellShape::AppTile) tw = th = ToolbarStyle::kTexApp;
     if (b.shape == CellShape::Segment) tw = th = ToolbarStyle::kTexSeg;
     if (face.size() < size_t(tw) * th * 4) {
         auto gear = GlyphGear();
         face = b.shape == CellShape::AppTile
-                   ? AppTileTexture(false, lit, gear, ToolbarStyle::kTexBtn, ToolbarStyle::kTexBtn)
-                   : RoundFilledTexture(lit, gear, ToolbarStyle::kTexBtn, ToolbarStyle::kTexBtn);
+                   ? AppTileTexture(false, false, gear, ToolbarStyle::kTexBtn, ToolbarStyle::kTexBtn)
+                   : RoundFilledTexture(false, gear, ToolbarStyle::kTexBtn, ToolbarStyle::kTexBtn);
         tw = th = b.shape == CellShape::AppTile ? ToolbarStyle::kTexApp : ToolbarStyle::kTexBtn;
     }
-    vr::VROverlay()->SetOverlayRaw(b.o, face.data(), tw, th, 4);
+    const auto err = vr::VROverlay()->SetOverlayRaw(b.o, face.data(), uint32_t(tw), uint32_t(th), 4);
+    if (err != vr::VROverlayError_None) {
+        std::fprintf(stderr, "toolbar: content refresh refused (keeping old texture): %s\n",
+                     vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
+        return;
+    }
     const vr::HmdVector2_t scale = {{float(tw), float(th)}};
     vr::VROverlay()->SetOverlayMouseScale(b.o, &scale);
-}
-
-// Redraw a face whose state changed (popup opened, tray level, task focus) while the
-// hover state stays as it is.
-void RefaceToolbarBtn(ToolbarBtn &b) {
-    const bool lit = b.lit;
-    b.lit = !lit;
-    LightToolbarBtn(b, lit);
 }
 
 void RefaceTaskbarButtons(const char *prefix) {
@@ -1047,13 +1051,7 @@ void RebuildToolbarForTasks() {
     DestroyToolbarCells();
     EnsureToolbar();
     PlaceToolbar();
-    if (want) {
-        ShowToolbar(true);
-        // Re-upload every face after Show: a recycled overlay can keep a blank texture
-        // from a previous key until SetOverlayRaw runs again with a real face.
-        for (auto &m : g_toolbar.modules)
-            for (auto &b : m.buttons) RefaceToolbarBtn(b);
-    }
+    if (want) ShowToolbar(true);
 }
 
 void TickTaskbar() {
